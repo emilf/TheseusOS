@@ -1,0 +1,21 @@
+[package]
+name = "hobbyos_efi"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "hobbyos_efi"
+path = "src/main.rs"
+
+[dependencies]
+uefi = { version = "0.28", default-features = false, features = ["alloc"] }
+uefi-services = "0.25"
+log = "0.4"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+
+
