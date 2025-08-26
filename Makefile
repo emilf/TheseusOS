@@ -28,4 +28,10 @@ clean:
 run: all
 	./startQemu.sh
 
+.PHONY: debug
+debug: all
+	@echo "Starting QEMU paused with GDB on :1234 and monitor on 127.0.0.1:55555"
+	OVMF_DIR=$$(pwd)/OVMF OVMF_CODE=$$(pwd)/OVMF/OVMF_CODE.fd OVMF_VARS=$$(pwd)/OVMF/OVMF_VARS.fd \
+	QEMU_OPTS="-S -s" ./startQemu.sh
+
 
