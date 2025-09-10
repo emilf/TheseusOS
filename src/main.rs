@@ -177,7 +177,7 @@ fn display_memory_map_entry(serial_handle: Option<Handle>, index: usize, descrip
 }
 
 /// Helper function to display memory map entries in a table format
-fn display_memory_map_entries(serial_handle: Option<Handle>, memory_map_slice: &[uefi::mem::memory_map::MemoryDescriptor]) {
+fn display_memory_map_entries(serial_handle: Option<Handle>, memory_map: &uefi::mem::memory_map::MemoryMapOwned) {
     serial_write_line(serial_handle, "");
     serial_write_line(serial_handle, "┌─────────────────────────────────────────────────────────────────────────────────────────┐");
     serial_write_line(serial_handle, "│                              Memory Map Entries                                      │");
@@ -186,15 +186,15 @@ fn display_memory_map_entries(serial_handle: Option<Handle>, memory_map_slice: &
     serial_write_line(serial_handle, "├─────────────────────────────────────────────────────────────────────────────────────────┤");
     
     let mut entry_count = 0;
-    for descriptor in memory_map_slice {
-        display_memory_map_entry(serial_handle, entry_count, descriptor);
-        entry_count += 1;
+    for descriptor in memory_map.entries() {
+        display_memory_map_entry(serial_handle, entry_count, &descriptor);
+        // entry_count += 1;
         
-        // Limit display to first 20 entries to avoid overwhelming output
-        if entry_count >= 20 {
-            serial_write_line(serial_handle, "│ ... | (truncated)          | ...              | ...     | ...          | ...        │");
-            break;
-        }
+        // // Limit display to first 20 entries to avoid overwhelming output
+        // if entry_count >= 20 {
+        //     serial_write_line(serial_handle, "│ ... | (truncated)          | ...              | ...     | ...          | ...        │");
+        //     break;
+        // }
     }
     
     serial_write_line(serial_handle, "└─────────────────────────────────────────────────────────────────────────────────────────┘");
@@ -238,7 +238,7 @@ fn efi_main() -> Status {
     serial_write_line(serial_handle, "Serial communication initialized");
 
     // DEBUG FUNCTION
-    let _ = debug_function(serial_handle);
+    //let _ = debug_function(serial_handle);
 
     // Step 4: Set handoff size
     unsafe { HANDOFF.size = core::mem::size_of::<Handoff>() as u32; }
@@ -292,35 +292,38 @@ fn efi_main() -> Status {
 
     // Step 7: Collect Memory Map Information
     serial_write_line(serial_handle, "Collecting memory map information...");
-    
-    // For now, we'll use a simplified approach since the exact UEFI 0.35 API needs investigation
-    // We'll display a placeholder message and use estimated values
-    let descriptor_size = 48u32; // Standard UEFI memory descriptor size
-    let descriptor_version = 1u32; // Standard UEFI memory descriptor version
-    let entries_count = 32u32; // Reasonable estimate for memory map entries
-    let total_size = entries_count * descriptor_size;
-    
-    // Store memory map information in handoff structure
-    unsafe {
-        HANDOFF.memory_map_descriptor_size = descriptor_size;
-        HANDOFF.memory_map_descriptor_version = descriptor_version;
-        HANDOFF.memory_map_entries = entries_count;
-        HANDOFF.memory_map_size = total_size;
-    }
-    
-    // Display placeholder memory map information
-    serial_write_line(serial_handle, "");
-    serial_write_line(serial_handle, "┌─────────────────────────────────────────────────────────────────────────────────────────┐");
-    serial_write_line(serial_handle, "│                              Memory Map Entries                                      │");
-    serial_write_line(serial_handle, "├─────────────────────────────────────────────────────────────────────────────────────────┤");
-    serial_write_line(serial_handle, "│ #   | Type                 | Physical Start    | Pages   | Size (bytes) | Attributes │");
-    serial_write_line(serial_handle, "├─────────────────────────────────────────────────────────────────────────────────────────┤");
-    serial_write_line(serial_handle, "│ Memory map iteration API needs to be updated for UEFI 0.35 │");
-    serial_write_line(serial_handle, "│ This is a placeholder - actual memory map display coming soon │");
-    serial_write_line(serial_handle, "└─────────────────────────────────────────────────────────────────────────────────────────┘");
-    serial_write_line(serial_handle, "");
-    
-    let memory_map_info = Some((descriptor_size, descriptor_version, entries_count as usize, total_size as usize));
+    let memory_map_info = match uefi::boot::memory_map(MemoryType::LOADER_DATA) {
+        Ok(mmap) => {
+            // Get memory map information using the correct UEFI 0.35 API
+            let descriptor_size = 48u32; // Standard UEFI memory descriptor size
+            let descriptor_version = 1u32; // Standard UEFI memory descriptor version
+            
+            // Count actual entries by iterating through the memory map
+            let mut entries_count = 0u32;
+            for _descriptor in mmap.entries() {
+                entries_count += 1;
+            }
+            
+            let total_size = entries_count * descriptor_size;
+            
+            // Store memory map information in handoff structure
+            unsafe {
+                HANDOFF.memory_map_descriptor_size = descriptor_size;
+                HANDOFF.memory_map_descriptor_version = descriptor_version;
+                HANDOFF.memory_map_entries = entries_count;
+                HANDOFF.memory_map_size = total_size;
+            }
+            
+            // Display the actual memory map entries
+            display_memory_map_entries(serial_handle, &mmap);
+            
+            Some((descriptor_size, descriptor_version, entries_count as usize, total_size as usize))
+        }
+        Err(_) => {
+            serial_write_line(serial_handle, "✗ Failed to collect memory map");
+            None
+        }
+    };
 
     // Step 8: Report Memory Map status with pretty formatting
     if let Some((desc_size, desc_ver, entries, total_size)) = memory_map_info {
