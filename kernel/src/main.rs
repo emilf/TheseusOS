@@ -61,7 +61,7 @@ pub extern "C" fn kernel_main() -> ! {
     // Initialize kernel logging (placeholder)
     // TODO: Set up kernel logging system
     
-    kernel_write_line("=== HobbyOS Kernel Starting ===");
+    kernel_write_line("=== TheseusOS Kernel Starting ===");
     kernel_write_line("Kernel entry point reached successfully");
     
     // Access the handoff structure

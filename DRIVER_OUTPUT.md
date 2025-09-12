@@ -1,6 +1,6 @@
 # Driver Output Configuration Guide
 
-This document explains how to configure QEMU to capture output from the different drivers in the HobbyOS UEFI loader.
+This document explains how to configure QEMU to capture output from the different drivers in the TheseusOS UEFI loader.
 
 ## Driver Types and Output Destinations
 

@@ -1,4 +1,4 @@
-# hobbyos UEFI Bootloader (Rust)
+# TheseusOS UEFI Bootloader (Rust)
 
 A comprehensive UEFI application in Rust that provides a complete system information collection and kernel loading infrastructure. Features beautiful serial output formatting, comprehensive system information gathering, proper memory management, real kernel loading from EFI file system, and a detailed C-compatible Handoff struct for kernel consumption.
 

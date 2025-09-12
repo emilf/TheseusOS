@@ -1,14 +1,14 @@
 [package]
-name = "hobbyos-bootloader"
+name = "theseus-bootloader"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "hobbyos_efi"
+name = "theseus_efi"
 path = "src/main.rs"
 
 [dependencies]
-hobbyos-shared = { path = "../shared" }
+theseus-shared = { path = "../shared" }
 uefi = { workspace = true }
 log = { workspace = true }
 acpi = { workspace = true }

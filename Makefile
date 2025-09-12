@@ -1,5 +1,5 @@
-BOOTLOADER_PROJECT := hobbyos-bootloader
-KERNEL_PROJECT := hobbyos-kernel
+BOOTLOADER_PROJECT := theseus-bootloader
+KERNEL_PROJECT := theseus-kernel
 BOOTLOADER_TARGET := x86_64-unknown-uefi
 KERNEL_TARGET := x86_64-unknown-none
 PROFILE := release
@@ -7,7 +7,7 @@ BOOTLOADER_BUILD_DIR := target/$(BOOTLOADER_TARGET)/$(PROFILE)
 KERNEL_BUILD_DIR := target/$(KERNEL_TARGET)/$(PROFILE)
 EFI_DIR := build/EFI/BOOT
 ESP_DIR := build
-EFI_BIN := $(BOOTLOADER_BUILD_DIR)/hobbyos_efi.efi
+EFI_BIN := $(BOOTLOADER_BUILD_DIR)/theseus_efi.efi
 KERNEL_BIN := $(KERNEL_BUILD_DIR)/kernel
 EFI_OUTPUT := $(EFI_DIR)/BOOTX64.EFI
 OVMF_DIR := OVMF

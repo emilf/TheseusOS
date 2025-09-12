@@ -3,7 +3,7 @@
 //! Uses QEMU's debug output port (0xe9) for simple output. QEMU-specific driver.
 
 use core::arch::asm;
-use hobbyos_shared::constants::io_ports;
+use theseus_shared::constants::io_ports;
 
 /// QEMU Debug driver implementation
 pub struct QemuDebugDriver;

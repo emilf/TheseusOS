@@ -507,7 +507,7 @@ unsafe fn jump_to_kernel() {
 
 /// Complete the bootloader and exit QEMU
 pub fn complete_bootloader_and_exit() {
-    write_line("=== UEFI Loader Complete ===");
+    write_line("=== TheseusOS UEFI Loader Complete ===");
     write_line("All system information collected and stored");
     write_line("Ready for kernel handoff");
     write_line("Exiting QEMU...");

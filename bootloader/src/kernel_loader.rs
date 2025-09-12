@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 use alloc::format;
 use alloc::vec;
 
-use hobbyos_shared::constants::kernel;
+use theseus_shared::constants::kernel;
 use crate::drivers::manager::write_line;
 
 /// Kernel section information
@@ -120,7 +120,7 @@ pub fn get_kernel_file_info(file: &mut RegularFile, ) -> Result<u64, Status> {
     let file_size = file_info.file_size();
     write_line("✓ Got actual file size from FileInfo");
     write_line(&format!("Kernel file size: {} bytes ({:.2} MB)", 
-        file_size, file_size as f64 / hobbyos_shared::constants::memory::BYTES_PER_MB));
+        file_size, file_size as f64 / theseus_shared::constants::memory::BYTES_PER_MB));
     
     if file_size > kernel::MAX_KERNEL_SIZE {
         write_line(&format!("✗ Kernel file too large: {} bytes (max: {} bytes)", 
@@ -232,7 +232,7 @@ pub fn analyze_kernel_binary(kernel_data: &[u8], ) -> Result<KernelInfo, Status>
     write_line("✓ Kernel analysis complete");
     write_line(&format!("  Entry point: 0x{:016X}", entry_point));
     write_line(&format!("  Total memory required: {} bytes ({:.2} MB)", 
-        total_memory_size, total_memory_size as f64 / hobbyos_shared::constants::memory::BYTES_PER_MB));
+        total_memory_size, total_memory_size as f64 / theseus_shared::constants::memory::BYTES_PER_MB));
     write_line(&format!("  Sections: {}", sections.len()));
     
     for section in &sections {
@@ -290,12 +290,12 @@ pub fn find_free_memory_region(memory_map: &uefi::mem::memory_map::MemoryMapOwne
     }
     
     write_line(&format!("Total free memory available: {} bytes ({:.2} MB)",
-        total_free, total_free as f64 / hobbyos_shared::constants::memory::BYTES_PER_MB));
+        total_free, total_free as f64 / theseus_shared::constants::memory::BYTES_PER_MB));
     
     match best_address {
         Some(address) => {
             write_line(&format!("✓ Selected memory region: 0x{:016X} ({} bytes, {:.2} MB)",
-                address, best_size, best_size as f64 / hobbyos_shared::constants::memory::BYTES_PER_MB));
+                address, best_size, best_size as f64 / theseus_shared::constants::memory::BYTES_PER_MB));
             Ok(address)
         }
         None => {

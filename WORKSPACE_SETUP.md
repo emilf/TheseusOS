@@ -1,13 +1,13 @@
-# HobbyOS Multi-Binary Workspace Setup
+# TheseusOS Multi-Binary Workspace Setup
 
 ## Overview
 
-Successfully implemented **Option 1: Multi-Binary Project with Shared Library** for the HobbyOS project. This setup allows both the bootloader and kernel to share common data structures and constants while maintaining clean separation of concerns.
+Successfully implemented **Option 1: Multi-Binary Project with Shared Library** for the TheseusOS project. This setup allows both the bootloader and kernel to share common data structures and constants while maintaining clean separation of concerns.
 
 ## Project Structure
 
 ```
-hobbyos/
+TheseusOS/
 ├── Cargo.toml                 # Workspace root with shared dependencies
 ├── .cargo/
 │   └── config.toml           # Kernel target configuration
@@ -57,20 +57,20 @@ hobbyos/
 - **Profile Settings**: Panic handling configured for no_std compatibility
 - **Dependency Management**: Centralized dependency versions across all crates
 
-### 2. **Shared Library (`hobbyos-shared`)**
+### 2. **Shared Library (`TheseusOS-shared`)**
 - **No-Std Compatible**: Works in both UEFI and kernel environments
 - **Handoff Structure**: `#[repr(C)]` stable layout for kernel communication
 - **Constants**: Centralized I/O ports, memory limits, and magic numbers
 - **Clean Separation**: No UEFI-specific code in shared library
 
-### 3. **Bootloader (`hobbyos-bootloader`)**
+### 3. **Bootloader (`TheseusOS-bootloader`)**
 - **UEFI Target**: `x86_64-unknown-uefi` with full UEFI functionality
 - **System Information Collection**: Memory map, ACPI, hardware inventory
 - **Output Drivers**: UEFI Serial, Raw Serial, QEMU Debug with automatic selection
 - **Handoff Preparation**: Populates shared structure for kernel consumption
 - **Panic Handling**: QEMU debug output on panic with graceful exit
 
-### 4. **Kernel (`hobbyos-kernel`)**
+### 4. **Kernel (`TheseusOS-kernel`)**
 - **Bare Metal Target**: `x86_64-unknown-none` for kernel development
 - **Custom Linker Script**: `linker.ld` for proper kernel memory layout
 - **Global Allocator**: Placeholder allocator (ready for proper memory management)
@@ -88,13 +88,13 @@ hobbyos/
 ### Individual Builds
 ```bash
 # Build shared library
-cargo build --package hobbyos-shared
+cargo build --package TheseusOS-shared
 
 # Build bootloader (UEFI)
-cargo build --package hobbyos-bootloader --target x86_64-unknown-uefi
+cargo build --package TheseusOS-bootloader --target x86_64-unknown-uefi
 
 # Build kernel (bare metal)
-cargo build --package hobbyos-kernel --target x86_64-unknown-none
+cargo build --package TheseusOS-kernel --target x86_64-unknown-none
 
 # Build everything
 cargo build

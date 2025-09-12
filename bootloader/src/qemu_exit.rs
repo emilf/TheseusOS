@@ -3,7 +3,7 @@
 //! Provides functions for exiting QEMU with proper debug output.
 //! This is separate from the driver system to ensure it works even during panics.
 
-use hobbyos_shared::constants::{io_ports, exit_codes};
+use theseus_shared::constants::{io_ports, exit_codes};
 
 /// Exit QEMU with a message and exit code
 /// 

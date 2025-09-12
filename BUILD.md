@@ -1,4 +1,4 @@
-# HobbyOS Build System
+# TheseusOS Build System
 
 ## Quick Start
 

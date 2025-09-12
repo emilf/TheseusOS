@@ -112,7 +112,7 @@ fn efi_main() -> Status {
     // Initialize the global output driver
     OutputDriver::init_global();
     
-    write_line("=== HobbyOS UEFI Loader Starting ===");
+    write_line("=== TheseusOS UEFI Loader Starting ===");
     write_line(&format!("Output driver initialized: {}", drivers::manager::current_driver_name()));
 
     // Test panic handler (uncomment to test)
