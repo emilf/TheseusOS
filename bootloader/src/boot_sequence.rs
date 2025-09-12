@@ -310,7 +310,7 @@ pub fn prepare_boot_services_exit(
         // Load the kernel binary BEFORE exiting boot services
         // (we need UEFI file system protocols to read the kernel file)
         output_driver.write_line("About to call load_kernel_binary...");
-        match load_kernel_binary(mmap, output_driver) {
+        match crate::kernel_loader::load_kernel_binary(mmap, output_driver) {
             Ok((kernel_physical_base, kernel_entry_point)) => {
                 // Update the handoff structure with the actual kernel information
                 unsafe {
@@ -448,56 +448,6 @@ fn find_free_memory_region(
 /// 
 /// * `Ok((physical_address, entry_point))` - Physical address and entry point where kernel was loaded
 /// * `Err(status)` - Error loading kernel
-fn load_kernel_binary(
-    memory_map: &uefi::mem::memory_map::MemoryMapOwned,
-    output_driver: &mut OutputDriver,
-) -> Result<(u64, u64), uefi::Status> {
-    use crate::kernel_loader::*;
-    
-    output_driver.write_line("=== Loading Kernel Binary ===");
-    
-    // Find and open the kernel file
-    output_driver.write_line("Starting kernel loading process...");
-    let mut kernel_file = find_kernel_file(output_driver)?;
-    output_driver.write_line("✓ Kernel file found");
-    
-    // Get kernel file information
-    let file_size = get_kernel_file_info(&mut kernel_file, output_driver)?;
-    output_driver.write_line("✓ Kernel file info obtained");
-    
-    // Read the kernel binary from file
-    let kernel_buffer = read_kernel_binary(&mut kernel_file, file_size, output_driver)?;
-    output_driver.write_line("✓ Kernel binary read");
-    
-    // Analyze the kernel binary
-    let mut kernel_info = analyze_kernel_binary(&kernel_buffer, output_driver)?;
-    
-    // Find a suitable free memory region for the kernel
-    output_driver.write_line("Allocating memory for kernel...");
-    let kernel_physical_base = match find_free_memory_region(memory_map, kernel_info.total_memory_size, output_driver) {
-        Some(address) => {
-            output_driver.write_line(&format!("✓ Memory allocated at 0x{:016X}", address));
-            address
-        }
-        None => {
-            output_driver.write_line("✗ Cannot find suitable memory region for kernel");
-            return Err(uefi::Status::OUT_OF_RESOURCES);
-        }
-    };
-    
-    // Load kernel sections into allocated memory
-    let actual_physical_base = load_kernel_sections(&kernel_buffer, &mut kernel_info, output_driver)?;
-    
-    // Calculate the actual entry point (physical address)
-    let entry_point_physical = actual_physical_base + (kernel_info.entry_point - kernel_info.base_virtual_address);
-    
-    output_driver.write_line("✓ Kernel binary loaded successfully");
-    output_driver.write_line(&format!("  Physical base: 0x{:016X}", actual_physical_base));
-    output_driver.write_line(&format!("  Entry point (physical): 0x{:016X}", entry_point_physical));
-    output_driver.write_line(&format!("  Entry point (virtual): 0x{:016X}", kernel_info.entry_point));
-    
-    Ok((actual_physical_base, entry_point_physical))
-}
 
 /// Jump to the kernel entry point
 /// 
