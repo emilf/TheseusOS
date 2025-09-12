@@ -2,7 +2,6 @@
 //! 
 //! Manages different output drivers and automatically selects the best available one.
 
-use uefi::Handle;
 
 /// Trait that all output drivers must implement
 pub trait Driver {
@@ -37,9 +36,9 @@ pub enum DriverType {
 
 impl OutputDriver {
     /// Create a new output driver manager
-    pub fn new(serial_handle: Option<Handle>) -> Self {
+    pub fn new() -> Self {
         Self {
-            uefi_serial: crate::drivers::uefi_serial::UefiSerialDriver::new(serial_handle),
+            uefi_serial: crate::drivers::uefi_serial::UefiSerialDriver::new(),
             raw_serial: crate::drivers::raw_serial::RawSerialDriver::new(),
             qemu_debug: crate::drivers::qemu_debug::QemuDebugDriver::new(),
             current_driver: Self::select_best_driver(),

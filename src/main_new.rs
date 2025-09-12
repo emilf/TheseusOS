@@ -3,7 +3,13 @@
 
 extern crate alloc;
 
-use uefi::prelude::*;
+use uefi::{prelude::*, Identify};
+use uefi::proto::console::serial::Serial;
+use uefi::proto::console::gop::GraphicsOutput;
+use uefi::proto::console::gop::PixelFormat as UefiPixelFormat;
+use uefi::boot::{SearchType, MemoryType};
+use core::arch::asm;
+use uefi::mem::memory_map::MemoryMap;
 // alloc::format imported in display module
 
 // Configuration Options
@@ -24,6 +30,7 @@ mod drivers;
 mod boot_sequence;
 
 use boot_sequence::*;
+use drivers::OutputDriver;
 use uefi::Status;
 
 /// Main UEFI entry point
@@ -43,10 +50,8 @@ use uefi::Status;
 #[entry]
 fn efi_main() -> Status {
     // Initialize UEFI environment and output driver
-    let mut output_driver = match initialize_uefi_environment() {
-        Ok(driver) => driver,
-        Err(_) => return Status::ABORTED,
-    };
+    let (mut output_driver, _serial_handle) = initialize_uefi_environment()
+        .map_err(|_| Status::ABORTED)?;
 
     // Collect all system information
     collect_graphics_info(&mut output_driver);

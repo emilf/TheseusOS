@@ -2,7 +2,9 @@
 //! 
 //! Uses the UEFI Serial I/O protocol for output. Only works during boot services.
 
-use uefi::Handle;
+use uefi::{Handle, Identify};
+use uefi::proto::console::serial::Serial;
+use uefi::boot::SearchType;
 use crate::serial::serial_write_line;
 
 /// UEFI Serial driver implementation
@@ -12,7 +14,14 @@ pub struct UefiSerialDriver {
 
 impl UefiSerialDriver {
     /// Create a new UEFI serial driver
-    pub fn new(handle: Option<Handle>) -> Self {
+    /// This will automatically locate and initialize the serial protocol
+    pub fn new() -> Self {
+        let handle = uefi::boot::locate_handle_buffer(
+            SearchType::ByProtocol(&Serial::GUID)
+        )
+        .ok()
+        .and_then(|buf| buf.first().copied());
+        
         Self { handle }
     }
     
