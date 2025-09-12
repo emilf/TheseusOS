@@ -386,6 +386,13 @@ unsafe fn jump_to_kernel(output_driver: &mut OutputDriver) {
     // Finalize the handoff structure
     HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
     
+    // Set virtual memory information
+    HANDOFF.kernel_virtual_base = 0xffffffff80000000;  // Kernel virtual base
+    HANDOFF.kernel_physical_base = 0x100000;           // Physical load address
+    HANDOFF.kernel_virtual_entry = 0xffffffff80000000; // Virtual entry point
+    HANDOFF.page_table_root = 0;                       // No paging setup yet
+    HANDOFF.virtual_memory_enabled = 0;                // Identity mapped for now
+    
     // Log the handoff information
     output_driver.write_line(&format!("Handoff structure size: {} bytes", HANDOFF.size));
     output_driver.write_line(&format!("Memory map entries: {}", HANDOFF.memory_map_entries));
@@ -395,7 +402,9 @@ unsafe fn jump_to_kernel(output_driver: &mut OutputDriver) {
         output_driver.write_line(&format!("ACPI RSDP: 0x{:016X}", HANDOFF.acpi_rsdp));
     }
     
-    output_driver.write_line("Kernel entry point: 0x100000");
+    output_driver.write_line(&format!("Kernel virtual base: 0x{:016X}", HANDOFF.kernel_virtual_base));
+    output_driver.write_line(&format!("Kernel physical base: 0x{:016X}", HANDOFF.kernel_physical_base));
+    output_driver.write_line(&format!("Virtual memory enabled: {}", HANDOFF.virtual_memory_enabled));
     output_driver.write_line("Jumping to kernel...");
     
     // Load the kernel binary into memory

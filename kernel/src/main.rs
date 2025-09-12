@@ -109,19 +109,28 @@ fn display_handoff_info() {
         kernel_write_line(&alloc::format!("│ Memory Map Buffer: 0x{:016X}", HANDOFF.memory_map_buffer_ptr));
         
         if HANDOFF.acpi_rsdp != 0 {
-            kernel_write_line(&alloc::format!("│ ACPI RSDP: 0x{:016X}", HANDOFF.acpi_rsdp));
-        } else {
-            kernel_write_line("│ ACPI RSDP: Not available");
-        }
-        
-        if HANDOFF.gop_fb_base != 0 {
-            kernel_write_line(&alloc::format!("│ Framebuffer: 0x{:016X} ({}x{})", 
-                HANDOFF.gop_fb_base, HANDOFF.gop_width, HANDOFF.gop_height));
-        } else {
-            kernel_write_line("│ Framebuffer: Not available");
-        }
-        
-        kernel_write_line(&alloc::format!("│ Hardware Devices: {}", HANDOFF.hardware_device_count));
+               kernel_write_line(&alloc::format!("│ ACPI RSDP: 0x{:016X}", HANDOFF.acpi_rsdp));
+               } else {
+                   kernel_write_line("│ ACPI RSDP: Not available");
+               }
+               
+               if HANDOFF.gop_fb_base != 0 {
+                   kernel_write_line(&alloc::format!("│ Framebuffer: 0x{:016X} ({}x{})", 
+                       HANDOFF.gop_fb_base, HANDOFF.gop_width, HANDOFF.gop_height));
+               } else {
+                   kernel_write_line("│ Framebuffer: Not available");
+               }
+               
+               kernel_write_line(&alloc::format!("│ Hardware Devices: {}", HANDOFF.hardware_device_count));
+               
+               // Virtual memory information
+               kernel_write_line("│");
+               kernel_write_line("│ Virtual Memory Information:");
+               kernel_write_line(&alloc::format!("│   Virtual Base: 0x{:016X}", HANDOFF.kernel_virtual_base));
+               kernel_write_line(&alloc::format!("│   Physical Base: 0x{:016X}", HANDOFF.kernel_physical_base));
+               kernel_write_line(&alloc::format!("│   Virtual Entry: 0x{:016X}", HANDOFF.kernel_virtual_entry));
+               kernel_write_line(&alloc::format!("│   Page Table Root: 0x{:016X}", HANDOFF.page_table_root));
+               kernel_write_line(&alloc::format!("│   Virtual Memory: {}", if HANDOFF.virtual_memory_enabled != 0 { "Enabled" } else { "Identity Mapped" }));
         
         kernel_write_line("└─────────────────────────────────────────────────────────┘");
         kernel_write_line("");

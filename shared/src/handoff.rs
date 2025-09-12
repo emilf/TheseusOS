@@ -76,6 +76,20 @@ pub struct Handoff {
     pub hardware_inventory_ptr: u64,
     /// Hardware inventory data size in bytes
     pub hardware_inventory_size: u64,
+    
+    // Virtual Memory Information
+    /// Kernel virtual base address (where kernel expects to be mapped)
+    pub kernel_virtual_base: u64,
+    /// Kernel physical load address (where kernel is actually loaded)
+    pub kernel_physical_base: u64,
+    /// Kernel virtual entry point address
+    pub kernel_virtual_entry: u64,
+    /// Page table root address (CR3 value for kernel)
+    pub page_table_root: u64,
+    /// Whether virtual memory is enabled (1) or identity mapped (0)
+    pub virtual_memory_enabled: u32,
+    /// Reserved for future virtual memory extensions
+    pub _reserved_virtual: u32,
 }
 
 /// Static storage for handoff data
@@ -136,4 +150,12 @@ pub static mut HANDOFF: Handoff = Handoff {
     hardware_device_count: 0,
     hardware_inventory_ptr: 0,
     hardware_inventory_size: 0,
+    
+    // Virtual memory fields
+    kernel_virtual_base: 0,
+    kernel_physical_base: 0,
+    kernel_virtual_entry: 0,
+    page_table_root: 0,
+    virtual_memory_enabled: 0,
+    _reserved_virtual: 0,
 };
