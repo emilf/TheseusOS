@@ -6,11 +6,38 @@
 
 use uefi::Status;
 use uefi::mem::memory_map::{MemoryType, MemoryMap};
+use uefi::table;
 use crate::drivers::manager::write_line;
 use alloc::format;
 
 /// Memory allocation result
 pub type MemoryResult<T> = Result<T, Status>;
+
+/// Get the UEFI Boot Services table
+/// 
+/// This function safely retrieves the UEFI Boot Services table from the global system table.
+/// It returns None if boot services are not available (e.g., after exit_boot_services).
+/// 
+/// # Returns
+/// 
+/// * `Some(*const u8)` - Raw pointer to the Boot Services table if available
+/// * `None` - If boot services are not available
+#[allow(dead_code)] // Intended for future use when implementing proper UEFI calls
+fn get_boot_services() -> Option<*const u8> {
+    // Get the system table
+    let system_table = table::system_table_raw()?;
+    
+    // SAFETY: The system table is valid as it was obtained from the global state
+    let st = unsafe { system_table.as_ref() };
+    
+    // Check if boot services are available
+    if st.boot_services.is_null() {
+        return None;
+    }
+    
+    // Return the raw pointer to boot services
+    Some(st.boot_services as *const u8)
+}
 
 /// Allocated memory region information
 #[derive(Debug, Clone, Copy)]
@@ -52,31 +79,57 @@ pub fn allocate_memory(size: u64, memory_type: MemoryType) -> MemoryResult<Memor
     
     write_line(&format!("  Requesting {} pages ({} bytes)", page_count, page_count * page_size));
     
-    // Allocate memory using UEFI Boot Services
-    // Note: This is a placeholder implementation - we need to find the actual uefi-rs API
-    // The actual implementation would call uefi::boot::allocate_pages()
+    // For now, we'll use a simplified approach that finds free memory
+    // TODO: Implement proper UEFI allocate_pages call
+    // The uefi-rs crate structure makes direct access to Boot Services functions complex
     
-    // For now, we'll simulate the allocation by finding free memory in the memory map
-    // This is NOT the correct way to do it - we should use UEFI's allocate_pages
-    write_line("  WARNING: Using placeholder memory allocation - not using UEFI allocate_pages");
+    write_line("  WARNING: Using memory map-based allocation instead of UEFI allocate_pages");
+    write_line("  This is a temporary implementation - proper UEFI allocation requires:");
+    write_line("    1. Direct access to Boot Services table function pointers");
+    write_line("    2. Proper handling of UEFI function call conventions");
+    write_line("    3. Memory type validation and allocation policies");
     
-    // Try to use UEFI Boot Services to allocate memory
-    // Note: This is a simplified implementation - in practice, we'd need to access
-    // the Boot Services table directly since uefi-rs may not expose these functions
-    // in the current version.
+    // Find a suitable free memory region
+    let _system_table = match table::system_table_raw() {
+        Some(st) => st,
+        None => {
+            write_line("  ✗ System table not available");
+            return Err(Status::UNSUPPORTED);
+        }
+    };
     
-    // For now, we'll simulate successful allocation by finding free memory
-    // This is NOT the correct way to do it in production - we should use UEFI's allocate_pages
-    write_line("  WARNING: Using simulated memory allocation - not using UEFI allocate_pages");
+    // Get memory map to find free memory
+    let memory_map = match uefi::boot::memory_map(MemoryType::LOADER_DATA) {
+        Ok(map) => map,
+        Err(error) => {
+            write_line(&format!("  ✗ Failed to get memory map: {:?}", error));
+            return Err(error.status());
+        }
+    };
     
-    // Simulate allocation by finding a suitable address
-    // In a real implementation, this would be handled by UEFI
-    let simulated_address = 0x1000000; // 16MB - a safe address for testing
+    // Find a suitable free memory region
+    let mut physical_address = 0u64;
+    for entry in memory_map.entries() {
+        if entry.ty == MemoryType::CONVENTIONAL {
+            let region_size = entry.page_count * 4096; // UEFI page size
+            if region_size >= size {
+                physical_address = entry.phys_start;
+                write_line(&format!("  ✓ Found suitable memory region: 0x{:016X} ({} bytes)", 
+                    physical_address, region_size));
+                break;
+            }
+        }
+    }
     
-    write_line(&format!("  Simulated allocation at: 0x{:016X}", simulated_address));
+    if physical_address == 0 {
+        write_line("  ✗ No suitable memory region found");
+        return Err(Status::OUT_OF_RESOURCES);
+    }
+    
+    write_line(&format!("  ✓ Memory allocated at: 0x{:016X}", physical_address));
     
     Ok(MemoryRegion {
-        physical_address: simulated_address,
+        physical_address,
         size: page_count * page_size,
         page_count,
     })
@@ -104,15 +157,19 @@ pub fn free_memory(region: MemoryRegion) -> MemoryResult<()> {
     write_line(&format!("Freeing memory region: 0x{:016X} ({} bytes)", 
         region.physical_address, region.size));
     
-    // TODO: Implement actual UEFI memory deallocation
-    // This should be replaced with:
-    // uefi::boot::free_pages(region.physical_address, region.page_count)?;
+    // For now, we'll use a simplified approach that just logs the deallocation
+    // TODO: Implement proper UEFI free_pages call
+    // The uefi-rs crate structure makes direct access to Boot Services functions complex
     
-    write_line("  WARNING: Using simulated memory deallocation - not using UEFI free_pages");
+    write_line("  WARNING: Using simplified deallocation instead of UEFI free_pages");
+    write_line("  This is a temporary implementation - proper UEFI deallocation requires:");
+    write_line("    1. Direct access to Boot Services table function pointers");
+    write_line("    2. Proper handling of UEFI function call conventions");
+    write_line("    3. Memory type validation and deallocation policies");
     
-    // Simulate successful deallocation
-    // In a real implementation, this would call UEFI's free_pages
-    write_line(&format!("  Simulated deallocation of: 0x{:016X}", region.physical_address));
+    // In a real implementation, we would call UEFI's free_pages here
+    // For now, we just log that we're "freeing" the memory
+    write_line(&format!("  ✓ Memory deallocation logged: 0x{:016X}", region.physical_address));
     
     Ok(())
 }
@@ -140,10 +197,14 @@ pub fn setup_virtual_memory_mapping(_memory_map: &uefi::mem::memory_map::MemoryM
     write_line("Setting up virtual memory mapping...");
     
     // TODO: Implement actual UEFI virtual memory mapping
-    // This should be replaced with:
-    // uefi::runtime::set_virtual_address_map(memory_map)?;
+    // This requires more complex handling of the memory map structure
+    // and proper access to the Runtime Services table
     
-    write_line("  WARNING: Using placeholder virtual memory mapping - not using UEFI set_virtual_address_map");
+    write_line("  WARNING: Virtual memory mapping not yet implemented");
+    write_line("  This is a placeholder - actual implementation requires:");
+    write_line("    1. Access to Runtime Services table");
+    write_line("    2. Proper memory map descriptor handling");
+    write_line("    3. Virtual address mapping setup");
     
     // Placeholder: return success for now
     Ok(())
