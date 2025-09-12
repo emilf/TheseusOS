@@ -359,6 +359,7 @@ pub fn prepare_boot_services_exit(
 /// 
 /// * `Some(address)` - Physical address of suitable free memory region
 /// * `None` - No suitable free memory region found
+#[allow(dead_code)] // Intended for future use
 fn find_free_memory_region(
     memory_map: &uefi::mem::memory_map::MemoryMapOwned,
     required_size: u64,
@@ -465,18 +466,26 @@ unsafe fn jump_to_kernel() {
     HANDOFF.page_table_root = 0;                       // No paging setup yet
     HANDOFF.virtual_memory_enabled = 0;                // Identity mapped for now
     
-    // Log the handoff information
-    write_line(&format!("Handoff structure size: {} bytes", HANDOFF.size));
-    write_line(&format!("Memory map entries: {}", HANDOFF.memory_map_entries));
-    write_line(&format!("Memory map size: {} bytes", HANDOFF.memory_map_size));
+    // Log the handoff information (copy values to avoid shared references to mutable static)
+    let handoff_size = HANDOFF.size;
+    let memory_map_entries = HANDOFF.memory_map_entries;
+    let memory_map_size = HANDOFF.memory_map_size;
+    let acpi_rsdp = HANDOFF.acpi_rsdp;
+    let kernel_virtual_base = HANDOFF.kernel_virtual_base;
+    let kernel_physical_base = HANDOFF.kernel_physical_base;
+    let virtual_memory_enabled = HANDOFF.virtual_memory_enabled;
     
-    if HANDOFF.acpi_rsdp != 0 {
-        write_line(&format!("ACPI RSDP: 0x{:016X}", HANDOFF.acpi_rsdp));
+    write_line(&format!("Handoff structure size: {} bytes", handoff_size));
+    write_line(&format!("Memory map entries: {}", memory_map_entries));
+    write_line(&format!("Memory map size: {} bytes", memory_map_size));
+    
+    if acpi_rsdp != 0 {
+        write_line(&format!("ACPI RSDP: 0x{:016X}", acpi_rsdp));
     }
     
-    write_line(&format!("Kernel virtual base: 0x{:016X}", HANDOFF.kernel_virtual_base));
-    write_line(&format!("Kernel physical base: 0x{:016X}", HANDOFF.kernel_physical_base));
-    write_line(&format!("Virtual memory enabled: {}", HANDOFF.virtual_memory_enabled));
+    write_line(&format!("Kernel virtual base: 0x{:016X}", kernel_virtual_base));
+    write_line(&format!("Kernel physical base: 0x{:016X}", kernel_physical_base));
+    write_line(&format!("Virtual memory enabled: {}", virtual_memory_enabled));
     write_line("Jumping to kernel...");
     
     // Get the kernel information from the handoff structure

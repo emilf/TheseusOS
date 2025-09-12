@@ -55,6 +55,7 @@ pub unsafe fn exit_qemu_success(message: &str) {
 }
 
 /// Exit QEMU with error and a message
+#[allow(dead_code)] // Intended for future use
 pub unsafe fn exit_qemu_error(message: &str) {
     exit_qemu_with_message(message, exit_codes::QEMU_ERROR);
 }
@@ -63,6 +64,7 @@ pub unsafe fn exit_qemu_error(message: &str) {
 /// 
 /// This can be called from a custom panic handler to provide useful
 /// debugging information when the application panics.
+#[allow(dead_code)] // Intended for future use
 pub unsafe fn exit_qemu_on_panic(panic_info: &core::panic::PanicInfo) {
     // Create a simple panic message
     let message = alloc::format!("PANIC: {:?}", panic_info.message());

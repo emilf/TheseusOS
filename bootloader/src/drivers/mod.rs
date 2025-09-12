@@ -8,4 +8,4 @@ pub mod raw_serial;
 pub mod qemu_debug;
 pub mod manager;
 
-pub use manager::OutputDriver;
+// pub use manager::OutputDriver; // Removed unused import

@@ -30,6 +30,7 @@ pub struct KernelSection {
     /// File offset where section data starts
     pub file_offset: u64,
     /// Section flags (readable, writable, executable)
+    #[allow(dead_code)] // Intended for future use
     pub flags: u32,
 }
 

@@ -13,8 +13,4 @@ uefi = { workspace = true }
 log = { workspace = true }
 acpi = { workspace = true }
 
-[profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
-strip = true
+# Release profile defined in workspace root

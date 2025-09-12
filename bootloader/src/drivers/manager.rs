@@ -162,6 +162,7 @@ pub fn current_driver_name() -> &'static str {
 }
 
 /// Update the global driver (e.g., after boot services exit)
+#[allow(dead_code)] // Intended for future use
 pub fn update_driver() {
     let driver_ptr = GLOBAL_OUTPUT_DRIVER.load(Ordering::SeqCst);
     if driver_ptr.is_null() {
