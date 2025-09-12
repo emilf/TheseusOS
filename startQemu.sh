@@ -70,7 +70,7 @@ if [[ "$TIMEOUT" -gt 0 ]]; then
   echo "Running QEMU with ${TIMEOUT}s timeout..."
   timeout "$TIMEOUT"s bash -c "$QEMU_CMD"
   EXIT_CODE=$?
-  if [[ $EXIT_CODE -eq 3 ]]; then
+  if [[ $EXIT_CODE -eq 1 ]]; then
     echo "✓ QEMU exited gracefully from guest"
   elif [[ $EXIT_CODE -eq 124 ]]; then
     echo "⚠ QEMU timed out after ${TIMEOUT}s"
@@ -81,11 +81,9 @@ else
   echo "Running QEMU (no timeout)..."
   eval "$QEMU_CMD"
   EXIT_CODE=$?
-  if [[ $EXIT_CODE -eq 3 ]]; then
+  if [[ $EXIT_CODE -eq 1 ]]; then
     echo "✓ QEMU exited gracefully from guest"
   fi
 fi
 
 popd >/dev/null
-
-
