@@ -35,14 +35,14 @@ $(EFI_OUTPUT): $(EFI_BIN) $(KERNEL_BIN)
 	@mkdir -p $(EFI_DIR)
 	@cp $(EFI_BIN) $(EFI_OUTPUT)
 	@cp $(KERNEL_BIN) $(EFI_DIR)/kernel.efi
-	@# Create a proper EFI System Partition using GPT
-	@echo "Creating proper EFI System Partition disk image..."
+	@# Create a proper GPT disk image with EFI System Partition
+	@echo "Creating GPT disk image with EFI System Partition..."
 	@dd if=/dev/zero of=$(ESP_DIR)/disk.img bs=1M count=64 2>/dev/null
-	@# Create GPT partition table and ESP partition
-	@parted -s $(ESP_DIR)/disk.img mklabel gpt 2>/dev/null
-	@parted -s $(ESP_DIR)/disk.img mkpart ESP fat32 1MiB 100% 2>/dev/null
-	@parted -s $(ESP_DIR)/disk.img set 1 esp on 2>/dev/null
-	@# Create FAT32 filesystem on the partition
+	@# Create GPT partition table and ESP partition using sgdisk
+	@sgdisk --clear $(ESP_DIR)/disk.img 2>/dev/null || true
+	@sgdisk --new=1:1M:64M $(ESP_DIR)/disk.img 2>/dev/null || true
+	@sgdisk --typecode=1:C12A7328-F81F-11D2-BA4B-00A0C93EC93B $(ESP_DIR)/disk.img 2>/dev/null || true
+	@# Format the partition as FAT32
 	@mkfs.fat -F32 -n ESP $(ESP_DIR)/disk.img 2>/dev/null
 	@# Copy files using mcopy (part of mtools, no mounting required)
 	@# Create directory structure first
@@ -51,7 +51,7 @@ $(EFI_OUTPUT): $(EFI_BIN) $(KERNEL_BIN)
 	@# Copy the bootloader and kernel
 	@mcopy -i $(ESP_DIR)/disk.img -s $(EFI_BIN) ::EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
 	@mcopy -i $(ESP_DIR)/disk.img -s $(KERNEL_BIN) ::kernel.efi 2>/dev/null || true
-	@echo "✓ Created proper GPT disk image with EFI System Partition"
+	@echo "✓ Created GPT disk image with EFI System Partition"
 
 # Automatically copy BIOS files if needed
 bios: $(OVMF_CODE) $(OVMF_VARS_ORIG) $(OVMF_VARS_RW)

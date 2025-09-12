@@ -34,16 +34,16 @@ Collecting memory map information...
 │   8: BOOT_SERVICES_DATA   | 0x0000000000900000 |     3712 pages |   15204352 bytes | 0x0000000f
 │   9: CONVENTIONAL         | 0x0000000001780000 |    42989 pages |  176082944 bytes | 0x0000000f
 │  10: BOOT_SERVICES_DATA   | 0x000000000bf6d000 |       32 pages |     131072 bytes | 0x0000000f
-│  11: CONVENTIONAL         | 0x000000000bf8d000 |     8949 pages |   36655104 bytes | 0x0000000f
-│  12: LOADER_CODE          | 0x000000000e282000 |       24 pages |      98304 bytes | 0x0000000f
-│  13: CONVENTIONAL         | 0x000000000e29a000 |       21 pages |      86016 bytes | 0x0000000f
+│  11: CONVENTIONAL         | 0x000000000bf8d000 |     8948 pages |   36651008 bytes | 0x0000000f
+│  12: LOADER_CODE          | 0x000000000e281000 |       24 pages |      98304 bytes | 0x0000000f
+│  13: CONVENTIONAL         | 0x000000000e299000 |       22 pages |      90112 bytes | 0x0000000f
 │  14: BOOT_SERVICES_DATA   | 0x000000000e2af000 |     1634 pages |    6692864 bytes | 0x0000000f
 │  15: BOOT_SERVICES_CODE   | 0x000000000e911000 |      319 pages |    1306624 bytes | 0x0000000f
 │  16: CONVENTIONAL         | 0x000000000ea50000 |       15 pages |      61440 bytes | 0x0000000f
-│  17: BOOT_SERVICES_DATA   | 0x000000000ea5f000 |       66 pages |     270336 bytes | 0x0000000f
-│  18: CONVENTIONAL         | 0x000000000eaa1000 |        2 pages |       8192 bytes | 0x0000000f
-│  19: BOOT_SERVICES_DATA   | 0x000000000eaa3000 |        6 pages |      24576 bytes | 0x0000000f
-│  20: CONVENTIONAL         | 0x000000000eaa9000 |        1 pages |       4096 bytes | 0x0000000f
+│  17: BOOT_SERVICES_DATA   | 0x000000000ea5f000 |       79 pages |     323584 bytes | 0x0000000f
+│  18: CONVENTIONAL         | 0x000000000eaae000 |        2 pages |       8192 bytes | 0x0000000f
+│  19: BOOT_SERVICES_DATA   | 0x000000000eab0000 |        6 pages |      24576 bytes | 0x0000000f
+│  20: CONVENTIONAL         | 0x000000000eab6000 |        1 pages |       4096 bytes | 0x0000000f
 │ ... | (truncated)          | ...              | ...     | ...          | ...        │
 └─────────────────────────────────────────────────────────────────────────────────────────┘
 
@@ -155,7 +155,7 @@ Found 22 device path handles
 ├─────────────────────────────────────────────────────────┤
 │ Total Devices Found: 22                              │
 │ Inventory Size: 704 bytes (0.69 KB)              │
-│ Devices Pointer: 0x000000000eaa9118                    │
+│ Devices Pointer: 0x000000000eab6118                    │
 ├─────────────────────────────────────────────────────────┤
 │ Device Type Summary:                                  │
 │   Device Path Handles: Found                         │
@@ -166,13 +166,13 @@ Found 22 device path handles
 Getting loaded image device path...
 Getting loaded image device path...
 ✓ Loaded image device path found
-  Path pointer: 0x000000000eaa8f18
+  Path pointer: 0x000000000eab5f18
 ✓ Loaded image device path collected
 
 ┌─────────────────────────────────────────────────────────┐
 │                Boot Device Path Information             │
 ├─────────────────────────────────────────────────────────┤
-│ Device Path Pointer: 0x000000000eaa8f18                    │
+│ Device Path Pointer: 0x000000000eab5f18                    │
 │ Device Path Size: 0 bytes                        │
 │ Status: ✓ Boot device path information collected     │
 └─────────────────────────────────────────────────────────┘
@@ -181,7 +181,7 @@ Finalizing handoff structure...
 ✓ Handoff structure size: 208 bytes
 ✓ All system information collected and stored
 Exiting boot services...
-Memory map key: MemoryMapKey(1474)
+Memory map key: MemoryMapKey(1486)
 ✓ Memory map ready for kernel handoff
 Exiting boot services...
 About to call load_kernel_binary...
@@ -210,19 +210,56 @@ Looking for kernel at: \kernel.efi
 ✓ Kernel file found
 Getting kernel file information...
 ✓ Entered get_kernel_file_info
-✓ Got file size constant
-Kernel file size: 1048576 bytes (1.00 MB)
+✓ Got actual file size from FileInfo
+Kernel file size: 16160 bytes (0.02 MB)
 ✓ Kernel file size acceptable
 ✓ Kernel file info obtained
 Reading kernel binary from file...
 ✓ Entered read_kernel_binary
 ✓ Allocated kernel buffer
 ✓ Read kernel binary from file
-✗ Incomplete read: expected 1048576 bytes, got 16160 bytes
-✗ Failed to load kernel: INVALID_PARAMETER
-Cannot proceed with kernel handoff
-=== UEFI Loader Complete ===
-All system information collected and stored
-Ready for kernel handoff
-Exiting QEMU...
-UEFI Loader completed successfully
+✓ Kernel binary read successfully
+✓ Kernel binary read
+Analyzing kernel binary...
+✓ Valid ELF magic number found
+✓ Kernel analysis complete
+  Entry point: 0xFFFFFFFF80000000
+  Total memory required: 131072 bytes (0.12 MB)
+  Sections: 4
+    .text: 0xFFFFFFFF80000000 - 0xFFFFFFFF8000FFFF (65536 bytes)
+    .rodata: 0xFFFFFFFF80010000 - 0xFFFFFFFF80017FFF (32768 bytes)
+    .data: 0xFFFFFFFF80018000 - 0xFFFFFFFF8001BFFF (16384 bytes)
+    .bss: 0xFFFFFFFF8001C000 - 0xFFFFFFFF8001FFFF (16384 bytes)
+Allocating memory for kernel...
+Searching for free memory region (131072 bytes required)...
+  Free region: 0x0000000000000000 - 0x000000000009FFFF (655360 bytes)
+    ✓ Suitable region found at 0x0000000000000000 (655360 bytes)
+  Free region: 0x0000000000100000 - 0x00000000007FFFFF (7340032 bytes)
+  Free region: 0x0000000000808000 - 0x000000000080AFFF (12288 bytes)
+  Free region: 0x000000000080C000 - 0x0000000000810FFF (20480 bytes)
+  Free region: 0x0000000001780000 - 0x000000000BF6CFFF (176082944 bytes)
+  Free region: 0x000000000BF8D000 - 0x000000000E280FFF (36651008 bytes)
+  Free region: 0x000000000E299000 - 0x000000000E2AEFFF (90112 bytes)
+  Free region: 0x000000000EA50000 - 0x000000000EA5EFFF (61440 bytes)
+  Free region: 0x000000000EAAE000 - 0x000000000EAAFFFF (8192 bytes)
+  Free region: 0x000000000EAB6000 - 0x000000000EAB6FFF (4096 bytes)
+  Free region: 0x000000000FE00000 - 0x000000000FE6DFFF (450560 bytes)
+    ✓ Better region found at 0x000000000FE00000 (450560 bytes)
+Total free memory available: 221376512 bytes (211.12 MB)
+✓ Selected memory region: 0x000000000FE00000 (450560 bytes, 0.43 MB)
+✓ Memory allocated at 0x000000000FE00000
+Loading kernel sections into memory...
+Loading kernel at physical address: 0x0000000000100000
+  .text: 0xFFFFFFFF80000000 -> 0x0000000000100000
+  .rodata: 0xFFFFFFFF80010000 -> 0x0000000000110000
+  .data: 0xFFFFFFFF80018000 -> 0x0000000000118000
+  .bss: 0xFFFFFFFF8001C000 -> 0x000000000011C000
+    Zeroing 16384 bytes for BSS section
+✓ Kernel sections loaded successfully
+✓ Kernel binary loaded successfully
+  Physical base: 0x0000000000100000
+  Entry point (physical): 0x0000000000100000
+  Entry point (virtual): 0xFFFFFFFF80000000
+✓ Kernel loaded successfully, exiting boot services...
+✓ Successfully exited boot services
+BOOTLOADER PANIC: Panic occurred

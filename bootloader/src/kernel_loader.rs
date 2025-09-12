@@ -7,7 +7,7 @@ use uefi::prelude::*;
 use uefi::boot::SearchType;
 use uefi::boot::get_image_file_system;
 use uefi::proto::media::fs::SimpleFileSystem;
-use uefi::proto::media::file::{File, FileMode, FileAttribute, RegularFile};
+use uefi::proto::media::file::{File, FileMode, FileAttribute, RegularFile, FileInfo};
 use uefi::Status;
 use alloc::vec::Vec;
 use alloc::format;
@@ -268,11 +268,17 @@ pub fn get_kernel_file_info(file: &mut RegularFile, output_driver: &mut OutputDr
     output_driver.write_line("Getting kernel file information...");
     output_driver.write_line("✓ Entered get_kernel_file_info");
     
-    // Get file information to determine file size
-    // For now, we'll use a placeholder since the FileInfo API is complex
-    // In a real implementation, we would query the actual file size
-    let file_size = hobbyos_shared::constants::memory::DEFAULT_KERNEL_SIZE;
-    output_driver.write_line("✓ Got file size constant");
+    // Get actual file information using UEFI FileInfo API
+    // We need to provide a buffer for the FileInfo structure
+    let mut info_buffer = vec![0u8; 1024]; // Allocate buffer for FileInfo
+    let file_info = file.get_info::<FileInfo>(&mut info_buffer)
+        .map_err(|e| {
+            output_driver.write_line(&format!("✗ Failed to get file info: {:?}", e));
+            e.status()
+        })?;
+    
+    let file_size = file_info.file_size();
+    output_driver.write_line("✓ Got actual file size from FileInfo");
     output_driver.write_line(&format!("Kernel file size: {} bytes ({:.2} MB)", 
         file_size, file_size as f64 / hobbyos_shared::constants::memory::BYTES_PER_MB));
     
