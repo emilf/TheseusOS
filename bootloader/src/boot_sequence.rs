@@ -15,30 +15,23 @@ use crate::display::*;
 use crate::hardware::{collect_hardware_inventory, get_loaded_image_device_path, display_hardware_inventory};
 use crate::system_info::*;
 use crate::acpi::find_acpi_rsdp;
-use crate::drivers::OutputDriver;
+use crate::drivers::manager::write_line;
 use alloc::format;
 
 /// Initialize the UEFI environment and output driver
-pub fn initialize_uefi_environment() -> Result<OutputDriver, Status> {
+pub fn initialize_uefi_environment() -> Result<(), Status> {
     // Initialize UEFI logger
     uefi::helpers::init().unwrap();
-
-    // Initialize the output driver system
-    let mut output_driver = OutputDriver::new();
-
-    // Output startup message
-    output_driver.write_line("=== HobbyOS UEFI Loader Starting ===");
-    output_driver.write_line(&format!("Output driver initialized: {}", output_driver.current_driver_name()));
 
     // Set handoff size
     unsafe { HANDOFF.size = core::mem::size_of::<Handoff>() as u32; }
 
-    Ok(output_driver)
+    Ok(())
 }
 
 /// Collect graphics output protocol information
-pub fn collect_graphics_info(output_driver: &mut OutputDriver) -> bool {
-    output_driver.write_line("Collecting graphics information...");
+pub fn collect_graphics_info() -> bool {
+    write_line("Collecting graphics information...");
     
     let gop_info = match uefi::boot::locate_handle_buffer(
         SearchType::ByProtocol(&GraphicsOutput::GUID)
@@ -78,20 +71,20 @@ pub fn collect_graphics_info(output_driver: &mut OutputDriver) -> bool {
 
     // Report GOP status
     if let Some((w, h, pf, stride, fb_base, fb_size)) = gop_info {
-        output_driver.write_line("✓ Graphics Output Protocol (GOP) found and initialized");
-        display_gop_info(output_driver, w as u32, h as u32, pf, stride as u32, fb_base, fb_size as u64);
-        output_driver.write_line("✓ Framebuffer information collected and stored in handoff structure");
+        write_line("✓ Graphics Output Protocol (GOP) found and initialized");
+        display_gop_info(w as u32, h as u32, pf, stride as u32, fb_base, fb_size as u64);
+        write_line("✓ Framebuffer information collected and stored in handoff structure");
         true
     } else {
-        output_driver.write_line("✗ Graphics Output Protocol (GOP) not available");
-        output_driver.write_line("  No framebuffer information will be available to kernel");
+        write_line("✗ Graphics Output Protocol (GOP) not available");
+        write_line("  No framebuffer information will be available to kernel");
         false
     }
 }
 
 /// Collect memory map information
-pub fn collect_memory_map(output_driver: &mut OutputDriver) -> Option<uefi::mem::memory_map::MemoryMapOwned> {
-    output_driver.write_line("Collecting memory map information...");
+pub fn collect_memory_map() -> Option<uefi::mem::memory_map::MemoryMapOwned> {
+    write_line("Collecting memory map information...");
     
     match uefi::boot::memory_map(MemoryType::LOADER_DATA) {
         Ok(mmap) => {
@@ -112,65 +105,65 @@ pub fn collect_memory_map(output_driver: &mut OutputDriver) -> Option<uefi::mem:
             }
             
             // Display the actual memory map entries
-            display_memory_map_entries(output_driver, &mmap);
+            display_memory_map_entries(&mmap);
             
-            output_driver.write_line("✓ Memory map collected successfully");
+            write_line("✓ Memory map collected successfully");
             unsafe {
-                display_memory_map_info(output_driver, HANDOFF.memory_map_descriptor_size, HANDOFF.memory_map_descriptor_version, HANDOFF.memory_map_entries, HANDOFF.memory_map_size);
+                display_memory_map_info(HANDOFF.memory_map_descriptor_size, HANDOFF.memory_map_descriptor_version, HANDOFF.memory_map_entries, HANDOFF.memory_map_size);
             }
-            output_driver.write_line("✓ Memory map information stored in handoff structure");
+            write_line("✓ Memory map information stored in handoff structure");
             
             Some(mmap)
         }
         Err(_) => {
-            output_driver.write_line("✗ Failed to collect memory map");
+            write_line("✗ Failed to collect memory map");
             None
         }
     }
 }
 
 /// Collect ACPI information
-pub fn collect_acpi_info(output_driver: &mut OutputDriver) -> bool {
-    output_driver.write_line("Locating ACPI RSDP table...");
-    output_driver.write_line("  Debug: About to call find_acpi_rsdp");
-    let rsdp_address = find_acpi_rsdp(output_driver).unwrap_or(0);
-    output_driver.write_line("  Debug: find_acpi_rsdp returned");
+pub fn collect_acpi_info() -> bool {
+    write_line("Locating ACPI RSDP table...");
+    write_line("  Debug: About to call find_acpi_rsdp");
+    let rsdp_address = find_acpi_rsdp().unwrap_or(0);
+    write_line("  Debug: find_acpi_rsdp returned");
     unsafe { HANDOFF.acpi_rsdp = rsdp_address; }
     
     if rsdp_address != 0 {
-        output_driver.write_line("✓ ACPI RSDP table found");
-        display_acpi_info(output_driver, rsdp_address);
-        output_driver.write_line("✓ ACPI information stored in handoff structure");
+        write_line("✓ ACPI RSDP table found");
+        display_acpi_info(rsdp_address);
+        write_line("✓ ACPI information stored in handoff structure");
         true
     } else {
-        output_driver.write_line("✗ ACPI RSDP table not found");
-        display_acpi_info(output_driver, rsdp_address);
-        output_driver.write_line("  No ACPI support will be available to kernel");
+        write_line("✗ ACPI RSDP table not found");
+        display_acpi_info(rsdp_address);
+        write_line("  No ACPI support will be available to kernel");
         false
     }
 }
 
 /// Collect system information (device tree, firmware, boot time, etc.)
-pub fn collect_system_info(output_driver: &mut OutputDriver) {
+pub fn collect_system_info() {
     // Device Tree Information
-    output_driver.write_line("Collecting device tree information...");
+    write_line("Collecting device tree information...");
     match find_device_tree() {
         Some((dtb_ptr, dtb_size)) => {
             unsafe {
                 HANDOFF.device_tree_ptr = dtb_ptr;
                 HANDOFF.device_tree_size = dtb_size;
             }
-            output_driver.write_line("✓ Device tree information collected");
-            display_device_tree_info(output_driver, dtb_ptr, dtb_size);
+            write_line("✓ Device tree information collected");
+            display_device_tree_info(dtb_ptr, dtb_size);
         }
         None => {
-            output_driver.write_line("✗ Device tree information not available");
-            display_device_tree_info(output_driver, 0, 0);
+            write_line("✗ Device tree information not available");
+            display_device_tree_info(0, 0);
         }
     }
 
     // Firmware Information
-    output_driver.write_line("Collecting firmware information...");
+    write_line("Collecting firmware information...");
     match collect_firmware_info() {
         Some((vendor_ptr, vendor_len, revision)) => {
             unsafe {
@@ -178,51 +171,51 @@ pub fn collect_system_info(output_driver: &mut OutputDriver) {
                 HANDOFF.firmware_vendor_len = vendor_len;
                 HANDOFF.firmware_revision = revision;
             }
-            output_driver.write_line("✓ Firmware information collected");
-            display_firmware_info(output_driver, vendor_ptr, vendor_len, revision);
+            write_line("✓ Firmware information collected");
+            display_firmware_info(vendor_ptr, vendor_len, revision);
         }
         None => {
-            output_driver.write_line("✗ Firmware information not available");
-            display_firmware_info(output_driver, 0, 0, 0);
+            write_line("✗ Firmware information not available");
+            display_firmware_info(0, 0, 0);
         }
     }
 
     // Boot Time Information
-    output_driver.write_line("Collecting boot time information...");
+    write_line("Collecting boot time information...");
     match collect_boot_time_info() {
         Some((seconds, nanoseconds)) => {
             unsafe {
                 HANDOFF.boot_time_seconds = seconds;
                 HANDOFF.boot_time_nanoseconds = nanoseconds;
             }
-            output_driver.write_line("✓ Boot time information collected");
-            display_boot_time_info(output_driver, seconds, nanoseconds);
+            write_line("✓ Boot time information collected");
+            display_boot_time_info(seconds, nanoseconds);
         }
         None => {
-            output_driver.write_line("✗ Boot time information not available");
-            display_boot_time_info(output_driver, 0, 0);
+            write_line("✗ Boot time information not available");
+            display_boot_time_info(0, 0);
         }
     }
 
     // Boot Device Path Information
-    output_driver.write_line("Collecting boot device path information...");
+    write_line("Collecting boot device path information...");
     match collect_boot_device_path() {
         Some((device_path_ptr, device_path_size)) => {
             unsafe {
                 HANDOFF.boot_device_path_ptr = device_path_ptr;
                 HANDOFF.boot_device_path_size = device_path_size;
             }
-            output_driver.write_line("✓ Boot device path information collected");
-            display_boot_device_path_info(output_driver, device_path_ptr, device_path_size);
+            write_line("✓ Boot device path information collected");
+            display_boot_device_path_info(device_path_ptr, device_path_size);
         }
         None => {
-            output_driver.write_line("✗ Boot device path information not available");
-            display_boot_device_path_info(output_driver, 0, 0);
+            write_line("✗ Boot device path information not available");
+            display_boot_device_path_info(0, 0);
         }
     }
 
     // CPU Information
-    output_driver.write_line("Collecting CPU information...");
+    write_line("Collecting CPU information...");
     match collect_cpu_info() {
         Some((cpu_count, cpu_features, microcode_revision)) => {
             unsafe {
@@ -230,87 +223,86 @@ pub fn collect_system_info(output_driver: &mut OutputDriver) {
                 HANDOFF.cpu_features = cpu_features;
                 HANDOFF.microcode_revision = microcode_revision;
             }
-            output_driver.write_line("✓ CPU information collected");
-            display_cpu_info(output_driver, cpu_count, cpu_features, microcode_revision);
+            write_line("✓ CPU information collected");
+            display_cpu_info(cpu_count, cpu_features, microcode_revision);
         }
         None => {
-            output_driver.write_line("✗ CPU information not available");
-            display_cpu_info(output_driver, 0, 0, 0);
+            write_line("✗ CPU information not available");
+            display_cpu_info(0, 0, 0);
         }
     }
 }
 
 /// Collect hardware inventory
-pub fn collect_hardware_inventory_info(output_driver: &mut OutputDriver, verbose: bool) -> bool {
-    output_driver.write_line("Collecting hardware inventory...");
-    match collect_hardware_inventory(output_driver, verbose) {
+pub fn collect_hardware_inventory_info(verbose: bool) -> bool {
+    write_line("Collecting hardware inventory...");
+    match collect_hardware_inventory(verbose) {
         Some(inventory) => {
             unsafe {
                 HANDOFF.hardware_device_count = inventory.device_count;
                 HANDOFF.hardware_inventory_ptr = inventory.devices_ptr;
                 HANDOFF.hardware_inventory_size = inventory.total_size;
             }
-            output_driver.write_line("✓ Hardware inventory collected");
-            display_hardware_inventory(output_driver, &inventory);
+            write_line("✓ Hardware inventory collected");
+            display_hardware_inventory(&inventory);
             true
         }
         None => {
-            output_driver.write_line("✗ Hardware inventory collection failed");
+            write_line("✗ Hardware inventory collection failed");
             false
         }
     }
 }
 
 /// Get loaded image device path
-pub fn collect_loaded_image_path(output_driver: &mut OutputDriver) -> bool {
-    output_driver.write_line("Getting loaded image device path...");
-    match get_loaded_image_device_path(output_driver) {
+pub fn collect_loaded_image_path() -> bool {
+    write_line("Getting loaded image device path...");
+    match get_loaded_image_device_path() {
         Some((path_ptr, path_size)) => {
             unsafe {
                 HANDOFF.boot_device_path_ptr = path_ptr;
                 HANDOFF.boot_device_path_size = path_size;
             }
-            output_driver.write_line("✓ Loaded image device path collected");
-            display_boot_device_path_info(output_driver, path_ptr, path_size);
+            write_line("✓ Loaded image device path collected");
+            display_boot_device_path_info(path_ptr, path_size);
             true
         }
         None => {
-            output_driver.write_line("✗ Loaded image device path not available");
+            write_line("✗ Loaded image device path not available");
             false
         }
     }
 }
 
 /// Finalize the handoff structure
-pub fn finalize_handoff_structure(output_driver: &mut OutputDriver) {
-    output_driver.write_line("Finalizing handoff structure...");
+pub fn finalize_handoff_structure() {
+    write_line("Finalizing handoff structure...");
     unsafe {
         HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
     }
-    output_driver.write_line(&format!("✓ Handoff structure size: {} bytes", core::mem::size_of::<Handoff>()));
-    output_driver.write_line("✓ All system information collected and stored");
+    write_line(&format!("✓ Handoff structure size: {} bytes", core::mem::size_of::<Handoff>()));
+    write_line("✓ All system information collected and stored");
 }
 
 /// Prepare for boot services exit
 pub fn prepare_boot_services_exit(
-    output_driver: &mut OutputDriver, 
     memory_map: &Option<uefi::mem::memory_map::MemoryMapOwned>
 ) {
-    output_driver.write_line("Exiting boot services...");
+    write_line("Exiting boot services...");
     if let Some(mmap) = memory_map {
         // Get the memory map key for exit_boot_services
         let memory_map_key = mmap.key();
-        output_driver.write_line(&format!("Memory map key: {:?}", memory_map_key));
+        write_line(&format!("Memory map key: {:?}", memory_map_key));
         
         // Use the proper uefi-rs 0.35 exit_boot_services function
         // This will properly exit boot services and return the final memory map
-        output_driver.write_line("✓ Memory map ready for kernel handoff");
-        output_driver.write_line("Exiting boot services...");
+        write_line("✓ Memory map ready for kernel handoff");
+        write_line("Exiting boot services...");
         
         // Load the kernel binary BEFORE exiting boot services
         // (we need UEFI file system protocols to read the kernel file)
-        output_driver.write_line("About to call load_kernel_binary...");
-        match crate::kernel_loader::load_kernel_binary(mmap, output_driver) {
+        write_line("About to call load_kernel_binary...");
+        match crate::kernel_loader::load_kernel_binary(mmap) {
             Ok((kernel_physical_base, kernel_entry_point)) => {
                 // Update the handoff structure with the actual kernel information
                 unsafe {
@@ -318,15 +310,15 @@ pub fn prepare_boot_services_exit(
                     HANDOFF.kernel_virtual_entry = kernel_entry_point;
                 }
                 
-                output_driver.write_line("✓ Kernel loaded successfully, exiting boot services...");
+                write_line("✓ Kernel loaded successfully, exiting boot services...");
                 
                 // Now exit boot services
                 let final_memory_map = unsafe {
                     uefi::boot::exit_boot_services(None)
                 };
                 
-                output_driver.write_line("✓ Successfully exited boot services");
-                output_driver.write_line(&format!("Final memory map has {} entries", final_memory_map.len()));
+                write_line("✓ Successfully exited boot services");
+                write_line(&format!("Final memory map has {} entries", final_memory_map.len()));
                 
                 // Update the handoff structure with the final memory map
                 unsafe {
@@ -338,17 +330,17 @@ pub fn prepare_boot_services_exit(
                 
                 // Jump to kernel
                 unsafe {
-                    jump_to_kernel(output_driver);
+                    jump_to_kernel();
                 }
             }
             Err(status) => {
-                output_driver.write_line(&format!("✗ Failed to load kernel: {:?}", status));
-                output_driver.write_line("Cannot proceed with kernel handoff");
+                write_line(&format!("✗ Failed to load kernel: {:?}", status));
+                write_line("Cannot proceed with kernel handoff");
             }
         }
     } else {
-        output_driver.write_line("✗ Cannot prepare memory map without memory map");
-        output_driver.write_line("⚠ No memory map available for kernel");
+        write_line("✗ Cannot prepare memory map without memory map");
+        write_line("⚠ No memory map available for kernel");
     }
 }
 
@@ -370,9 +362,8 @@ pub fn prepare_boot_services_exit(
 fn find_free_memory_region(
     memory_map: &uefi::mem::memory_map::MemoryMapOwned,
     required_size: u64,
-    output_driver: &mut OutputDriver,
 ) -> Option<u64> {
-    output_driver.write_line(&format!("Searching for free memory region ({} bytes required)...", required_size));
+    write_line(&format!("Searching for free memory region ({} bytes required)...", required_size));
     
     let mut best_region: Option<(u64, u64)> = None; // (address, size)
     let mut total_free_memory = 0u64;
@@ -382,7 +373,7 @@ fn find_free_memory_region(
             let region_size = entry.page_count * hobbyos_shared::constants::memory::UEFI_PAGE_SIZE;
             total_free_memory += region_size;
             
-            output_driver.write_line(&format!(
+            write_line(&format!(
                 "  Free region: 0x{:016X} - 0x{:016X} ({} bytes)",
                 entry.phys_start,
                 entry.phys_start + region_size - 1,
@@ -394,7 +385,7 @@ fn find_free_memory_region(
                 match best_region {
                     None => {
                         best_region = Some((entry.phys_start, region_size));
-                        output_driver.write_line(&format!(
+                        write_line(&format!(
                             "    ✓ Suitable region found at 0x{:016X} ({} bytes)",
                             entry.phys_start, region_size
                         ));
@@ -402,7 +393,7 @@ fn find_free_memory_region(
                     Some((_, current_size)) if region_size < current_size => {
                         // This region is smaller (better fit)
                         best_region = Some((entry.phys_start, region_size));
-                        output_driver.write_line(&format!(
+                        write_line(&format!(
                             "    ✓ Better region found at 0x{:016X} ({} bytes)",
                             entry.phys_start, region_size
                         ));
@@ -415,20 +406,20 @@ fn find_free_memory_region(
         }
     }
     
-    output_driver.write_line(&format!("Total free memory available: {} bytes ({:.2} MB)", 
+    write_line(&format!("Total free memory available: {} bytes ({:.2} MB)", 
         total_free_memory, total_free_memory as f64 / hobbyos_shared::constants::memory::BYTES_PER_MB));
     
     match best_region {
         Some((address, size)) => {
-            output_driver.write_line(&format!(
+            write_line(&format!(
                 "✓ Selected memory region: 0x{:016X} ({} bytes, {:.2} MB)",
                 address, size, size as f64 / hobbyos_shared::constants::memory::BYTES_PER_MB
             ));
             Some(address)
         }
         None => {
-            output_driver.write_line("✗ No suitable free memory region found");
-            output_driver.write_line(&format!("  Required: {} bytes ({:.2} MB)", 
+            write_line("✗ No suitable free memory region found");
+            write_line(&format!("  Required: {} bytes ({:.2} MB)", 
                 required_size, required_size as f64 / hobbyos_shared::constants::memory::BYTES_PER_MB));
             None
         }
@@ -460,9 +451,9 @@ fn find_free_memory_region(
 /// - Jumps to arbitrary code (kernel entry point)
 /// - Assumes the kernel is properly loaded at the expected address
 /// - Performs operations that cannot be undone
-unsafe fn jump_to_kernel(output_driver: &mut OutputDriver) {
-    output_driver.write_line("=== Jumping to Kernel ===");
-    output_driver.write_line("Setting up kernel environment...");
+unsafe fn jump_to_kernel() {
+    write_line("=== Jumping to Kernel ===");
+    write_line("Setting up kernel environment...");
     
     // Finalize the handoff structure
     HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
@@ -475,30 +466,30 @@ unsafe fn jump_to_kernel(output_driver: &mut OutputDriver) {
     HANDOFF.virtual_memory_enabled = 0;                // Identity mapped for now
     
     // Log the handoff information
-    output_driver.write_line(&format!("Handoff structure size: {} bytes", HANDOFF.size));
-    output_driver.write_line(&format!("Memory map entries: {}", HANDOFF.memory_map_entries));
-    output_driver.write_line(&format!("Memory map size: {} bytes", HANDOFF.memory_map_size));
+    write_line(&format!("Handoff structure size: {} bytes", HANDOFF.size));
+    write_line(&format!("Memory map entries: {}", HANDOFF.memory_map_entries));
+    write_line(&format!("Memory map size: {} bytes", HANDOFF.memory_map_size));
     
     if HANDOFF.acpi_rsdp != 0 {
-        output_driver.write_line(&format!("ACPI RSDP: 0x{:016X}", HANDOFF.acpi_rsdp));
+        write_line(&format!("ACPI RSDP: 0x{:016X}", HANDOFF.acpi_rsdp));
     }
     
-    output_driver.write_line(&format!("Kernel virtual base: 0x{:016X}", HANDOFF.kernel_virtual_base));
-    output_driver.write_line(&format!("Kernel physical base: 0x{:016X}", HANDOFF.kernel_physical_base));
-    output_driver.write_line(&format!("Virtual memory enabled: {}", HANDOFF.virtual_memory_enabled));
-    output_driver.write_line("Jumping to kernel...");
+    write_line(&format!("Kernel virtual base: 0x{:016X}", HANDOFF.kernel_virtual_base));
+    write_line(&format!("Kernel physical base: 0x{:016X}", HANDOFF.kernel_physical_base));
+    write_line(&format!("Virtual memory enabled: {}", HANDOFF.virtual_memory_enabled));
+    write_line("Jumping to kernel...");
     
     // Get the kernel information from the handoff structure
     let kernel_physical_base = HANDOFF.kernel_physical_base;
     let kernel_entry_point = HANDOFF.kernel_virtual_entry;
     
-    output_driver.write_line(&format!("Kernel physical base: 0x{:016X}", kernel_physical_base));
-    output_driver.write_line(&format!("Kernel entry point: 0x{:016X}", kernel_entry_point));
+    write_line(&format!("Kernel physical base: 0x{:016X}", kernel_physical_base));
+    write_line(&format!("Kernel entry point: 0x{:016X}", kernel_entry_point));
     
     // Cast the entry point to a function pointer
     let kernel_entry: extern "C" fn() -> ! = core::mem::transmute(kernel_entry_point);
     
-    output_driver.write_line("Jumping to kernel entry point...");
+    write_line("Jumping to kernel entry point...");
     
     // Jump to the kernel
     // Note: This will never return as the kernel entry point is marked as `-> !`
@@ -506,11 +497,11 @@ unsafe fn jump_to_kernel(output_driver: &mut OutputDriver) {
 }
 
 /// Complete the bootloader and exit QEMU
-pub fn complete_bootloader_and_exit(output_driver: &mut OutputDriver) {
-    output_driver.write_line("=== UEFI Loader Complete ===");
-    output_driver.write_line("All system information collected and stored");
-    output_driver.write_line("Ready for kernel handoff");
-    output_driver.write_line("Exiting QEMU...");
+pub fn complete_bootloader_and_exit() {
+    write_line("=== UEFI Loader Complete ===");
+    write_line("All system information collected and stored");
+    write_line("Ready for kernel handoff");
+    write_line("Exiting QEMU...");
     
     // Exit QEMU gracefully with success message
     unsafe {

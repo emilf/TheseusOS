@@ -6,7 +6,7 @@
 
 use acpi::{AcpiHandler, PhysicalMapping, AcpiTables};
 use core::ptr::NonNull;
-use crate::drivers::OutputDriver;
+use crate::drivers::manager::write_line;
 
 /// ACPI Handler for UEFI environment
 /// 
@@ -71,19 +71,19 @@ impl AcpiHandler for UefiAcpiHandler {
 /// 
 /// This function accesses the UEFI system table and configuration table.
 /// It is safe to call during UEFI boot services phase.
-pub fn find_acpi_rsdp(output_driver: &mut OutputDriver) -> Option<u64> {
+pub fn find_acpi_rsdp() -> Option<u64> {
     use uefi::table::cfg::{ACPI_GUID, ACPI2_GUID, ConfigTableEntry};
     use uefi::table;
     use core::slice;
     
     // Debug: Function called
-    output_driver.write_line("  Debug: find_acpi_rsdp function called");
+    write_line("  Debug: find_acpi_rsdp function called");
     
     // Get the system table
     let system_table = match table::system_table_raw() {
         Some(st) => st,
         None => {
-            output_driver.write_line("  Debug: System table not available");
+            write_line("  Debug: System table not available");
             return None;
         }
     };
@@ -93,7 +93,7 @@ pub fn find_acpi_rsdp(output_driver: &mut OutputDriver) -> Option<u64> {
     
     // Check if configuration table is available
     if st.configuration_table.is_null() || st.number_of_configuration_table_entries == 0 {
-        output_driver.write_line("  Debug: Configuration table not available");
+        write_line("  Debug: Configuration table not available");
         return None;
     }
     
@@ -107,10 +107,10 @@ pub fn find_acpi_rsdp(output_driver: &mut OutputDriver) -> Option<u64> {
     
     // Search for ACPI 2.0 RSDP first (preferred)
     for (i, entry) in config_entries.iter().enumerate() {
-        output_driver.write_line(&alloc::format!("  Debug: Entry {} - GUID: {:?}", i, entry.guid));
+        write_line(&alloc::format!("  Debug: Entry {} - GUID: {:?}", i, entry.guid));
         
         if entry.guid == ACPI2_GUID {
-            output_driver.write_line(&alloc::format!("  Debug: Found ACPI 2.0 RSDP at 0x{:016X}", entry.address as u64));
+            write_line(&alloc::format!("  Debug: Found ACPI 2.0 RSDP at 0x{:016X}", entry.address as u64));
             return Some(entry.address as u64);
         }
     }
@@ -118,12 +118,12 @@ pub fn find_acpi_rsdp(output_driver: &mut OutputDriver) -> Option<u64> {
     // Fall back to ACPI 1.0 RSDP
     for entry in config_entries {
         if entry.guid == ACPI_GUID {
-            output_driver.write_line(&alloc::format!("  Debug: Found ACPI 1.0 RSDP at 0x{:016X}", entry.address as u64));
+            write_line(&alloc::format!("  Debug: Found ACPI 1.0 RSDP at 0x{:016X}", entry.address as u64));
             return Some(entry.address as u64);
         }
     }
     
-    output_driver.write_line("  Debug: No ACPI RSDP table found in configuration table");
+    write_line("  Debug: No ACPI RSDP table found in configuration table");
     
     // No ACPI table found
     None
@@ -143,7 +143,7 @@ pub fn find_acpi_rsdp(output_driver: &mut OutputDriver) -> Option<u64> {
 /// 
 /// * `Ok(())` - If ACPI tables were successfully parsed
 /// * `Err(&'static str)` - If parsing failed
-pub fn parse_acpi_tables(output_driver: &mut OutputDriver, rsdp_address: u64) -> Result<(), &'static str> {
+pub fn parse_acpi_tables(rsdp_address: u64) -> Result<(), &'static str> {
     if rsdp_address == 0 {
         return Err("Invalid RSDP address");
     }
@@ -157,13 +157,13 @@ pub fn parse_acpi_tables(output_driver: &mut OutputDriver, rsdp_address: u64) ->
             let platform_info = tables.platform_info();
             
             // Log successful parsing
-            output_driver.write_line("✓ ACPI tables parsed successfully");
-            output_driver.write_line(&alloc::format!("  Platform info available: {}", platform_info.is_ok()));
+            write_line("✓ ACPI tables parsed successfully");
+            write_line(&alloc::format!("  Platform info available: {}", platform_info.is_ok()));
             
             Ok(())
         }
         Err(e) => {
-            output_driver.write_line(&alloc::format!("✗ Failed to parse ACPI tables: {:?}", e));
+            write_line(&alloc::format!("✗ Failed to parse ACPI tables: {:?}", e));
             Err("Failed to parse ACPI tables")
         }
     }

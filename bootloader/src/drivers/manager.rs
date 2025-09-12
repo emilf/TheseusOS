@@ -1,7 +1,9 @@
 //! Driver Manager
 //! 
 //! Manages different output drivers and automatically selects the best available one.
+//! Uses a global singleton instance since we're in a single-threaded environment.
 
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 /// Trait that all output drivers must implement
 pub trait Driver {
@@ -34,6 +36,9 @@ pub enum DriverType {
     None,
 }
 
+// Global singleton instance
+static GLOBAL_OUTPUT_DRIVER: AtomicPtr<OutputDriver> = AtomicPtr::new(core::ptr::null_mut());
+
 impl OutputDriver {
     /// Create a new output driver manager
     pub fn new() -> Self {
@@ -43,6 +48,20 @@ impl OutputDriver {
             qemu_debug: crate::drivers::qemu_debug::QemuDebugDriver::new(),
             current_driver: Self::select_best_driver(),
         }
+    }
+    
+    /// Initialize the global output driver instance
+    /// This should be called once at startup
+    pub fn init_global() {
+        let mut driver = Self::new();
+        let driver_ptr = &mut driver as *mut OutputDriver;
+        GLOBAL_OUTPUT_DRIVER.store(driver_ptr, Ordering::SeqCst);
+        
+        // Leak the driver to keep it alive for the lifetime of the program
+        core::mem::forget(driver);
+        
+        // Write initial message
+        write_line("Output driver initialized");
     }
     
     /// Select the best available driver
@@ -110,5 +129,61 @@ impl OutputDriver {
         self.uefi_serial.is_available() || 
         self.qemu_debug.is_available() || 
         self.raw_serial.is_available()
+    }
+}
+
+// Global access functions
+
+/// Write a line to the global output driver
+/// This is the main function to use for output throughout the codebase
+pub fn write_line(message: &str) -> bool {
+    let driver_ptr = GLOBAL_OUTPUT_DRIVER.load(Ordering::SeqCst);
+    if driver_ptr.is_null() {
+        return false;
+    }
+    
+    // SAFETY: We know the driver is valid and we're in a single-threaded environment
+    unsafe {
+        (*driver_ptr).write_line(message)
+    }
+}
+
+/// Get the name of the current global driver
+pub fn current_driver_name() -> &'static str {
+    let driver_ptr = GLOBAL_OUTPUT_DRIVER.load(Ordering::SeqCst);
+    if driver_ptr.is_null() {
+        return "None";
+    }
+    
+    // SAFETY: We know the driver is valid and we're in a single-threaded environment
+    unsafe {
+        (*driver_ptr).current_driver_name()
+    }
+}
+
+/// Update the global driver (e.g., after boot services exit)
+pub fn update_driver() {
+    let driver_ptr = GLOBAL_OUTPUT_DRIVER.load(Ordering::SeqCst);
+    if driver_ptr.is_null() {
+        return;
+    }
+    
+    // SAFETY: We know the driver is valid and we're in a single-threaded environment
+    unsafe {
+        (*driver_ptr).update_driver();
+    }
+}
+
+/// Force switch to a specific driver type
+#[allow(dead_code)]
+pub fn force_driver(driver_type: DriverType) {
+    let driver_ptr = GLOBAL_OUTPUT_DRIVER.load(Ordering::SeqCst);
+    if driver_ptr.is_null() {
+        return;
+    }
+    
+    // SAFETY: We know the driver is valid and we're in a single-threaded environment
+    unsafe {
+        (*driver_ptr).force_driver(driver_type);
     }
 }

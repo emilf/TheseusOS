@@ -30,6 +30,8 @@ mod kernel_loader;
 
 use boot_sequence::*;
 use uefi::Status;
+use drivers::manager::{OutputDriver, write_line};
+use alloc::format;
 
 /// Panic handler for bootloader
 #[panic_handler]
@@ -101,33 +103,39 @@ fn panic_handler(_panic_info: &core::panic::PanicInfo) -> ! {
 /// It will panic if called after exit_boot_services.
 #[entry]
 fn efi_main() -> Status {
-    // Initialize UEFI environment and output driver
-    let mut output_driver = match initialize_uefi_environment() {
-        Ok(driver) => driver,
+    // Initialize UEFI environment and global output driver
+    match initialize_uefi_environment() {
+        Ok(_) => {},
         Err(_) => return Status::ABORTED,
     };
+    
+    // Initialize the global output driver
+    OutputDriver::init_global();
+    
+    write_line("=== HobbyOS UEFI Loader Starting ===");
+    write_line(&format!("Output driver initialized: {}", drivers::manager::current_driver_name()));
 
     // Test panic handler (uncomment to test)
     // panic!("Testing panic handler - this should exit QEMU with error message");
 
     // Collect all system information
-    collect_graphics_info(&mut output_driver);
-    let memory_map = collect_memory_map(&mut output_driver);
-    collect_acpi_info(&mut output_driver);
-    collect_system_info(&mut output_driver);
-    collect_hardware_inventory_info(&mut output_driver, VERBOSE_HARDWARE_INVENTORY);
-    collect_loaded_image_path(&mut output_driver);
+    collect_graphics_info();
+    let memory_map = collect_memory_map();
+    collect_acpi_info();
+    collect_system_info();
+    collect_hardware_inventory_info(VERBOSE_HARDWARE_INVENTORY);
+    collect_loaded_image_path();
 
     // Finalize handoff structure
-    finalize_handoff_structure(&mut output_driver);
+    finalize_handoff_structure();
 
     // Prepare for boot services exit and jump to kernel
     // This function will either jump to the kernel or exit QEMU if there's an error
-    prepare_boot_services_exit(&mut output_driver, &memory_map);
+    prepare_boot_services_exit(&memory_map);
 
     // If we reach here, it means there was an error in the handoff process
     // Complete bootloader and exit QEMU gracefully
-    complete_bootloader_and_exit(&mut output_driver);
+    complete_bootloader_and_exit();
     
     Status::SUCCESS
 }
