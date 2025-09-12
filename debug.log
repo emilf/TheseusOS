@@ -34,9 +34,9 @@ Collecting memory map information...
 │   8: BOOT_SERVICES_DATA   | 0x0000000000900000 |     3712 pages |   15204352 bytes | 0x0000000f
 │   9: CONVENTIONAL         | 0x0000000001780000 |    42989 pages |  176082944 bytes | 0x0000000f
 │  10: BOOT_SERVICES_DATA   | 0x000000000bf6d000 |       32 pages |     131072 bytes | 0x0000000f
-│  11: CONVENTIONAL         | 0x000000000bf8d000 |     8952 pages |   36667392 bytes | 0x0000000f
-│  12: LOADER_CODE          | 0x000000000e285000 |       23 pages |      94208 bytes | 0x0000000f
-│  13: CONVENTIONAL         | 0x000000000e29c000 |       19 pages |      77824 bytes | 0x0000000f
+│  11: CONVENTIONAL         | 0x000000000bf8d000 |     8960 pages |   36700160 bytes | 0x0000000f
+│  12: LOADER_CODE          | 0x000000000e28d000 |       19 pages |      77824 bytes | 0x0000000f
+│  13: CONVENTIONAL         | 0x000000000e2a0000 |       15 pages |      61440 bytes | 0x0000000f
 │  14: BOOT_SERVICES_DATA   | 0x000000000e2af000 |     1634 pages |    6692864 bytes | 0x0000000f
 │  15: BOOT_SERVICES_CODE   | 0x000000000e911000 |      319 pages |    1306624 bytes | 0x0000000f
 │  16: CONVENTIONAL         | 0x000000000ea50000 |        6 pages |      24576 bytes | 0x0000000f

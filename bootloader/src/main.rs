@@ -32,11 +32,25 @@ use uefi::Status;
 
 /// Panic handler for bootloader
 #[panic_handler]
-fn panic_handler(panic_info: &core::panic::PanicInfo) -> ! {
-    // Try to output panic information to QEMU debug port
-    let message = alloc::format!("BOOTLOADER PANIC: {:?}", panic_info.message());
+fn panic_handler(_panic_info: &core::panic::PanicInfo) -> ! {
+    // Output panic information to QEMU debug port (avoiding allocator)
+    const PANIC_PREFIX: &[u8] = b"BOOTLOADER PANIC: ";
     
-    for byte in message.bytes() {
+    // Write panic prefix
+    for &byte in PANIC_PREFIX {
+        unsafe {
+            core::arch::asm!(
+                "out dx, al",
+                in("dx") constants::io_ports::QEMU_DEBUG,
+                in("al") byte,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+    }
+    
+    // Output a generic panic message (we can't easily format the actual message without allocator)
+    const PANIC_MSG: &[u8] = b"Panic occurred";
+    for &byte in PANIC_MSG {
         unsafe {
             core::arch::asm!(
                 "out dx, al",
