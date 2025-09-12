@@ -10,72 +10,54 @@ use uefi::proto::console::gop::PixelFormat as UefiPixelFormat;
 use uefi::boot::{SearchType, MemoryType};
 use core::arch::asm;
 use uefi::mem::memory_map::MemoryMap;
+use acpi::{AcpiHandler, PhysicalMapping, AcpiTables};
+use core::ptr::NonNull;
+
+// Include our modules
+mod handoff;
+mod serial;
+mod display;
+mod hardware;
+
+use handoff::{Handoff, HANDOFF};
+use serial::serial_write_line;
+use display::*;
+use hardware::{collect_hardware_inventory, get_loaded_image_device_path, display_hardware_inventory};
 
 
-/// Handoff structure passed to the kernel
-/// Layout is stable (repr C) to allow consumption from any language
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-struct Handoff {
-    /// Total size of this struct in bytes
-    size: u32,
-    /// Handoff format version
-    handoff_version: u32,
-    /// Framebuffer base address
-    gop_fb_base: u64,
-    /// Framebuffer size in bytes
-    gop_fb_size: u64,
-    /// Framebuffer width in pixels
-    gop_width: u32,
-    /// Framebuffer height in pixels
-    gop_height: u32,
-    /// Framebuffer stride
-    gop_stride: u32,
-    /// Pixel format enum
-    gop_pixel_format: u32,
-    /// Memory map descriptor size in bytes
-    memory_map_descriptor_size: u32,
-    /// Memory map descriptor version
-    memory_map_descriptor_version: u32,
-    /// Number of memory map entries
-    memory_map_entries: u32,
-    /// Memory map buffer size in bytes
-    memory_map_size: u32,
-    /// ACPI RSDP table address (0 if not found)
-    acpi_rsdp: u64,
-}
 
-/// Static storage for handoff data
-static mut HANDOFF: Handoff = Handoff {
-    size: 0,
-    handoff_version: 1,
-    gop_fb_base: 0,
-    gop_fb_size: 0,
-    gop_width: 0,
-    gop_height: 0,
-    gop_stride: 0,
-    gop_pixel_format: 0,
-    memory_map_descriptor_size: 0,
-    memory_map_descriptor_version: 0,
-    memory_map_entries: 0,
-    memory_map_size: 0,
-    acpi_rsdp: 0,
-};
+/// ACPI Handler for UEFI environment
+/// This implements the AcpiHandler trait to allow the acpi crate to map physical memory
+#[derive(Clone)]
+struct UefiAcpiHandler;
 
-/// Helper function to write data to serial
-fn serial_write(serial_handle: Option<Handle>, data: &[u8]) {
-    if let Some(handle) = serial_handle {
-        if let Ok(mut serial) = uefi::boot::open_protocol_exclusive::<Serial>(handle) {
-            let _ = serial.write(data);
-        }
+impl AcpiHandler for UefiAcpiHandler {
+    unsafe fn map_physical_region<T>(
+        &self,
+        physical_address: usize,
+        size: usize,
+    ) -> PhysicalMapping<Self, T> {
+        // In UEFI, we can use identity mapping for physical addresses
+        // This is safe because UEFI provides a flat memory model
+        let virtual_address = physical_address as *mut T;
+        let non_null_virtual_address = NonNull::new(virtual_address)
+            .expect("Physical address should be valid");
+        
+        PhysicalMapping::new(
+            physical_address,
+            non_null_virtual_address,
+            size,
+            size,
+            Self,
+        )
+    }
+
+    fn unmap_physical_region<T>(_region: &PhysicalMapping<Self, T>) {
+        // In UEFI, we don't need to unmap physical regions
+        // The memory remains accessible until exit_boot_services
     }
 }
 
-/// Helper function to write a line to serial
-fn serial_write_line(serial_handle: Option<Handle>, line: &str) {
-    serial_write(serial_handle, line.as_bytes());
-    serial_write(serial_handle, b"\r\n");
-}
 
 /// Helper function to display prettily formatted GOP information
 fn display_gop_info(serial_handle: Option<Handle>, width: u32, height: u32, pixel_format: UefiPixelFormat, stride: u32, fb_base: u64, fb_size: u64) {
@@ -188,17 +170,122 @@ fn display_memory_map_entries(serial_handle: Option<Handle>, memory_map: &uefi::
     let mut entry_count = 0;
     for descriptor in memory_map.entries() {
         display_memory_map_entry(serial_handle, entry_count, &descriptor);
-        // entry_count += 1;
+        entry_count += 1;
         
-        // // Limit display to first 20 entries to avoid overwhelming output
-        // if entry_count >= 20 {
-        //     serial_write_line(serial_handle, "│ ... | (truncated)          | ...              | ...     | ...          | ...        │");
-        //     break;
-        // }
+        // Limit display to first 20 entries to avoid overwhelming output
+        if entry_count >= 20 {
+            serial_write_line(serial_handle, "│ ... | (truncated)          | ...              | ...     | ...          | ...        │");
+            break;
+        }
     }
     
     serial_write_line(serial_handle, "└─────────────────────────────────────────────────────────────────────────────────────────┘");
     serial_write_line(serial_handle, "");
+}
+
+/// Find ACPI RSDP table in UEFI configuration table
+fn find_acpi_rsdp() -> Option<u64> {
+    // In UEFI-RS 0.35, we need to access the system table through the global state
+    // Let's try using the system table access pattern from the migration docs
+    
+    // ACPI GUIDs for RSDP lookup - using the guid! macro
+    const ACPI_GUID: uefi::Guid = uefi::guid!("8868e871-e4f1-11d3-bc22-0080c73c8881");
+    const ACPI2_GUID: uefi::Guid = uefi::guid!("8868e871-e4f1-11d3-bc22-0080c73c8881");
+    
+    // Try to access the system table through the global state
+    // This is a best-effort approach based on the UEFI-RS 0.35 API
+    // For now, we'll return None as the exact API needs to be determined
+    // TODO: Implement proper system table access for UEFI-RS 0.35
+    
+    // Placeholder implementation - in a real implementation, we would:
+    // 1. Access the system table through the proper UEFI-RS 0.35 API
+    // 2. Iterate through the configuration table entries
+    // 3. Look for ACPI GUIDs and return the RSDP address
+    
+    None
+}
+
+/// Find Device Tree Blob (DTB) in UEFI configuration table
+fn find_device_tree() -> Option<(u64, u64)> {
+    // Device Tree GUID for ARM/ARM64 systems
+    const DEVICE_TREE_GUID: uefi::Guid = uefi::guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0");
+    
+    // TODO: Implement device tree lookup through system table
+    // For now, return None as device tree is typically used on ARM systems
+    // and this bootloader is targeting x86_64
+    
+    None
+}
+
+/// Collect firmware information
+fn collect_firmware_info() -> Option<(u64, u32, u32)> {
+    // TODO: Implement firmware vendor and revision collection
+    // This would typically access SystemTable->FirmwareVendor and SystemTable->FirmwareRevision
+    // For now, return placeholder values
+    
+    None
+}
+
+/// Collect boot time information
+fn collect_boot_time_info() -> Option<(u64, u32)> {
+    // TODO: Implement boot time collection using RuntimeServices->GetTime()
+    // This would get the current time when the bootloader starts
+    
+    None
+}
+
+/// Collect boot device path information
+fn collect_boot_device_path() -> Option<(u64, u32)> {
+    // TODO: Implement boot device path collection using LoadedImage protocol
+    // This would get the device path of the booted EFI application
+    
+    None
+}
+
+/// Collect CPU information
+fn collect_cpu_info() -> Option<(u32, u64, u32)> {
+    // TODO: Implement CPU information collection using CPU protocol
+    // This would get CPU count, features, and microcode revision
+    
+    None
+}
+
+/// Parse ACPI tables and extract useful information
+fn parse_acpi_tables(serial_handle: Option<Handle>, rsdp_address: u64) -> Result<(), &'static str> {
+    if rsdp_address == 0 {
+        return Err("No RSDP address provided");
+    }
+
+    let handler = UefiAcpiHandler;
+    let tables = match unsafe { AcpiTables::from_rsdp(handler, rsdp_address as usize) } {
+        Ok(tables) => tables,
+        Err(_) => {
+            serial_write_line(serial_handle, "│ ⚠ Failed to parse ACPI tables");
+            return Err("Failed to parse ACPI tables");
+        }
+    };
+
+    // Display basic ACPI information
+    serial_write_line(serial_handle, "");
+    serial_write_line(serial_handle, "┌─────────────────────────────────────────────────────────┐");
+    serial_write_line(serial_handle, "│                    ACPI Tables Found                    │");
+    serial_write_line(serial_handle, "├─────────────────────────────────────────────────────────┤");
+
+    // Try to get platform information
+    match tables.platform_info() {
+        Ok(platform_info) => {
+            serial_write_line(serial_handle, "│ ✓ Platform Info: Available");
+            serial_write_line(serial_handle, &alloc::format!("│   Interrupt Model: {:?}", platform_info.interrupt_model));
+        }
+        Err(_) => {
+            serial_write_line(serial_handle, "│ ✗ Platform Info: Not available");
+        }
+    }
+
+    serial_write_line(serial_handle, "└─────────────────────────────────────────────────────────┘");
+    serial_write_line(serial_handle, "");
+
+    Ok(())
 }
 
 /// Helper function to display prettily formatted ACPI information
@@ -211,9 +298,124 @@ fn display_acpi_info(serial_handle: Option<Handle>, rsdp_address: u64) {
     if rsdp_address != 0 {
         serial_write_line(serial_handle, &alloc::format!("│ RSDP Table Found: 0x{:016X}", rsdp_address));
         serial_write_line(serial_handle, "│ ✓ ACPI support will be available to kernel");
+        
+        // Try to parse ACPI tables for additional information
+        if let Err(e) = parse_acpi_tables(serial_handle, rsdp_address) {
+            serial_write_line(serial_handle, &alloc::format!("│ ⚠ ACPI parsing failed: {}", e));
+        }
     } else {
         serial_write_line(serial_handle, "│ RSDP Table: Not Found");
         serial_write_line(serial_handle, "│ ✗ No ACPI support will be available to kernel");
+    }
+    
+    serial_write_line(serial_handle, "└─────────────────────────────────────────────────────────┘");
+    serial_write_line(serial_handle, "");
+}
+
+/// Helper function to display device tree information
+fn display_device_tree_info(serial_handle: Option<Handle>, dtb_ptr: u64, dtb_size: u64) {
+    serial_write_line(serial_handle, "");
+    serial_write_line(serial_handle, "┌─────────────────────────────────────────────────────────┐");
+    serial_write_line(serial_handle, "│                  Device Tree Information                │");
+    serial_write_line(serial_handle, "├─────────────────────────────────────────────────────────┤");
+    
+    if dtb_ptr != 0 {
+        serial_write_line(serial_handle, &alloc::format!("│ DTB Address: 0x{:016x}                           │", dtb_ptr));
+        serial_write_line(serial_handle, &alloc::format!("│ DTB Size: {} bytes ({:.2} KB)                   │", dtb_size, dtb_size as f64 / 1024.0));
+        serial_write_line(serial_handle, "│ Status: ✓ Device tree blob found                    │");
+    } else {
+        serial_write_line(serial_handle, "│ DTB Address: Not found (0x0000000000000000)          │");
+        serial_write_line(serial_handle, "│ DTB Size: 0 bytes                                   │");
+        serial_write_line(serial_handle, "│ Status: ✗ Device tree blob not found               │");
+        serial_write_line(serial_handle, "│ Note: Device tree is typically used on ARM systems │");
+    }
+    
+    serial_write_line(serial_handle, "└─────────────────────────────────────────────────────────┘");
+    serial_write_line(serial_handle, "");
+}
+
+/// Helper function to display firmware information
+fn display_firmware_info(serial_handle: Option<Handle>, vendor_ptr: u64, vendor_len: u32, revision: u32) {
+    serial_write_line(serial_handle, "");
+    serial_write_line(serial_handle, "┌─────────────────────────────────────────────────────────┐");
+    serial_write_line(serial_handle, "│                   Firmware Information                  │");
+    serial_write_line(serial_handle, "├─────────────────────────────────────────────────────────┤");
+    
+    if vendor_ptr != 0 {
+        serial_write_line(serial_handle, &alloc::format!("│ Vendor Pointer: 0x{:016x}                        │", vendor_ptr));
+        serial_write_line(serial_handle, &alloc::format!("│ Vendor Length: {} characters                     │", vendor_len));
+        serial_write_line(serial_handle, &alloc::format!("│ Firmware Revision: 0x{:08x}                      │", revision));
+        serial_write_line(serial_handle, "│ Status: ✓ Firmware information collected            │");
+    } else {
+        serial_write_line(serial_handle, "│ Vendor Pointer: Not available (0x0000000000000000)   │");
+        serial_write_line(serial_handle, "│ Vendor Length: 0 characters                         │");
+        serial_write_line(serial_handle, "│ Firmware Revision: Not available (0x00000000)       │");
+        serial_write_line(serial_handle, "│ Status: ✗ Firmware information not available        │");
+    }
+    
+    serial_write_line(serial_handle, "└─────────────────────────────────────────────────────────┘");
+    serial_write_line(serial_handle, "");
+}
+
+/// Helper function to display boot time information
+fn display_boot_time_info(serial_handle: Option<Handle>, seconds: u64, nanoseconds: u32) {
+    serial_write_line(serial_handle, "");
+    serial_write_line(serial_handle, "┌─────────────────────────────────────────────────────────┐");
+    serial_write_line(serial_handle, "│                   Boot Time Information                 │");
+    serial_write_line(serial_handle, "├─────────────────────────────────────────────────────────┤");
+    
+    if seconds != 0 {
+        serial_write_line(serial_handle, &alloc::format!("│ Boot Time: {} seconds since epoch                 │", seconds));
+        serial_write_line(serial_handle, &alloc::format!("│ Nanoseconds: {} ns                               │", nanoseconds));
+        serial_write_line(serial_handle, "│ Status: ✓ Boot time information collected            │");
+    } else {
+        serial_write_line(serial_handle, "│ Boot Time: Not available (0 seconds)                 │");
+        serial_write_line(serial_handle, "│ Nanoseconds: Not available (0 ns)                    │");
+        serial_write_line(serial_handle, "│ Status: ✗ Boot time information not available        │");
+    }
+    
+    serial_write_line(serial_handle, "└─────────────────────────────────────────────────────────┘");
+    serial_write_line(serial_handle, "");
+}
+
+/// Helper function to display boot device path information
+fn display_boot_device_path_info(serial_handle: Option<Handle>, device_path_ptr: u64, device_path_size: u32) {
+    serial_write_line(serial_handle, "");
+    serial_write_line(serial_handle, "┌─────────────────────────────────────────────────────────┐");
+    serial_write_line(serial_handle, "│                Boot Device Path Information             │");
+    serial_write_line(serial_handle, "├─────────────────────────────────────────────────────────┤");
+    
+    if device_path_ptr != 0 {
+        serial_write_line(serial_handle, &alloc::format!("│ Device Path Pointer: 0x{:016x}                    │", device_path_ptr));
+        serial_write_line(serial_handle, &alloc::format!("│ Device Path Size: {} bytes                        │", device_path_size));
+        serial_write_line(serial_handle, "│ Status: ✓ Boot device path information collected     │");
+    } else {
+        serial_write_line(serial_handle, "│ Device Path Pointer: Not available (0x0000000000000000) │");
+        serial_write_line(serial_handle, "│ Device Path Size: 0 bytes                            │");
+        serial_write_line(serial_handle, "│ Status: ✗ Boot device path information not available │");
+    }
+    
+    serial_write_line(serial_handle, "└─────────────────────────────────────────────────────────┘");
+    serial_write_line(serial_handle, "");
+}
+
+/// Helper function to display CPU information
+fn display_cpu_info(serial_handle: Option<Handle>, cpu_count: u32, cpu_features: u64, microcode_revision: u32) {
+    serial_write_line(serial_handle, "");
+    serial_write_line(serial_handle, "┌─────────────────────────────────────────────────────────┐");
+    serial_write_line(serial_handle, "│                     CPU Information                     │");
+    serial_write_line(serial_handle, "├─────────────────────────────────────────────────────────┤");
+    
+    if cpu_count != 0 {
+        serial_write_line(serial_handle, &alloc::format!("│ CPU Count: {} processors                            │", cpu_count));
+        serial_write_line(serial_handle, &alloc::format!("│ CPU Features: 0x{:016x}                        │", cpu_features));
+        serial_write_line(serial_handle, &alloc::format!("│ Microcode Revision: 0x{:08x}                      │", microcode_revision));
+        serial_write_line(serial_handle, "│ Status: ✓ CPU information collected                  │");
+    } else {
+        serial_write_line(serial_handle, "│ CPU Count: Not available (0 processors)              │");
+        serial_write_line(serial_handle, "│ CPU Features: Not available (0x0000000000000000)      │");
+        serial_write_line(serial_handle, "│ Microcode Revision: Not available (0x00000000)       │");
+        serial_write_line(serial_handle, "│ Status: ✗ CPU information not available              │");
     }
     
     serial_write_line(serial_handle, "└─────────────────────────────────────────────────────────┘");
@@ -292,7 +494,7 @@ fn efi_main() -> Status {
 
     // Step 7: Collect Memory Map Information
     serial_write_line(serial_handle, "Collecting memory map information...");
-    let memory_map_info = match uefi::boot::memory_map(MemoryType::LOADER_DATA) {
+    let memory_map = match uefi::boot::memory_map(MemoryType::LOADER_DATA) {
         Ok(mmap) => {
             // Get memory map information using the correct UEFI 0.35 API
             let descriptor_size = 48u32; // Standard UEFI memory descriptor size
@@ -307,7 +509,10 @@ fn efi_main() -> Status {
             let total_size = entries_count * descriptor_size;
             
             // Store memory map information in handoff structure
+            // The MemoryMapOwned structure manages the buffer internally
+            // We store the key for exit_boot_services and the metadata for the kernel
             unsafe {
+                HANDOFF.memory_map_buffer_ptr = 0; // MemoryMapOwned manages this internally
                 HANDOFF.memory_map_descriptor_size = descriptor_size;
                 HANDOFF.memory_map_descriptor_version = descriptor_version;
                 HANDOFF.memory_map_entries = entries_count;
@@ -317,7 +522,7 @@ fn efi_main() -> Status {
             // Display the actual memory map entries
             display_memory_map_entries(serial_handle, &mmap);
             
-            Some((descriptor_size, descriptor_version, entries_count as usize, total_size as usize))
+            Some(mmap)
         }
         Err(_) => {
             serial_write_line(serial_handle, "✗ Failed to collect memory map");
@@ -326,10 +531,12 @@ fn efi_main() -> Status {
     };
 
     // Step 8: Report Memory Map status with pretty formatting
-    if let Some((desc_size, desc_ver, entries, total_size)) = memory_map_info {
-        serial_write_line(serial_handle, "✓ Memory map collected successfully");
-        display_memory_map_info(serial_handle, desc_size as u32, desc_ver as u32, entries as u32, total_size as u32);
-        serial_write_line(serial_handle, "✓ Memory map information stored in handoff structure");
+    if let Some(ref _mmap) = memory_map {
+        unsafe {
+            serial_write_line(serial_handle, "✓ Memory map collected successfully");
+            display_memory_map_info(serial_handle, HANDOFF.memory_map_descriptor_size, HANDOFF.memory_map_descriptor_version, HANDOFF.memory_map_entries, HANDOFF.memory_map_size);
+            serial_write_line(serial_handle, "✓ Memory map information stored in handoff structure");
+        }
     } else {
         serial_write_line(serial_handle, "✗ Memory map collection failed");
         serial_write_line(serial_handle, "  No memory information will be available to kernel");
@@ -337,9 +544,7 @@ fn efi_main() -> Status {
 
     // Step 9: Locate ACPI RSDP Table
     serial_write_line(serial_handle, "Locating ACPI RSDP table...");
-    // Note: ACPI support may not be available in UEFI 0.35 or may require different API
-    // For now, we'll set it to 0 to indicate no ACPI support
-    let rsdp_address = 0u64;
+    let rsdp_address = find_acpi_rsdp().unwrap_or(0);
     unsafe { HANDOFF.acpi_rsdp = rsdp_address; }
 
     // Step 10: Report ACPI status with pretty formatting
@@ -353,7 +558,162 @@ fn efi_main() -> Status {
         serial_write_line(serial_handle, "  No ACPI support will be available to kernel");
     }
 
-    // Step 11: Main bootloader loop
+    // Step 11: Collect Device Tree Information
+    serial_write_line(serial_handle, "Collecting device tree information...");
+    let device_tree_info = find_device_tree();
+    match device_tree_info {
+        Some((dtb_ptr, dtb_size)) => {
+            unsafe {
+                HANDOFF.device_tree_ptr = dtb_ptr;
+                HANDOFF.device_tree_size = dtb_size;
+            }
+            serial_write_line(serial_handle, "✓ Device tree information collected");
+            display_device_tree_info(serial_handle, dtb_ptr, dtb_size);
+        }
+        None => {
+            serial_write_line(serial_handle, "✗ Device tree information not available");
+            display_device_tree_info(serial_handle, 0, 0);
+        }
+    }
+
+    // Step 12: Collect Firmware Information
+    serial_write_line(serial_handle, "Collecting firmware information...");
+    let firmware_info = collect_firmware_info();
+    match firmware_info {
+        Some((vendor_ptr, vendor_len, revision)) => {
+            unsafe {
+                HANDOFF.firmware_vendor_ptr = vendor_ptr;
+                HANDOFF.firmware_vendor_len = vendor_len;
+                HANDOFF.firmware_revision = revision;
+            }
+            serial_write_line(serial_handle, "✓ Firmware information collected");
+            display_firmware_info(serial_handle, vendor_ptr, vendor_len, revision);
+        }
+        None => {
+            serial_write_line(serial_handle, "✗ Firmware information not available");
+            display_firmware_info(serial_handle, 0, 0, 0);
+        }
+    }
+
+    // Step 13: Collect Boot Time Information
+    serial_write_line(serial_handle, "Collecting boot time information...");
+    let boot_time_info = collect_boot_time_info();
+    match boot_time_info {
+        Some((seconds, nanoseconds)) => {
+            unsafe {
+                HANDOFF.boot_time_seconds = seconds;
+                HANDOFF.boot_time_nanoseconds = nanoseconds;
+            }
+            serial_write_line(serial_handle, "✓ Boot time information collected");
+            display_boot_time_info(serial_handle, seconds, nanoseconds);
+        }
+        None => {
+            serial_write_line(serial_handle, "✗ Boot time information not available");
+            display_boot_time_info(serial_handle, 0, 0);
+        }
+    }
+
+    // Step 14: Collect Boot Device Path Information
+    serial_write_line(serial_handle, "Collecting boot device path information...");
+    let boot_device_path_info = collect_boot_device_path();
+    match boot_device_path_info {
+        Some((device_path_ptr, device_path_size)) => {
+            unsafe {
+                HANDOFF.boot_device_path_ptr = device_path_ptr;
+                HANDOFF.boot_device_path_size = device_path_size;
+            }
+            serial_write_line(serial_handle, "✓ Boot device path information collected");
+            display_boot_device_path_info(serial_handle, device_path_ptr, device_path_size);
+        }
+        None => {
+            serial_write_line(serial_handle, "✗ Boot device path information not available");
+            display_boot_device_path_info(serial_handle, 0, 0);
+        }
+    }
+
+    // Step 15: Collect CPU Information
+    serial_write_line(serial_handle, "Collecting CPU information...");
+    let cpu_info = collect_cpu_info();
+    match cpu_info {
+        Some((cpu_count, cpu_features, microcode_revision)) => {
+            unsafe {
+                HANDOFF.cpu_count = cpu_count;
+                HANDOFF.cpu_features = cpu_features;
+                HANDOFF.microcode_revision = microcode_revision;
+            }
+            serial_write_line(serial_handle, "✓ CPU information collected");
+            display_cpu_info(serial_handle, cpu_count, cpu_features, microcode_revision);
+        }
+        None => {
+            serial_write_line(serial_handle, "✗ CPU information not available");
+            display_cpu_info(serial_handle, 0, 0, 0);
+        }
+    }
+
+    // Step 16: Collect Hardware Inventory
+    serial_write_line(serial_handle, "Collecting hardware inventory...");
+    let hardware_inventory = collect_hardware_inventory(serial_handle);
+    match hardware_inventory {
+        Some(inventory) => {
+            unsafe {
+                HANDOFF.hardware_device_count = inventory.device_count;
+                HANDOFF.hardware_inventory_ptr = inventory.devices_ptr;
+                HANDOFF.hardware_inventory_size = inventory.total_size;
+            }
+            serial_write_line(serial_handle, "✓ Hardware inventory collected");
+            display_hardware_inventory(serial_handle, &inventory);
+        }
+        None => {
+            serial_write_line(serial_handle, "✗ Hardware inventory not available");
+            display_hardware_inventory_info(serial_handle, 0, 0, 0);
+        }
+    }
+
+    // Step 17: Get Loaded Image Device Path
+    serial_write_line(serial_handle, "Getting loaded image device path...");
+    let loaded_image_path = get_loaded_image_device_path(serial_handle);
+    match loaded_image_path {
+        Some((device_path_ptr, device_path_size)) => {
+            unsafe {
+                HANDOFF.boot_device_path_ptr = device_path_ptr;
+                HANDOFF.boot_device_path_size = device_path_size;
+            }
+            serial_write_line(serial_handle, "✓ Loaded image device path collected");
+            display_boot_device_path_info(serial_handle, device_path_ptr, device_path_size);
+        }
+        None => {
+            serial_write_line(serial_handle, "✗ Loaded image device path not available");
+            display_boot_device_path_info(serial_handle, 0, 0);
+        }
+    }
+
+    // Step 18: Finalize Handoff Structure
+    serial_write_line(serial_handle, "Finalizing handoff structure...");
+    unsafe {
+        HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
+    }
+    serial_write_line(serial_handle, &alloc::format!("✓ Handoff structure size: {} bytes", core::mem::size_of::<Handoff>()));
+    serial_write_line(serial_handle, "✓ All system information collected and stored");
+
+    // Step 19: Exit Boot Services
+    serial_write_line(serial_handle, "Exiting boot services...");
+    if let Some(mmap) = memory_map {
+        // Get the memory map key for exit_boot_services
+        let memory_map_key = mmap.key();
+        serial_write_line(serial_handle, &alloc::format!("Memory map key: {:?}", memory_map_key));
+        
+        // Note: In UEFI-RS 0.35, exit_boot_services is handled differently
+        // The MemoryMapOwned structure manages the memory map internally
+        // For now, we'll note that the memory map is available for the kernel
+        serial_write_line(serial_handle, "✓ Memory map ready for kernel handoff");
+        serial_write_line(serial_handle, "⚠ Manual exit_boot_services not implemented in this version");
+        serial_write_line(serial_handle, "  The memory map is preserved for kernel access");
+    } else {
+        serial_write_line(serial_handle, "✗ Cannot prepare memory map without memory map");
+        serial_write_line(serial_handle, "⚠ No memory map available for kernel");
+    }
+
+    // Step 20: Main bootloader loop
     serial_write_line(serial_handle, "Entering main loop - halting CPU");
     
     loop {

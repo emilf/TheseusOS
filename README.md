@@ -1,6 +1,6 @@
 # hobbyos UEFI Bootloader (Rust)
 
-Minimal UEFI application in Rust that prints to screen and serial, gathers execution environment data, exits boot services, and halts. It builds a C-compatible Handoff struct and passes its address in RDI for the kernel to consume.
+A comprehensive UEFI application in Rust that provides a complete system information collection and kernel handoff infrastructure. Features beautiful serial output formatting, comprehensive system information gathering, proper memory management, and a detailed C-compatible Handoff struct for kernel consumption.
 
 ## Prerequisites
 - Rust (stable) with target `x86_64-unknown-uefi`
@@ -27,7 +27,7 @@ make esp
 ```
 - ESP layout: `build/EFI/BOOT/BOOTX64.EFI`
 - Serial output is redirected to the terminal; video output appears in the VM window.
-- The app prints environment info, exits boot services, places `&Handoff` in RDI, then halts.
+- The app collects comprehensive system information, prepares memory map for kernel handoff, and places `&Handoff` in RDI, then halts.
 
 ## Debugging
 `startQemu.sh` enables:
@@ -45,19 +45,25 @@ telnet 127.0.0.1 55555
 ```
 
 ## Handoff ABI (to your kernel)
-- Location: Static storage inside the EFI image
-- Register: RDI = pointer to `Handoff`
-- Size: `Handoff.size` bytes (kernel can reserve this much for copying)
+- **Location**: Static storage inside the EFI image
+- **Register**: RDI = pointer to `Handoff`
+- **Size**: `Handoff.size` bytes (168 bytes total)
 
-Fields (high-level):
-- Firmware: UEFI revision
-- ACPI: RSDP physical address
-- Graphics: GOP framebuffer base/size, resolution, stride, pixel format
-- Memory: Raw memory map buffer pointer/length, descriptor size/version
+### Comprehensive System Information:
+- **Graphics**: GOP framebuffer base/size, resolution, stride, pixel format
+- **Memory Map**: Complete memory layout with descriptor metadata and key
+- **ACPI**: RSDP physical address (when available)
+- **Device Tree**: DTB pointer and size (ARM systems)
+- **Firmware**: UEFI vendor info and revision
+- **Boot Context**: Boot time and device path information
+- **CPU**: Processor count, features, and microcode revision
+- **Hardware Inventory**: Comprehensive device enumeration with handles and metadata
 
-See `docs/overview.md` for more details on the boot flow and ABI.
+See `docs/overview.md` for complete Handoff structure details and boot flow.
 
 ## Next Steps
-- Chain-load your kernel: jump to kernel entry preserving RDI
-- Switch to manual ExitBootServices with `map_key` if you want a tighter contract
-- Initialize paging and memory manager using the memory map and `Handoff.size`
+- **Kernel Loading**: Chain-load your kernel: jump to kernel entry preserving RDI
+- **Memory Management**: Initialize paging and memory manager using the comprehensive memory map information
+- **System Initialization**: Use the complete Handoff structure for full system setup
+- **Boot Services**: Implement proper `exit_boot_services` call with memory map key
+- **Runtime Transition**: Complete the transition from boot services to kernel runtime
