@@ -26,6 +26,7 @@ use hobbyos_shared::constants;
 
 // Include bootloader-specific modules
 mod drivers;
+mod kernel_loader;
 
 use boot_sequence::*;
 use uefi::Status;

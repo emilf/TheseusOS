@@ -39,6 +39,33 @@ pub mod memory {
     /// Maximum size for device path strings
     #[allow(dead_code)]
     pub const MAX_DEVICE_PATH_LEN: usize = 1024;
+    
+    /// UEFI page size (4KB)
+    pub const UEFI_PAGE_SIZE: u64 = 4096;
+    
+    /// Default kernel size estimate (1MB)
+    pub const DEFAULT_KERNEL_SIZE: u64 = 1024 * 1024;
+    
+    /// UEFI memory descriptor size (typically 24 bytes in UEFI)
+    pub const UEFI_MEMORY_DESCRIPTOR_SIZE: usize = 24;
+    
+    /// Bytes per megabyte (for display formatting)
+    pub const BYTES_PER_MB: f64 = 1024.0 * 1024.0;
+}
+
+/// Kernel Loading Constants
+pub mod kernel {
+    /// Default kernel binary filename in EFI partition
+    pub const KERNEL_FILENAME: &str = "kernel.efi";
+    
+    /// Default kernel binary path in EFI partition
+    pub const KERNEL_PATH: &str = "\\kernel.efi";
+    
+    /// Maximum kernel size we're willing to load (16MB)
+    pub const MAX_KERNEL_SIZE: u64 = 16 * 1024 * 1024;
+    
+    /// ELF header magic number
+    pub const ELF_MAGIC: [u8; 4] = [0x7f, 0x45, 0x4c, 0x46]; // "\x7fELF"
 }
 
 /// Hardware Constants

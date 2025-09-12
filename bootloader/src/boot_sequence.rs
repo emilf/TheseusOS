@@ -292,7 +292,10 @@ pub fn finalize_handoff_structure(output_driver: &mut OutputDriver) {
 }
 
 /// Prepare for boot services exit
-pub fn prepare_boot_services_exit(output_driver: &mut OutputDriver, memory_map: &Option<uefi::mem::memory_map::MemoryMapOwned>) {
+pub fn prepare_boot_services_exit(
+    output_driver: &mut OutputDriver, 
+    memory_map: &Option<uefi::mem::memory_map::MemoryMapOwned>
+) {
     output_driver.write_line("Exiting boot services...");
     if let Some(mmap) = memory_map {
         // Get the memory map key for exit_boot_services
@@ -316,14 +319,31 @@ pub fn prepare_boot_services_exit(output_driver: &mut OutputDriver, memory_map: 
         // Update the handoff structure with the final memory map
         unsafe {
             HANDOFF.memory_map_entries = final_memory_map.len() as u32;
-            // Calculate memory map size (each entry is typically 24 bytes in UEFI)
-            HANDOFF.memory_map_size = (final_memory_map.len() * 24) as u32;
+            // Calculate memory map size using the standard UEFI descriptor size
+            HANDOFF.memory_map_size = (final_memory_map.len() * hobbyos_shared::constants::memory::UEFI_MEMORY_DESCRIPTOR_SIZE) as u32;
             // Note: The memory map buffer pointer is already set in collect_memory_map
         }
         
-        // Jump to kernel
-        unsafe {
-            jump_to_kernel(output_driver);
+        // Load the kernel binary (simplified version)
+        match load_kernel_binary(&final_memory_map, output_driver) {
+            Ok((kernel_physical_base, kernel_entry_point)) => {
+                // Update the handoff structure with the actual kernel information
+                unsafe {
+                    HANDOFF.kernel_physical_base = kernel_physical_base;
+                    HANDOFF.kernel_virtual_entry = kernel_entry_point;
+                }
+                
+                output_driver.write_line("✓ Kernel loaded successfully, jumping to kernel...");
+                
+                // Jump to kernel
+                unsafe {
+                    jump_to_kernel(output_driver);
+                }
+            }
+            Err(status) => {
+                output_driver.write_line(&format!("✗ Failed to load kernel: {:?}", status));
+                output_driver.write_line("Cannot proceed with kernel handoff");
+            }
         }
     } else {
         output_driver.write_line("✗ Cannot prepare memory map without memory map");
@@ -331,41 +351,147 @@ pub fn prepare_boot_services_exit(output_driver: &mut OutputDriver, memory_map: 
     }
 }
 
-/// Load the kernel binary into memory
+/// Find a suitable free memory region for kernel loading
 /// 
-/// This function reads the kernel binary from the EFI file system
-/// and loads it into memory at the expected kernel entry point.
+/// This function analyzes the UEFI memory map to find a free memory region
+/// that is large enough to hold the kernel binary.
+/// 
+/// # Arguments
+/// 
+/// * `memory_map` - The UEFI memory map
+/// * `required_size` - The minimum size needed for the kernel
+/// * `output_driver` - Output driver for logging
 /// 
 /// # Returns
 /// 
-/// * `Ok(())` - Kernel loaded successfully
+/// * `Some(address)` - Physical address of suitable free memory region
+/// * `None` - No suitable free memory region found
+fn find_free_memory_region(
+    memory_map: &uefi::mem::memory_map::MemoryMapOwned,
+    required_size: u64,
+    output_driver: &mut OutputDriver,
+) -> Option<u64> {
+    output_driver.write_line(&format!("Searching for free memory region ({} bytes required)...", required_size));
+    
+    let mut best_region: Option<(u64, u64)> = None; // (address, size)
+    let mut total_free_memory = 0u64;
+    
+    for entry in memory_map.entries() {
+        if entry.ty == uefi::mem::memory_map::MemoryType::CONVENTIONAL {
+            let region_size = entry.page_count * hobbyos_shared::constants::memory::UEFI_PAGE_SIZE;
+            total_free_memory += region_size;
+            
+            output_driver.write_line(&format!(
+                "  Free region: 0x{:016X} - 0x{:016X} ({} bytes)",
+                entry.phys_start,
+                entry.phys_start + region_size - 1,
+                region_size
+            ));
+            
+            if region_size >= required_size {
+                // This region is large enough
+                match best_region {
+                    None => {
+                        best_region = Some((entry.phys_start, region_size));
+                        output_driver.write_line(&format!(
+                            "    ✓ Suitable region found at 0x{:016X} ({} bytes)",
+                            entry.phys_start, region_size
+                        ));
+                    }
+                    Some((_, current_size)) if region_size < current_size => {
+                        // This region is smaller (better fit)
+                        best_region = Some((entry.phys_start, region_size));
+                        output_driver.write_line(&format!(
+                            "    ✓ Better region found at 0x{:016X} ({} bytes)",
+                            entry.phys_start, region_size
+                        ));
+                    }
+                    _ => {
+                        // Current best region is still better
+                    }
+                }
+            }
+        }
+    }
+    
+    output_driver.write_line(&format!("Total free memory available: {} bytes ({:.2} MB)", 
+        total_free_memory, total_free_memory as f64 / hobbyos_shared::constants::memory::BYTES_PER_MB));
+    
+    match best_region {
+        Some((address, size)) => {
+            output_driver.write_line(&format!(
+                "✓ Selected memory region: 0x{:016X} ({} bytes, {:.2} MB)",
+                address, size, size as f64 / hobbyos_shared::constants::memory::BYTES_PER_MB
+            ));
+            Some(address)
+        }
+        None => {
+            output_driver.write_line("✗ No suitable free memory region found");
+            output_driver.write_line(&format!("  Required: {} bytes ({:.2} MB)", 
+                required_size, required_size as f64 / hobbyos_shared::constants::memory::BYTES_PER_MB));
+            None
+        }
+    }
+}
+
+/// Load the kernel binary (simplified version)
+/// 
+/// This function allocates memory for the kernel and creates a placeholder binary.
+/// 
+/// # Arguments
+/// 
+/// * `memory_map` - The UEFI memory map
+/// * `output_driver` - Output driver for logging
+/// 
+/// # Returns
+/// 
+/// * `Ok((physical_address, entry_point))` - Physical address and entry point where kernel was loaded
 /// * `Err(status)` - Error loading kernel
-fn load_kernel_binary(output_driver: &mut OutputDriver) -> Result<(), uefi::Status> {
-    output_driver.write_line("Loading kernel binary...");
+fn load_kernel_binary(
+    memory_map: &uefi::mem::memory_map::MemoryMapOwned,
+    output_driver: &mut OutputDriver,
+) -> Result<(u64, u64), uefi::Status> {
+    use crate::kernel_loader::*;
     
-    // For now, we'll implement a simple approach that just sets up the memory
-    // In a real implementation, we would:
-    // 1. Open the kernel binary file from the EFI file system
-    // 2. Read the kernel binary data
-    // 3. Copy it to memory at 0x100000
+    output_driver.write_line("=== Loading Kernel Binary ===");
     
-    // Since we're in a UEFI environment and the kernel binary is not yet
-    // available in the EFI file system, we'll create a minimal kernel
-    // that just displays a message and exits QEMU
+    // Find the kernel file (placeholder)
+    find_kernel_file(output_driver)?;
     
-    output_driver.write_line("Creating minimal kernel in memory...");
+    // Get kernel file information
+    let file_size = get_kernel_file_info(output_driver)?;
     
-    // For testing purposes, we'll create a simple kernel that:
-    // 1. Displays a kernel message
-    // 2. Accesses the handoff structure
-    // 3. Exits QEMU gracefully
+    // Create a placeholder kernel binary
+    let kernel_buffer = create_kernel_binary(file_size, output_driver)?;
     
-    // This is a placeholder implementation
-    // In a real system, we would load the actual kernel binary
-    output_driver.write_line("⚠ Kernel loading not fully implemented");
-    output_driver.write_line("  This is a placeholder for the kernel loader");
+    // Analyze the kernel binary
+    let mut kernel_info = analyze_kernel_binary(&kernel_buffer, output_driver)?;
     
-    Ok(())
+    // Find a suitable free memory region for the kernel
+    output_driver.write_line("Allocating memory for kernel...");
+    let kernel_physical_base = match find_free_memory_region(memory_map, kernel_info.total_memory_size, output_driver) {
+        Some(address) => {
+            output_driver.write_line(&format!("✓ Memory allocated at 0x{:016X}", address));
+            address
+        }
+        None => {
+            output_driver.write_line("✗ Cannot find suitable memory region for kernel");
+            return Err(uefi::Status::OUT_OF_RESOURCES);
+        }
+    };
+    
+    // Load kernel sections into allocated memory
+    let actual_physical_base = load_kernel_sections(&kernel_buffer, &mut kernel_info, output_driver)?;
+    
+    // Calculate the actual entry point (physical address)
+    let entry_point_physical = actual_physical_base + (kernel_info.entry_point - kernel_info.base_virtual_address);
+    
+    output_driver.write_line("✓ Kernel binary loaded successfully");
+    output_driver.write_line(&format!("  Physical base: 0x{:016X}", actual_physical_base));
+    output_driver.write_line(&format!("  Entry point (physical): 0x{:016X}", entry_point_physical));
+    output_driver.write_line(&format!("  Entry point (virtual): 0x{:016X}", kernel_info.entry_point));
+    
+    Ok((actual_physical_base, entry_point_physical))
 }
 
 /// Jump to the kernel entry point
@@ -407,20 +533,15 @@ unsafe fn jump_to_kernel(output_driver: &mut OutputDriver) {
     output_driver.write_line(&format!("Virtual memory enabled: {}", HANDOFF.virtual_memory_enabled));
     output_driver.write_line("Jumping to kernel...");
     
-    // Load the kernel binary into memory
-    if let Err(e) = load_kernel_binary(output_driver) {
-        output_driver.write_line(&format!("✗ Failed to load kernel: {:?}", e));
-        output_driver.write_line("Cannot proceed with kernel handoff");
-        return;
-    }
+    // Get the kernel information from the handoff structure
+    let kernel_physical_base = HANDOFF.kernel_physical_base;
+    let kernel_entry_point = HANDOFF.kernel_virtual_entry;
     
-    output_driver.write_line("✓ Kernel binary loaded successfully");
-    
-    // Define the kernel entry point address (from linker.ld)
-    const KERNEL_ENTRY_POINT: usize = 0x100000;
+    output_driver.write_line(&format!("Kernel physical base: 0x{:016X}", kernel_physical_base));
+    output_driver.write_line(&format!("Kernel entry point: 0x{:016X}", kernel_entry_point));
     
     // Cast the entry point to a function pointer
-    let kernel_entry: extern "C" fn() -> ! = core::mem::transmute(KERNEL_ENTRY_POINT);
+    let kernel_entry: extern "C" fn() -> ! = core::mem::transmute(kernel_entry_point);
     
     output_driver.write_line("Jumping to kernel entry point...");
     
