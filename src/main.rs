@@ -25,6 +25,7 @@ mod display;
 mod hardware;
 mod acpi;
 mod system_info;
+mod drivers;
 
 use handoff::{Handoff, HANDOFF};
 use serial::serial_write_line;
@@ -32,6 +33,13 @@ use display::*;
 use hardware::{collect_hardware_inventory, get_loaded_image_device_path, display_hardware_inventory};
 use system_info::*;
 use acpi::find_acpi_rsdp;
+use drivers::OutputDriver;
+use alloc::format;
+
+/// Helper function to write a line using the output driver
+fn write_line(output_driver: &mut OutputDriver, message: &str) {
+    output_driver.write_line(message);
+}
 
 /// Main UEFI entry point
 /// 
@@ -53,16 +61,19 @@ fn efi_main() -> Status {
     // Step 1: Initialize UEFI logger
     uefi::helpers::init().unwrap();
 
-    // Step 2: Initialize serial communication
+    // Step 2: Initialize serial communication and output driver
     let serial_handle = uefi::boot::locate_handle_buffer(
         SearchType::ByProtocol(&Serial::GUID)
     )
     .ok()
     .and_then(|buf| buf.first().copied());
 
+    // Initialize the output driver system
+    let mut output_driver = OutputDriver::new(serial_handle);
+
     // Step 3: Output startup message
-    serial_write_line(serial_handle, "=== HobbyOS UEFI Loader Starting ===");
-    serial_write_line(serial_handle, "Serial communication initialized");
+    output_driver.write_line("=== HobbyOS UEFI Loader Starting ===");
+    output_driver.write_line(&format!("Output driver initialized: {}", output_driver.current_driver_name()));
 
     // Step 4: Set handoff size
     unsafe { HANDOFF.size = core::mem::size_of::<Handoff>() as u32; }
@@ -106,16 +117,16 @@ fn efi_main() -> Status {
 
     // Step 6: Report GOP status with pretty formatting
     if let Some((w, h, pf, stride, fb_base, fb_size)) = gop_info {
-        serial_write_line(serial_handle, "✓ Graphics Output Protocol (GOP) found and initialized");
+        output_driver.write_line("✓ Graphics Output Protocol (GOP) found and initialized");
         display_gop_info(serial_handle, w as u32, h as u32, pf, stride as u32, fb_base, fb_size as u64);
-        serial_write_line(serial_handle, "✓ Framebuffer information collected and stored in handoff structure");
+        output_driver.write_line("✓ Framebuffer information collected and stored in handoff structure");
     } else {
-        serial_write_line(serial_handle, "✗ Graphics Output Protocol (GOP) not available");
-        serial_write_line(serial_handle, "  No framebuffer information will be available to kernel");
+        output_driver.write_line("✗ Graphics Output Protocol (GOP) not available");
+        output_driver.write_line("  No framebuffer information will be available to kernel");
     }
 
     // Step 7: Collect Memory Map Information
-    serial_write_line(serial_handle, "Collecting memory map information...");
+    write_line(&mut output_driver, "Collecting memory map information...");
     let memory_map = match uefi::boot::memory_map(MemoryType::LOADER_DATA) {
         Ok(mmap) => {
             // Get memory map information using the correct UEFI 0.35 API
@@ -141,7 +152,7 @@ fn efi_main() -> Status {
             Some(mmap)
         }
         Err(_) => {
-            serial_write_line(serial_handle, "✗ Failed to collect memory map");
+            write_line(&mut output_driver, "✗ Failed to collect memory map");
             None
         }
     };
@@ -149,35 +160,39 @@ fn efi_main() -> Status {
     // Step 8: Report Memory Map status with pretty formatting
     if let Some(ref _mmap) = memory_map {
         unsafe {
-            serial_write_line(serial_handle, "✓ Memory map collected successfully");
-            display_memory_map_info(serial_handle, HANDOFF.memory_map_descriptor_size, HANDOFF.memory_map_descriptor_version, HANDOFF.memory_map_entries, HANDOFF.memory_map_size);
-            serial_write_line(serial_handle, "✓ Memory map information stored in handoff structure");
+            HANDOFF.memory_map_buffer_ptr = memory_map.as_ref().unwrap().buffer().as_ptr() as u64;
         }
+        
+        write_line(&mut output_driver, "✓ Memory map collected successfully");
+        unsafe {
+            display_memory_map_info(serial_handle, HANDOFF.memory_map_descriptor_size, HANDOFF.memory_map_descriptor_version, HANDOFF.memory_map_entries, HANDOFF.memory_map_size);
+        }
+        write_line(&mut output_driver, "✓ Memory map information stored in handoff structure");
     } else {
-        serial_write_line(serial_handle, "✗ Memory map collection failed");
-        serial_write_line(serial_handle, "  No memory information will be available to kernel");
+        write_line(&mut output_driver, "✗ Memory map collection failed");
+        write_line(&mut output_driver, "  No memory information will be available to kernel");
     }
 
     // Step 9: Locate ACPI RSDP Table
-    serial_write_line(serial_handle, "Locating ACPI RSDP table...");
-    serial_write_line(serial_handle, "  Debug: About to call find_acpi_rsdp");
+    write_line(&mut output_driver, "Locating ACPI RSDP table...");
+    write_line(&mut output_driver, "  Debug: About to call find_acpi_rsdp");
     let rsdp_address = find_acpi_rsdp(serial_handle).unwrap_or(0);
-    serial_write_line(serial_handle, "  Debug: find_acpi_rsdp returned");
+    write_line(&mut output_driver, "  Debug: find_acpi_rsdp returned");
     unsafe { HANDOFF.acpi_rsdp = rsdp_address; }
 
     // Step 10: Report ACPI status with pretty formatting
     if rsdp_address != 0 {
-        serial_write_line(serial_handle, "✓ ACPI RSDP table found");
+        write_line(&mut output_driver, "✓ ACPI RSDP table found");
         display_acpi_info(serial_handle, rsdp_address);
-        serial_write_line(serial_handle, "✓ ACPI information stored in handoff structure");
+        write_line(&mut output_driver, "✓ ACPI information stored in handoff structure");
     } else {
-        serial_write_line(serial_handle, "✗ ACPI RSDP table not found");
+        write_line(&mut output_driver, "✗ ACPI RSDP table not found");
         display_acpi_info(serial_handle, rsdp_address);
-        serial_write_line(serial_handle, "  No ACPI support will be available to kernel");
+        write_line(&mut output_driver, "  No ACPI support will be available to kernel");
     }
 
     // Step 11: Collect Device Tree Information
-    serial_write_line(serial_handle, "Collecting device tree information...");
+    write_line(&mut output_driver, "Collecting device tree information...");
     let device_tree_info = find_device_tree();
     match device_tree_info {
         Some((dtb_ptr, dtb_size)) => {
@@ -185,7 +200,7 @@ fn efi_main() -> Status {
                 HANDOFF.device_tree_ptr = dtb_ptr;
                 HANDOFF.device_tree_size = dtb_size;
             }
-            serial_write_line(serial_handle, "✓ Device tree information collected");
+            write_line(&mut output_driver, "✓ Device tree information collected");
             display_device_tree_info(serial_handle, dtb_ptr, dtb_size);
         }
         None => {

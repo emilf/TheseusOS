@@ -45,14 +45,18 @@ OVMF_VARS_RW="$SCRIPT_DIR/build/OVMF_VARS.fd"
 # Configure QEMU options based on mode
 if [[ "$HEADLESS" == "true" || "$HEADLESS" == "headless" ]]; then
   echo "Starting QEMU in headless mode..."
-  QEMU_DISPLAY="-nographic"
-  QEMU_MONITOR="-monitor none"
-  QEMU_SERIAL="-serial stdio"
+  echo "  QEMU Debug Driver output: stdout (port 0xe9)"
+  QEMU_DISPLAY="-nographic -serial null"
+  QEMU_MONITOR="-monitor null"
+  QEMU_DEBUG="-device isa-debugcon,chardev=debugcon"
+  QEMU_DEBUG_CHAR="-chardev stdio,id=debugcon"
 else
   echo "Starting QEMU in headed mode..."
+  echo "  QEMU Debug Driver output: debug.log"
   QEMU_DISPLAY=""
   QEMU_MONITOR="-monitor stdio"
-  QEMU_SERIAL="-serial file:serial.log"
+  QEMU_DEBUG="-device isa-debugcon,chardev=debugcon"
+  QEMU_DEBUG_CHAR="-chardev file,id=debugcon,path=debug.log"
 fi
 
 # Optional extra QEMU options (e.g., -S -s) via QEMU_OPTS env
@@ -66,7 +70,8 @@ QEMU_CMD="qemu-system-x86_64 \
   -drive if=pflash,format=raw,readonly=on,file=\"$OVMF_CODE\" \
   -drive if=pflash,format=raw,file=\"$OVMF_VARS_RW\" \
   -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-  $QEMU_SERIAL \
+  $QEMU_DEBUG \
+  $QEMU_DEBUG_CHAR \
   $QEMU_DISPLAY \
   $QEMU_MONITOR \
   -drive format=raw,file=fat:rw:build \

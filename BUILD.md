@@ -47,7 +47,33 @@ QEMU_OPTS="-S -s" ./startQemu.sh headless
 - **ESP Creation**: Automatically creates the EFI System Partition with the correct structure
 - **Dependencies**: Builds in the correct order (cargo → ESP → BIOS files)
 - **Auto-Exit**: UEFI application exits QEMU gracefully when complete (much faster testing!)
+- **Driver Output**: Configures multiple serial ports to capture output from different drivers
 - **Error Handling**: Provides clear error messages if BIOS files are missing
+
+## Driver Output Configuration
+
+The UEFI loader uses a simplified driver system optimized for QEMU development:
+
+### QEMU Debug Driver (Default)
+- **Output**: Direct I/O port access to QEMU debug port (0xe9)
+- **Headless mode**: Goes to stdout (this terminal)
+- **Headed mode**: Goes to `debug.log`
+- **Use case**: QEMU development and testing (simplest option)
+
+### Other Available Drivers
+- **UEFI Serial Driver**: Uses UEFI Serial I/O protocol (for real hardware)
+- **Raw Serial Driver**: Direct COM1 hardware access (fallback for real hardware)
+
+### Monitoring Output
+```bash
+# Terminal 1: Start QEMU (headless mode)
+make run
+
+# Terminal 2: Monitor QEMU debug output (headed mode)
+tail -f debug.log
+```
+
+See `DRIVER_OUTPUT.md` for detailed configuration options.
 
 ## System Requirements
 
