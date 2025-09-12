@@ -16,6 +16,43 @@ use alloc::vec;
 use theseus_shared::constants::kernel;
 use crate::drivers::manager::write_line;
 
+/// ELF Program Header Type - PT_LOAD
+const PT_LOAD: u32 = 1;
+
+/// ELF Program Header
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct ElfProgramHeader {
+    p_type: u32,        // Segment type
+    p_flags: u32,       // Segment flags
+    p_offset: u64,      // File offset
+    p_vaddr: u64,       // Virtual address
+    p_paddr: u64,       // Physical address
+    p_filesz: u64,      // File size
+    p_memsz: u64,       // Memory size
+    p_align: u64,       // Alignment
+}
+
+/// ELF Header
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct ElfHeader {
+    e_ident: [u8; 16],  // ELF identification
+    e_type: u16,        // Object file type
+    e_machine: u16,     // Machine type
+    e_version: u32,     // Object file version
+    e_entry: u64,       // Entry point virtual address
+    e_phoff: u64,       // Program header table file offset
+    e_shoff: u64,       // Section header table file offset
+    e_flags: u32,       // Processor-specific flags
+    e_ehsize: u16,      // ELF header size in bytes
+    e_phentsize: u16,   // Program header table entry size
+    e_phnum: u16,       // Program header table entry count
+    e_shentsize: u16,   // Section header table entry size
+    e_shnum: u16,       // Section header table entry count
+    e_shstrndx: u16,    // Section header string table index
+}
+
 /// Kernel section information
 #[derive(Debug, Clone)]
 pub struct KernelSection {
@@ -100,13 +137,12 @@ pub fn find_kernel_file() -> Result<RegularFile, Status> {
 /// # Arguments
 /// 
 /// * `file` - Kernel file handle
-/// * `output_driver` - Output driver for logging
 /// 
 /// # Returns
 /// 
 /// * `Ok(file_size)` - Actual file size
 /// * `Err(status)` - Error getting file info
-pub fn get_kernel_file_info(file: &mut RegularFile, ) -> Result<u64, Status> {
+pub fn get_kernel_file_info(file: &mut RegularFile) -> Result<u64, Status> {
     write_line("Getting kernel file information...");
     
     // Get actual file information using UEFI FileInfo API
@@ -138,13 +174,12 @@ pub fn get_kernel_file_info(file: &mut RegularFile, ) -> Result<u64, Status> {
 /// 
 /// * `file` - Kernel file handle
 /// * `file_size` - Size of the kernel file
-/// * `output_driver` - Output driver for logging
 /// 
 /// # Returns
 /// 
 /// * `Ok(Vec<u8>)` - Kernel binary data
 /// * `Err(status)` - Error reading kernel file
-pub fn read_kernel_binary(file: &mut RegularFile, file_size: u64, ) -> Result<Vec<u8>, Status> {
+pub fn read_kernel_binary(file: &mut RegularFile, file_size: u64) -> Result<Vec<u8>, Status> {
     write_line("Reading kernel binary from file...");
     
     // Allocate buffer for kernel data
@@ -172,13 +207,12 @@ pub fn read_kernel_binary(file: &mut RegularFile, file_size: u64, ) -> Result<Ve
 /// # Arguments
 /// 
 /// * `kernel_data` - Raw kernel binary data
-/// * `output_driver` - Output driver for logging
 /// 
 /// # Returns
 /// 
 /// * `Ok(KernelInfo)` - Parsed kernel information
 /// * `Err(status)` - Error parsing kernel
-pub fn analyze_kernel_binary(kernel_data: &[u8], ) -> Result<KernelInfo, Status> {
+pub fn analyze_kernel_binary(kernel_data: &[u8]) -> Result<KernelInfo, Status> {
     write_line("Analyzing kernel binary...");
     
     // Check ELF magic number
@@ -189,60 +223,159 @@ pub fn analyze_kernel_binary(kernel_data: &[u8], ) -> Result<KernelInfo, Status>
     
     write_line("✓ Valid ELF magic number found");
     
-    // For now, create a simple kernel info structure
-    // In a real implementation, this would parse the ELF headers
-    let entry_point = 0xFFFFFFFF80000000; // Virtual entry point
-    let sections = vec![
-        KernelSection {
-            name: ".text",
-            virtual_address: 0xFFFFFFFF80000000,
-            physical_address: 0x100000, // Will be updated during loading
-            size: 65536,
-            file_offset: 0,
-            flags: 0x5, // RX (readable, executable)
-        },
-        KernelSection {
-            name: ".rodata",
-            virtual_address: 0xFFFFFFFF80010000,
-            physical_address: 0x110000,
-            size: 32768,
-            file_offset: 65536,
-            flags: 0x4, // R (readable)
-        },
-        KernelSection {
-            name: ".data",
-            virtual_address: 0xFFFFFFFF80018000,
-            physical_address: 0x118000,
-            size: 16384,
-            file_offset: 98304,
-            flags: 0x6, // RW (readable, writable)
-        },
-        KernelSection {
-            name: ".bss",
-            virtual_address: 0xFFFFFFFF8001C000,
-            physical_address: 0x11C000,
-            size: 16384,
-            file_offset: 0, // BSS has no file data
-            flags: 0x6, // RW (readable, writable)
-        },
-    ];
+    // Parse the ELF header manually to avoid struct alignment issues
+    if kernel_data.len() < 64 {
+        write_line("✗ ELF file too small to contain header");
+        return Err(Status::INVALID_PARAMETER);
+    }
     
-    let total_memory_size = sections.iter().map(|s| s.size).sum();
+    // Validate ELF magic number
+    if kernel_data[0] != 0x7f || kernel_data[1] != 0x45 || 
+       kernel_data[2] != 0x4c || kernel_data[3] != 0x46 {
+        write_line("✗ Invalid ELF magic number in header");
+        return Err(Status::INVALID_PARAMETER);
+    }
+    
+    // Check if it's 64-bit ELF
+    if kernel_data[4] != 2 { // EI_CLASS = 2 for 64-bit
+        write_line("✗ Not a 64-bit ELF file");
+        return Err(Status::INVALID_PARAMETER);
+    }
+    
+    write_line("✓ ELF binary parsed successfully");
+    
+    // Debug: Print raw ELF header bytes
+    write_line("  Raw ELF header bytes (first 32 bytes):");
+    for i in 0..32 {
+        if i % 8 == 0 {
+            write_line("");
+        }
+        write_line(&format!("{:02X} ", kernel_data[i]));
+    }
+    write_line("");
+    
+    // Debug: Print the actual bytes we're reading for entry point
+    write_line("  Entry point bytes (24-31):");
+    for i in 24..32 {
+        write_line(&format!("    [{}]: 0x{:02X}", i, kernel_data[i]));
+    }
+    
+    // Extract entry point from bytes 24-31 (little endian)
+    let entry_point = u64::from_le_bytes([
+        kernel_data[24], kernel_data[25], kernel_data[26], kernel_data[27],
+        kernel_data[28], kernel_data[29], kernel_data[30], kernel_data[31]
+    ]);
+    
+    write_line(&format!("  Entry point: 0x{:016X}", entry_point));
+    
+    // Extract program header offset from bytes 32-39
+    let ph_offset = u64::from_le_bytes([
+        kernel_data[32], kernel_data[33], kernel_data[34], kernel_data[35],
+        kernel_data[36], kernel_data[37], kernel_data[38], kernel_data[39]
+    ]);
+    
+    // Extract program header entry size from bytes 54-55
+    let ph_entry_size = u16::from_le_bytes([kernel_data[54], kernel_data[55]]) as usize;
+    
+    // Extract number of program headers from bytes 56-57
+    let ph_num = u16::from_le_bytes([kernel_data[56], kernel_data[57]]) as usize;
+    
+    write_line(&format!("  Program headers: {} entries at offset 0x{:X}", ph_num, ph_offset));
+    
+    // Parse program headers to get loadable segments
+    let mut sections = Vec::new();
+    let mut total_memory_size = 0u64;
+    
+    for i in 0..ph_num {
+        let ph_start = ph_offset as usize + (i * ph_entry_size);
+        let ph_end = ph_start + ph_entry_size;
+        
+        if ph_end > kernel_data.len() {
+            write_line(&format!("✗ Program header {} extends beyond file", i));
+            continue;
+        }
+        
+        // Parse program header manually
+        let p_type = u32::from_le_bytes([
+            kernel_data[ph_start], kernel_data[ph_start + 1], 
+            kernel_data[ph_start + 2], kernel_data[ph_start + 3]
+        ]);
+        
+        let p_flags = u32::from_le_bytes([
+            kernel_data[ph_start + 4], kernel_data[ph_start + 5], 
+            kernel_data[ph_start + 6], kernel_data[ph_start + 7]
+        ]);
+        
+        let p_offset = u64::from_le_bytes([
+            kernel_data[ph_start + 8], kernel_data[ph_start + 9], 
+            kernel_data[ph_start + 10], kernel_data[ph_start + 11],
+            kernel_data[ph_start + 12], kernel_data[ph_start + 13], 
+            kernel_data[ph_start + 14], kernel_data[ph_start + 15]
+        ]);
+        
+        let p_vaddr = u64::from_le_bytes([
+            kernel_data[ph_start + 16], kernel_data[ph_start + 17], 
+            kernel_data[ph_start + 18], kernel_data[ph_start + 19],
+            kernel_data[ph_start + 20], kernel_data[ph_start + 21], 
+            kernel_data[ph_start + 22], kernel_data[ph_start + 23]
+        ]);
+        
+        let p_memsz = u64::from_le_bytes([
+            kernel_data[ph_start + 40], kernel_data[ph_start + 41], 
+            kernel_data[ph_start + 42], kernel_data[ph_start + 43],
+            kernel_data[ph_start + 44], kernel_data[ph_start + 45], 
+            kernel_data[ph_start + 46], kernel_data[ph_start + 47]
+        ]);
+        
+        // Only process PT_LOAD segments (loadable segments)
+        if p_type == PT_LOAD {
+            let section_name = match i {
+                0 => ".text",
+                1 => ".rodata", 
+                2 => ".data",
+                _ => ".unknown",
+            };
+            
+            let flags = if p_flags & 0x1 != 0 {
+                if p_flags & 0x2 != 0 {
+                    0x7 // RWX (readable, writable, executable)
+                } else {
+                    0x5 // RX (readable, executable)
+                }
+            } else if p_flags & 0x2 != 0 {
+                0x6 // RW (readable, writable)
+            } else {
+                0x4 // R (readable)
+            };
+            
+            let section = KernelSection {
+                name: section_name,
+                virtual_address: p_vaddr,
+                physical_address: 0, // Will be updated during loading
+                size: p_memsz, // Use memory size, not file size
+                file_offset: p_offset,
+                flags,
+            };
+            
+            total_memory_size += section.size;
+            
+            write_line(&format!("  {}: 0x{:016X} - 0x{:016X} ({} bytes, file offset: 0x{:X})",
+                section.name,
+                section.virtual_address,
+                section.virtual_address + section.size - 1,
+                section.size,
+                section.file_offset
+            ));
+            
+            sections.push(section);
+        }
+    }
     
     write_line("✓ Kernel analysis complete");
     write_line(&format!("  Entry point: 0x{:016X}", entry_point));
     write_line(&format!("  Total memory required: {} bytes ({:.2} MB)", 
         total_memory_size, total_memory_size as f64 / theseus_shared::constants::memory::BYTES_PER_MB));
-    write_line(&format!("  Sections: {}", sections.len()));
-    
-    for section in &sections {
-        write_line(&format!("    {}: 0x{:016X} - 0x{:016X} ({} bytes)",
-            section.name,
-            section.virtual_address,
-            section.virtual_address + section.size - 1,
-            section.size
-        ));
-    }
+    write_line(&format!("  Loadable segments: {}", sections.len()));
     
     Ok(KernelInfo {
         entry_point,
@@ -257,13 +390,12 @@ pub fn analyze_kernel_binary(kernel_data: &[u8], ) -> Result<KernelInfo, Status>
 /// 
 /// * `memory_map` - UEFI memory map
 /// * `required_size` - Size of memory needed
-/// * `output_driver` - Output driver for logging
 /// 
 /// # Returns
 /// 
 /// * `Ok(address)` - Physical address of free memory region
 /// * `Err(status)` - Error finding free memory
-pub fn find_free_memory_region(memory_map: &uefi::mem::memory_map::MemoryMapOwned, required_size: u64, ) -> Result<u64, Status> {
+pub fn find_free_memory_region(memory_map: &uefi::mem::memory_map::MemoryMapOwned, required_size: u64) -> Result<u64, Status> {
     write_line(&format!("Searching for free memory region ({} bytes required)...", required_size));
     
     let mut best_address = None;
@@ -312,48 +444,62 @@ pub fn find_free_memory_region(memory_map: &uefi::mem::memory_map::MemoryMapOwne
 /// * `kernel_info` - Kernel information
 /// * `kernel_data` - Raw kernel binary data
 /// * `physical_base` - Physical base address for loading
-/// * `output_driver` - Output driver for logging
 /// 
 /// # Returns
 /// 
 /// * `Ok(physical_entry)` - Physical entry point address
 /// * `Err(status)` - Error loading kernel
-pub fn load_kernel_sections(kernel_info: &mut KernelInfo, kernel_data: &[u8], physical_base: u64, ) -> Result<u64, Status> {
+pub fn load_kernel_sections(kernel_info: &mut KernelInfo, kernel_data: &[u8], physical_base: u64) -> Result<u64, Status> {
     write_line("Loading kernel sections into memory...");
     write_line(&format!("Loading kernel at physical address: 0x{:016X}", physical_base));
     
-    let mut current_physical = physical_base;
     let mut physical_entry = 0;
     
     for section in &mut kernel_info.sections {
-        section.physical_address = current_physical;
+        // Calculate physical address based on virtual address offset from base
+        let virtual_offset = section.virtual_address - kernel_info.entry_point;
+        section.physical_address = physical_base + virtual_offset;
         
-        if section.name == ".text" && section.virtual_address == kernel_info.entry_point {
-            physical_entry = current_physical;
+        // Check if this is the entry point section
+        if section.virtual_address == kernel_info.entry_point {
+            physical_entry = section.physical_address;
         }
         
-        write_line(&format!("  {}: 0x{:016X} -> 0x{:016X}",
-            section.name, section.virtual_address, section.physical_address));
+        write_line(&format!("  {}: 0x{:016X} -> 0x{:016X} ({} bytes)",
+            section.name, section.virtual_address, section.physical_address, section.size));
         
-        if section.name == ".bss" {
-            // BSS section needs to be zeroed
-            unsafe {
-                core::ptr::write_bytes(current_physical as *mut u8, 0, section.size as usize);
-            }
-            write_line(&format!("    Zeroing {} bytes for BSS section", section.size));
+        // Calculate how much data to copy from file
+        let file_data_size = if section.file_offset + section.size > kernel_data.len() as u64 {
+            kernel_data.len() - section.file_offset as usize
         } else {
+            section.size as usize
+        };
+        
+        if file_data_size > 0 {
             // Copy section data from file
-            let file_data = &kernel_data[section.file_offset as usize..(section.file_offset + section.size) as usize];
+            let file_data = &kernel_data[section.file_offset as usize..(section.file_offset as usize + file_data_size)];
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     file_data.as_ptr(),
-                    current_physical as *mut u8,
-                    section.size as usize
+                    section.physical_address as *mut u8,
+                    file_data_size
                 );
             }
+            write_line(&format!("    Copied {} bytes from file offset 0x{:X}", file_data_size, section.file_offset));
         }
         
-        current_physical += section.size;
+        // Zero out any remaining memory (for BSS or uninitialized data)
+        if section.size as usize > file_data_size {
+            let zero_size = section.size as usize - file_data_size;
+            unsafe {
+                core::ptr::write_bytes(
+                    (section.physical_address as *mut u8).add(file_data_size),
+                    0,
+                    zero_size
+                );
+            }
+            write_line(&format!("    Zeroed {} bytes for uninitialized data", zero_size));
+        }
     }
     
     write_line("✓ Kernel sections loaded successfully");
@@ -364,15 +510,13 @@ pub fn load_kernel_sections(kernel_info: &mut KernelInfo, kernel_data: &[u8], ph
 /// 
 /// # Arguments
 /// 
-/// * `system_table` - UEFI system table
 /// * `memory_map` - UEFI memory map
-/// * `output_driver` - Output driver for logging
 /// 
 /// # Returns
 /// 
 /// * `Ok((physical_entry, virtual_entry))` - Entry point addresses
 /// * `Err(status)` - Error loading kernel
-pub fn load_kernel_binary(memory_map: &uefi::mem::memory_map::MemoryMapOwned, ) -> Result<(u64, u64), uefi::Status> {
+pub fn load_kernel_binary(memory_map: &uefi::mem::memory_map::MemoryMapOwned) -> Result<(u64, u64), uefi::Status> {
     write_line("=== Loading Kernel Binary ===");
     write_line("Starting kernel loading process...");
     

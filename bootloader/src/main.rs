@@ -22,11 +22,12 @@ mod boot_sequence;
 mod qemu_exit;
 
 // Use shared library
-use hobbyos_shared::constants;
+use theseus_shared::constants;
 
 // Include bootloader-specific modules
 mod drivers;
 mod kernel_loader;
+mod virtual_memory;
 
 use boot_sequence::*;
 use uefi::Status;
@@ -113,6 +114,7 @@ fn efi_main() -> Status {
     OutputDriver::init_global();
     
     write_line("=== TheseusOS UEFI Loader Starting ===");
+    write_line("DEBUG: Main function started successfully");
     write_line(&format!("Output driver initialized: {}", drivers::manager::current_driver_name()));
 
     // Test panic handler (uncomment to test)

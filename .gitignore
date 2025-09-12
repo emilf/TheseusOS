@@ -1,5 +1,4 @@
 /target/
 /build/
 Cargo.lock
-
-
+debug.log
