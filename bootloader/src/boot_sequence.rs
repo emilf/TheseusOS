@@ -10,7 +10,7 @@ use uefi::boot::{SearchType, MemoryType};
 use uefi::mem::memory_map::MemoryMap;
 use uefi::Status;
 
-use hobbyos_shared::handoff::{Handoff, HANDOFF};
+use theseus_shared::handoff::{Handoff, HANDOFF};
 use crate::display::*;
 use crate::hardware::{collect_hardware_inventory, get_loaded_image_device_path, display_hardware_inventory};
 use crate::system_info::*;
@@ -324,7 +324,7 @@ pub fn prepare_boot_services_exit(
                 unsafe {
                     HANDOFF.memory_map_entries = final_memory_map.len() as u32;
                     // Calculate memory map size using the standard UEFI descriptor size
-                    HANDOFF.memory_map_size = (final_memory_map.len() * hobbyos_shared::constants::memory::UEFI_MEMORY_DESCRIPTOR_SIZE) as u32;
+                    HANDOFF.memory_map_size = (final_memory_map.len() * theseus_shared::constants::memory::UEFI_MEMORY_DESCRIPTOR_SIZE) as u32;
                     // Note: The memory map buffer pointer is already set in collect_memory_map
                 }
                 
@@ -371,7 +371,7 @@ fn find_free_memory_region(
     
     for entry in memory_map.entries() {
         if entry.ty == uefi::mem::memory_map::MemoryType::CONVENTIONAL {
-            let region_size = entry.page_count * hobbyos_shared::constants::memory::UEFI_PAGE_SIZE;
+            let region_size = entry.page_count * theseus_shared::constants::memory::UEFI_PAGE_SIZE;
             total_free_memory += region_size;
             
             write_line(&format!(
@@ -408,20 +408,20 @@ fn find_free_memory_region(
     }
     
     write_line(&format!("Total free memory available: {} bytes ({:.2} MB)", 
-        total_free_memory, total_free_memory as f64 / hobbyos_shared::constants::memory::BYTES_PER_MB));
+        total_free_memory, total_free_memory as f64 / theseus_shared::constants::memory::BYTES_PER_MB));
     
     match best_region {
         Some((address, size)) => {
             write_line(&format!(
                 "✓ Selected memory region: 0x{:016X} ({} bytes, {:.2} MB)",
-                address, size, size as f64 / hobbyos_shared::constants::memory::BYTES_PER_MB
+                address, size, size as f64 / theseus_shared::constants::memory::BYTES_PER_MB
             ));
             Some(address)
         }
         None => {
             write_line("✗ No suitable free memory region found");
             write_line(&format!("  Required: {} bytes ({:.2} MB)", 
-                required_size, required_size as f64 / hobbyos_shared::constants::memory::BYTES_PER_MB));
+                required_size, required_size as f64 / theseus_shared::constants::memory::BYTES_PER_MB));
             None
         }
     }

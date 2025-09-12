@@ -3,8 +3,8 @@
 
 extern crate alloc;
 
-use hobbyos_shared::handoff::HANDOFF;
-use hobbyos_shared::constants::{io_ports, exit_codes};
+use theseus_shared::handoff::HANDOFF;
+use theseus_shared::constants::{io_ports, exit_codes};
 
 /// Simple global allocator for the kernel
 /// This is a placeholder - in a real kernel you'd implement proper memory management

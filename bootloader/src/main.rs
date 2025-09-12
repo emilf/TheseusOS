@@ -22,11 +22,12 @@ mod boot_sequence;
 mod qemu_exit;
 
 // Use shared library
-use hobbyos_shared::constants;
+use theseus_shared::constants;
 
 // Include bootloader-specific modules
 mod drivers;
 mod kernel_loader;
+mod memory;
 
 use boot_sequence::*;
 use uefi::Status;
@@ -117,6 +118,18 @@ fn efi_main() -> Status {
 
     // Test panic handler (uncomment to test)
     // panic!("Testing panic handler - this should exit QEMU with error message");
+    
+    // Test memory allocation functions
+    write_line("=== Testing Memory Management ===");
+    match memory::test_memory_allocation() {
+        Ok(_) => {
+            write_line("✓ Memory allocation tests passed");
+        },
+        Err(status) => {
+            write_line(&format!("✗ Memory allocation tests failed: {:?}", status));
+            return status;
+        }
+    }
 
     // Collect all system information
     collect_graphics_info();

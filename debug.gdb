@@ -1,4 +1,4 @@
-# GDB script for debugging hobbyos_efi
+# GDB script for debugging theseus_efi
 set architecture i386:x86-64
 target remote localhost:1234
 
