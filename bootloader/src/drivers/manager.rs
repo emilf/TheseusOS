@@ -78,24 +78,22 @@ impl OutputDriver {
     
     /// Write a line using the current driver
     pub fn write_line(&mut self, message: &str) -> bool {
-        // Don't update driver after boot services are exited to avoid allocations
-        // self.update_driver();
+        // Update driver selection in case boot services status changed
+        self.update_driver();
         
         match self.current_driver {
             DriverType::UefiSerial => {
-                // Don't check availability after boot services are exited to avoid allocations
-                // if self.uefi_serial.is_available() {
-                //     return self.uefi_serial.write_line(message);
-                // }
+                if self.uefi_serial.is_available() {
+                    return self.uefi_serial.write_line(message);
+                }
                 // Fallback to QEMU debug if UEFI serial fails
                 self.current_driver = DriverType::QemuDebug;
                 self.qemu_debug.write_line(message)
             }
             DriverType::QemuDebug => {
-                // Don't check availability after boot services are exited to avoid allocations
-                // if self.qemu_debug.is_available() {
-                //     return self.qemu_debug.write_line(message);
-                // }
+                if self.qemu_debug.is_available() {
+                    return self.qemu_debug.write_line(message);
+                }
                 // Fallback to raw serial if QEMU debug fails
                 self.current_driver = DriverType::RawSerial;
                 self.raw_serial.write_line(message)

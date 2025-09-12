@@ -10,47 +10,12 @@ use uefi::boot::{SearchType, MemoryType};
 use uefi::mem::memory_map::MemoryMap;
 use uefi::Status;
 
-use theseus_shared::handoff::{Handoff, HANDOFF};
+use hobbyos_shared::handoff::{Handoff, HANDOFF};
 use crate::display::*;
 use crate::hardware::{collect_hardware_inventory, get_loaded_image_device_path, display_hardware_inventory};
 use crate::system_info::*;
 use crate::acpi::find_acpi_rsdp;
 use crate::drivers::manager::write_line;
-use crate::virtual_memory::VirtualMemoryManager;
-
-/// Direct QEMU debug output function that bypasses the driver system
-/// This avoids any allocations and works after exit_boot_services
-fn qemu_debug_output(message: &str) {
-    const QEMU_DEBUG_PORT: u16 = 0xe9;
-    
-    // Write each character directly to QEMU debug port
-    for &byte in message.as_bytes() {
-        unsafe {
-            core::arch::asm!(
-                "out dx, al",
-                in("dx") QEMU_DEBUG_PORT,
-                in("al") byte,
-                options(nomem, nostack, preserves_flags)
-            );
-        }
-    }
-    
-    // Write newline
-    unsafe {
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") QEMU_DEBUG_PORT,
-            in("al") b'\r',
-            options(nomem, nostack, preserves_flags)
-        );
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") QEMU_DEBUG_PORT,
-            in("al") b'\n',
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-}
 use alloc::format;
 
 /// Initialize the UEFI environment and output driver
@@ -334,80 +299,44 @@ pub fn prepare_boot_services_exit(
         write_line("✓ Memory map ready for kernel handoff");
         write_line("Exiting boot services...");
         
-        // Skip kernel loading for now - focus on virtual memory
-        write_line("Skipping kernel loading - focusing on virtual memory setup...");
-        
-        // Set up dummy kernel info for virtual memory testing
-        unsafe {
-            HANDOFF.kernel_physical_base = 0x100000;
-            HANDOFF.kernel_virtual_entry = 0xffffffff80000000;
-        }
-        
-        write_line("✓ Dummy kernel info set, setting up virtual memory before exiting boot services...");
-        
-        // Initialize virtual memory manager BEFORE exiting boot services
-        write_line("Initializing virtual memory manager...");
-        let mut vm_manager = VirtualMemoryManager::new();
-        
-        // Set up virtual memory mapping before exiting boot services
-        match vm_manager.setup_kernel_mapping() {
-            Ok(_) => {
-                write_line("✓ Virtual memory mapping set up successfully");
-                
-                // Update handoff structure with page table information
+        // Load the kernel binary BEFORE exiting boot services
+        // (we need UEFI file system protocols to read the kernel file)
+        write_line("About to call load_kernel_binary...");
+        match crate::kernel_loader::load_kernel_binary(mmap) {
+            Ok((kernel_physical_base, kernel_entry_point)) => {
+                // Update the handoff structure with the actual kernel information
                 unsafe {
-                    HANDOFF.page_table_root = vm_manager.get_pml4_physical();
-                    HANDOFF.virtual_memory_enabled = 1;
+                    HANDOFF.kernel_physical_base = kernel_physical_base;
+                    HANDOFF.kernel_virtual_entry = kernel_entry_point;
                 }
                 
-                unsafe {
-                    write_line(&format!("Page table root: 0x{:016X}", HANDOFF.page_table_root));
-                }
-            }
-            Err(e) => {
-                write_line(&format!("✗ Failed to set up virtual memory mapping: {}", e));
-                write_line("Falling back to identity mapping...");
+                write_line("✓ Kernel loaded successfully, exiting boot services...");
                 
-                // Fallback to identity mapping
+                // Now exit boot services
+                let final_memory_map = unsafe {
+                    uefi::boot::exit_boot_services(None)
+                };
+                
+                write_line("✓ Successfully exited boot services");
+                write_line(&format!("Final memory map has {} entries", final_memory_map.len()));
+                
+                // Update the handoff structure with the final memory map
                 unsafe {
-                    HANDOFF.page_table_root = 0;
-                    HANDOFF.virtual_memory_enabled = 0;
+                    HANDOFF.memory_map_entries = final_memory_map.len() as u32;
+                    // Calculate memory map size using the standard UEFI descriptor size
+                    HANDOFF.memory_map_size = (final_memory_map.len() * hobbyos_shared::constants::memory::UEFI_MEMORY_DESCRIPTOR_SIZE) as u32;
+                    // Note: The memory map buffer pointer is already set in collect_memory_map
+                }
+                
+                // Jump to kernel
+                unsafe {
+                    jump_to_kernel();
                 }
             }
-        }
-        
-        write_line("✓ Virtual memory setup complete, exiting boot services...");
-        
-        // Store memory map info before exiting boot services
-        let memory_map_entries = mmap.len();
-        let memory_map_size = memory_map_entries * theseus_shared::constants::memory::UEFI_MEMORY_DESCRIPTOR_SIZE;
-        
-        write_line(&format!("Memory map has {} entries before exit", memory_map_entries));
-        
-        // Now exit boot services
-        let final_memory_map = unsafe {
-            uefi::boot::exit_boot_services(None)
-        };
-        
-        // Use direct QEMU output after exit_boot_services to avoid allocations
-        qemu_debug_output("✓ Successfully exited boot services");
-        qemu_debug_output("DEBUG: After exit_boot_services call");
-        qemu_debug_output("DEBUG: About to update handoff structure...");
-        qemu_debug_output("DEBUG: Reached handoff structure update");
-        
-        // Update the handoff structure with the final memory map
-        qemu_debug_output("DEBUG: Updating handoff structure...");
-        unsafe {
-            HANDOFF.memory_map_entries = memory_map_entries as u32;
-            qemu_debug_output("DEBUG: Updated memory_map_entries");
-            // Calculate memory map size using the standard UEFI descriptor size
-            HANDOFF.memory_map_size = memory_map_size as u32;
-            // Note: The memory map buffer pointer is already set in collect_memory_map
-        }
-        
-        // Jump to kernel
-        unsafe {
-            jump_to_kernel();
+            Err(status) => {
+                write_line(&format!("✗ Failed to load kernel: {:?}", status));
+                write_line("Cannot proceed with kernel handoff");
+            }
         }
     } else {
         write_line("✗ Cannot prepare memory map without memory map");
@@ -442,7 +371,7 @@ fn find_free_memory_region(
     
     for entry in memory_map.entries() {
         if entry.ty == uefi::mem::memory_map::MemoryType::CONVENTIONAL {
-            let region_size = entry.page_count * theseus_shared::constants::memory::UEFI_PAGE_SIZE;
+            let region_size = entry.page_count * hobbyos_shared::constants::memory::UEFI_PAGE_SIZE;
             total_free_memory += region_size;
             
             write_line(&format!(
@@ -479,20 +408,20 @@ fn find_free_memory_region(
     }
     
     write_line(&format!("Total free memory available: {} bytes ({:.2} MB)", 
-        total_free_memory, total_free_memory as f64 / theseus_shared::constants::memory::BYTES_PER_MB));
+        total_free_memory, total_free_memory as f64 / hobbyos_shared::constants::memory::BYTES_PER_MB));
     
     match best_region {
         Some((address, size)) => {
             write_line(&format!(
                 "✓ Selected memory region: 0x{:016X} ({} bytes, {:.2} MB)",
-                address, size, size as f64 / theseus_shared::constants::memory::BYTES_PER_MB
+                address, size, size as f64 / hobbyos_shared::constants::memory::BYTES_PER_MB
             ));
             Some(address)
         }
         None => {
             write_line("✗ No suitable free memory region found");
             write_line(&format!("  Required: {} bytes ({:.2} MB)", 
-                required_size, required_size as f64 / theseus_shared::constants::memory::BYTES_PER_MB));
+                required_size, required_size as f64 / hobbyos_shared::constants::memory::BYTES_PER_MB));
             None
         }
     }
@@ -524,90 +453,56 @@ fn find_free_memory_region(
 /// - Assumes the kernel is properly loaded at the expected address
 /// - Performs operations that cannot be undone
 unsafe fn jump_to_kernel() {
-    qemu_debug_output("=== Jumping to Kernel ===");
-    qemu_debug_output("Setting up kernel environment...");
+    write_line("=== Jumping to Kernel ===");
+    write_line("Setting up kernel environment...");
     
     // Finalize the handoff structure
     HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
     
+    // Set virtual memory information
+    HANDOFF.kernel_virtual_base = 0xffffffff80000000;  // Kernel virtual base
+    HANDOFF.kernel_physical_base = 0x100000;           // Physical load address
+    HANDOFF.kernel_virtual_entry = 0xffffffff80000000; // Virtual entry point
+    HANDOFF.page_table_root = 0;                       // No paging setup yet
+    HANDOFF.virtual_memory_enabled = 0;                // Identity mapped for now
+    
+    // Log the handoff information (copy values to avoid shared references to mutable static)
+    let handoff_size = HANDOFF.size;
+    let memory_map_entries = HANDOFF.memory_map_entries;
+    let memory_map_size = HANDOFF.memory_map_size;
+    let acpi_rsdp = HANDOFF.acpi_rsdp;
+    let kernel_virtual_base = HANDOFF.kernel_virtual_base;
+    let kernel_physical_base = HANDOFF.kernel_physical_base;
+    let virtual_memory_enabled = HANDOFF.virtual_memory_enabled;
+    
+    write_line(&format!("Handoff structure size: {} bytes", handoff_size));
+    write_line(&format!("Memory map entries: {}", memory_map_entries));
+    write_line(&format!("Memory map size: {} bytes", memory_map_size));
+    
+    if acpi_rsdp != 0 {
+        write_line(&format!("ACPI RSDP: 0x{:016X}", acpi_rsdp));
+    }
+    
+    write_line(&format!("Kernel virtual base: 0x{:016X}", kernel_virtual_base));
+    write_line(&format!("Kernel physical base: 0x{:016X}", kernel_physical_base));
+    write_line(&format!("Virtual memory enabled: {}", virtual_memory_enabled));
+    write_line("Jumping to kernel...");
+    
     // Get the kernel information from the handoff structure
     let kernel_physical_base = HANDOFF.kernel_physical_base;
-    let kernel_virtual_entry = HANDOFF.kernel_virtual_entry;
+    let kernel_entry_point = HANDOFF.kernel_virtual_entry;
     
-    qemu_debug_output("Kernel physical base: 0x100000");
-    qemu_debug_output("Kernel virtual entry: 0xffffffff80000000");
+    write_line(&format!("Kernel physical base: 0x{:016X}", kernel_physical_base));
+    write_line(&format!("Kernel entry point: 0x{:016X}", kernel_entry_point));
     
+    // Cast the entry point to a function pointer
+    let kernel_entry: extern "C" fn() -> ! = core::mem::transmute(kernel_entry_point);
     
-    // Virtual memory mapping already set up before exit_boot_services
-    qemu_debug_output("Virtual memory mapping already set up before exit_boot_services");
-    qemu_debug_output("Enabling paging...");
+    write_line("Jumping to kernel entry point...");
     
-    if HANDOFF.virtual_memory_enabled == 1 {
-        qemu_debug_output("✓ Virtual memory mapping was set up successfully");
-        qemu_debug_output("Page table root: 0x123456789ABCDEF0");
-        
-        // Enable paging directly using the stored page table root
-        qemu_debug_output("Enabling paging with stored page table root...");
-        
-        // Disable interrupts during paging enablement
-        qemu_debug_output("  Disabling interrupts...");
-        unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
-        
-        // Load CR3 with the page table root
-        let page_table_root = HANDOFF.page_table_root;
-        qemu_debug_output(&format!("  Loading CR3 with PML4 physical address: 0x{:016X}", page_table_root));
-        unsafe {
-            core::arch::asm!(
-                "mov cr3, {pml4}",
-                pml4 = in(reg) page_table_root,
-                options(nomem, nostack, preserves_flags)
-            );
-        }
-        
-        // Enable PAE and PG bits
-        qemu_debug_output("  Enabling PAE and PG bits in CR4 and CR0...");
-        unsafe {
-            // Enable PAE (Physical Address Extension) in CR4 (bit 5)
-            let mut cr4: u64;
-            core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack));
-            cr4 |= 1 << 5; // Set PAE bit
-            core::arch::asm!("mov cr4, {}", in(reg) cr4, options(nomem, nostack));
-            
-            // Enable paging (PG bit 31) in CR0
-            let pg_bit = 0x80000000u64; // PG bit (bit 31)
-            let mut cr0: u64;
-            core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack));
-            cr0 |= pg_bit;
-            core::arch::asm!("mov cr0, {}", in(reg) cr0, options(nomem, nostack));
-        }
-        
-        qemu_debug_output("  Re-enabling interrupts...");
-        unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
-        
-        qemu_debug_output("✓ Paging enabled successfully");
-        
-        // Test virtual memory
-        qemu_debug_output("Testing virtual memory mapping...");
-        qemu_debug_output("✓ Virtual memory test passed");
-        qemu_debug_output("Virtual memory setup complete - ready for kernel handoff");
-        
-        // For now, just exit successfully instead of jumping to kernel
-        qemu_debug_output("=== Virtual Memory Setup Complete ===");
-        qemu_debug_output("Kernel handoff ready - stopping here for testing");
-        
-        // Exit QEMU with success
-        crate::qemu_exit::exit_qemu_success("Virtual memory setup complete");
-    } else {
-        qemu_debug_output("✗ Virtual memory mapping was not set up");
-        qemu_debug_output("Falling back to identity mapping...");
-        
-        // Fallback to identity mapping
-        qemu_debug_output("=== Virtual Memory Setup Complete (Identity Mapping) ===");
-        qemu_debug_output("Kernel handoff ready - stopping here for testing");
-        
-        // Exit QEMU with success
-        crate::qemu_exit::exit_qemu_success("Virtual memory setup complete (identity mapping)");
-    }
+    // Jump to the kernel
+    // Note: This will never return as the kernel entry point is marked as `-> !`
+    kernel_entry();
 }
 
 /// Complete the bootloader and exit QEMU
