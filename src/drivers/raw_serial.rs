@@ -3,6 +3,7 @@
 //! Direct hardware access to serial ports. Fallback option when other drivers fail.
 
 use core::arch::asm;
+use crate::constants::{io_ports::com1, hardware};
 
 /// Raw Serial driver implementation
 pub struct RawSerialDriver;
@@ -16,19 +17,19 @@ impl RawSerialDriver {
     /// Initialize the serial port
     pub fn init(&self) -> bool {
         unsafe {
-            // Configure COM1 port (0x3f8)
+            // Configure COM1 port
             // Line Control Register: 8 data bits, no parity, 1 stop bit
-            asm!("out dx, al", in("dx") 0x3fb, in("al") 0x03u8, options(nomem, nostack, preserves_flags));
+            asm!("out dx, al", in("dx") com1::LINE_CTRL, in("al") 0x03u8, options(nomem, nostack, preserves_flags));
             
             // Divisor Latch Low Byte: 115200 baud
-            asm!("out dx, al", in("dx") 0x3f9, in("al") 0x00u8, options(nomem, nostack, preserves_flags));
-            asm!("out dx, al", in("dx") 0x3f8, in("al") 0x01u8, options(nomem, nostack, preserves_flags));
+            asm!("out dx, al", in("dx") com1::INT_ENABLE, in("al") 0x00u8, options(nomem, nostack, preserves_flags));
+            asm!("out dx, al", in("dx") com1::DATA, in("al") hardware::COM1_BAUD_DIVISOR as u8, options(nomem, nostack, preserves_flags));
             
             // Interrupt Enable Register: disable interrupts
-            asm!("out dx, al", in("dx") 0x3f9, in("al") 0x00u8, options(nomem, nostack, preserves_flags));
+            asm!("out dx, al", in("dx") com1::INT_ENABLE, in("al") 0x00u8, options(nomem, nostack, preserves_flags));
             
             // Modem Control Register: set DTR and RTS
-            asm!("out dx, al", in("dx") 0x3fc, in("al") 0x03u8, options(nomem, nostack, preserves_flags));
+            asm!("out dx, al", in("dx") com1::MODEM_CTRL, in("al") 0x03u8, options(nomem, nostack, preserves_flags));
         }
         true
     }
@@ -45,14 +46,14 @@ impl RawSerialDriver {
             // Wait for transmitter holding register to be empty
             loop {
                 let status: u8;
-                asm!("in al, dx", out("al") status, in("dx") 0x3fd, options(nomem, nostack, preserves_flags));
+                asm!("in al, dx", out("al") status, in("dx") com1::LINE_STATUS, options(nomem, nostack, preserves_flags));
                 if (status & 0x20) != 0 {
                     break;
                 }
             }
             
             // Write character to data register
-            asm!("out dx, al", in("dx") 0x3f8, in("al") ch, options(nomem, nostack, preserves_flags));
+            asm!("out dx, al", in("dx") com1::DATA, in("al") ch, options(nomem, nostack, preserves_flags));
         }
     }
     

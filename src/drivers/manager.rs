@@ -10,6 +10,7 @@ pub trait Driver {
     fn write_line(&self, message: &str) -> bool;
     
     /// Check if this driver is currently available
+    #[allow(dead_code)]
     fn is_available(&self) -> bool;
     
     /// Get the name of this driver
@@ -26,6 +27,7 @@ pub struct OutputDriver {
 
 /// Types of available drivers
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)]
 pub enum DriverType {
     UefiSerial,
     RawSerial,
@@ -98,11 +100,13 @@ impl OutputDriver {
     }
     
     /// Force switch to a specific driver
+    #[allow(dead_code)]
     pub fn force_driver(&mut self, driver_type: DriverType) {
         self.current_driver = driver_type;
     }
     
     /// Check if any driver is available
+    #[allow(dead_code)]
     pub fn is_available(&self) -> bool {
         self.uefi_serial.is_available() || 
         self.qemu_debug.is_available() || 

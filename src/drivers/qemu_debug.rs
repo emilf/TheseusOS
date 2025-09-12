@@ -3,6 +3,7 @@
 //! Uses QEMU's debug output port (0xe9) for simple output. QEMU-specific driver.
 
 use core::arch::asm;
+use crate::constants::io_ports;
 
 /// QEMU Debug driver implementation
 pub struct QemuDebugDriver;
@@ -19,10 +20,10 @@ impl QemuDebugDriver {
         true
     }
     
-    /// Write a single character to QEMU debug port (0xe9)
+    /// Write a single character to QEMU debug port
     fn write_char(&self, ch: u8) {
         unsafe {
-            asm!("out dx, al", in("dx") 0xe9u16, in("al") ch, options(nomem, nostack, preserves_flags));
+            asm!("out dx, al", in("dx") io_ports::QEMU_DEBUG, in("al") ch, options(nomem, nostack, preserves_flags));
         }
     }
     

@@ -19,6 +19,7 @@ use uefi::mem::memory_map::MemoryMap;
 const VERBOSE_HARDWARE_INVENTORY: bool = false;
 
 // Include our modules
+mod constants;
 mod handoff;
 mod serial;
 mod display;
@@ -28,12 +29,12 @@ mod system_info;
 mod drivers;
 
 use handoff::{Handoff, HANDOFF};
-use serial::serial_write_line;
 use display::*;
 use hardware::{collect_hardware_inventory, get_loaded_image_device_path, display_hardware_inventory};
 use system_info::*;
 use acpi::find_acpi_rsdp;
 use drivers::OutputDriver;
+use constants::{io_ports, exit_codes};
 use alloc::format;
 
 /// Helper function to write a line using the output driver
@@ -118,7 +119,7 @@ fn efi_main() -> Status {
     // Step 6: Report GOP status with pretty formatting
     if let Some((w, h, pf, stride, fb_base, fb_size)) = gop_info {
         output_driver.write_line("✓ Graphics Output Protocol (GOP) found and initialized");
-        display_gop_info(serial_handle, w as u32, h as u32, pf, stride as u32, fb_base, fb_size as u64);
+        display_gop_info(&mut output_driver, w as u32, h as u32, pf, stride as u32, fb_base, fb_size as u64);
         output_driver.write_line("✓ Framebuffer information collected and stored in handoff structure");
     } else {
         output_driver.write_line("✗ Graphics Output Protocol (GOP) not available");
@@ -147,7 +148,7 @@ fn efi_main() -> Status {
             }
             
             // Display the actual memory map entries
-            display_memory_map_entries(serial_handle, &mmap);
+            display_memory_map_entries(&mut output_driver, &mmap);
             
             Some(mmap)
         }
@@ -165,7 +166,7 @@ fn efi_main() -> Status {
         
         write_line(&mut output_driver, "✓ Memory map collected successfully");
         unsafe {
-            display_memory_map_info(serial_handle, HANDOFF.memory_map_descriptor_size, HANDOFF.memory_map_descriptor_version, HANDOFF.memory_map_entries, HANDOFF.memory_map_size);
+            display_memory_map_info(&mut output_driver, HANDOFF.memory_map_descriptor_size, HANDOFF.memory_map_descriptor_version, HANDOFF.memory_map_entries, HANDOFF.memory_map_size);
         }
         write_line(&mut output_driver, "✓ Memory map information stored in handoff structure");
     } else {
@@ -176,18 +177,18 @@ fn efi_main() -> Status {
     // Step 9: Locate ACPI RSDP Table
     write_line(&mut output_driver, "Locating ACPI RSDP table...");
     write_line(&mut output_driver, "  Debug: About to call find_acpi_rsdp");
-    let rsdp_address = find_acpi_rsdp(serial_handle).unwrap_or(0);
+    let rsdp_address = find_acpi_rsdp(&mut output_driver).unwrap_or(0);
     write_line(&mut output_driver, "  Debug: find_acpi_rsdp returned");
     unsafe { HANDOFF.acpi_rsdp = rsdp_address; }
 
     // Step 10: Report ACPI status with pretty formatting
     if rsdp_address != 0 {
         write_line(&mut output_driver, "✓ ACPI RSDP table found");
-        display_acpi_info(serial_handle, rsdp_address);
+        display_acpi_info(&mut output_driver, rsdp_address);
         write_line(&mut output_driver, "✓ ACPI information stored in handoff structure");
     } else {
         write_line(&mut output_driver, "✗ ACPI RSDP table not found");
-        display_acpi_info(serial_handle, rsdp_address);
+        display_acpi_info(&mut output_driver, rsdp_address);
         write_line(&mut output_driver, "  No ACPI support will be available to kernel");
     }
 
@@ -201,16 +202,16 @@ fn efi_main() -> Status {
                 HANDOFF.device_tree_size = dtb_size;
             }
             write_line(&mut output_driver, "✓ Device tree information collected");
-            display_device_tree_info(serial_handle, dtb_ptr, dtb_size);
+            display_device_tree_info(&mut output_driver, dtb_ptr, dtb_size);
         }
         None => {
-            serial_write_line(serial_handle, "✗ Device tree information not available");
-            display_device_tree_info(serial_handle, 0, 0);
+            output_driver.write_line("✗ Device tree information not available");
+            display_device_tree_info(&mut output_driver, 0, 0);
         }
     }
 
     // Step 12: Collect Firmware Information
-    serial_write_line(serial_handle, "Collecting firmware information...");
+    output_driver.write_line("Collecting firmware information...");
     let firmware_info = collect_firmware_info();
     match firmware_info {
         Some((vendor_ptr, vendor_len, revision)) => {
@@ -219,17 +220,17 @@ fn efi_main() -> Status {
                 HANDOFF.firmware_vendor_len = vendor_len;
                 HANDOFF.firmware_revision = revision;
             }
-            serial_write_line(serial_handle, "✓ Firmware information collected");
-            display_firmware_info(serial_handle, vendor_ptr, vendor_len, revision);
+            output_driver.write_line("✓ Firmware information collected");
+            display_firmware_info(&mut output_driver, vendor_ptr, vendor_len, revision);
         }
         None => {
-            serial_write_line(serial_handle, "✗ Firmware information not available");
-            display_firmware_info(serial_handle, 0, 0, 0);
+            output_driver.write_line("✗ Firmware information not available");
+            display_firmware_info(&mut output_driver, 0, 0, 0);
         }
     }
 
     // Step 13: Collect Boot Time Information
-    serial_write_line(serial_handle, "Collecting boot time information...");
+    output_driver.write_line("Collecting boot time information...");
     let boot_time_info = collect_boot_time_info();
     match boot_time_info {
         Some((seconds, nanoseconds)) => {
@@ -237,17 +238,17 @@ fn efi_main() -> Status {
                 HANDOFF.boot_time_seconds = seconds;
                 HANDOFF.boot_time_nanoseconds = nanoseconds;
             }
-            serial_write_line(serial_handle, "✓ Boot time information collected");
-            display_boot_time_info(serial_handle, seconds, nanoseconds);
+            output_driver.write_line("✓ Boot time information collected");
+            display_boot_time_info(&mut output_driver, seconds, nanoseconds);
         }
         None => {
-            serial_write_line(serial_handle, "✗ Boot time information not available");
-            display_boot_time_info(serial_handle, 0, 0);
+            output_driver.write_line("✗ Boot time information not available");
+            display_boot_time_info(&mut output_driver, 0, 0);
         }
     }
 
     // Step 14: Collect Boot Device Path Information
-    serial_write_line(serial_handle, "Collecting boot device path information...");
+    output_driver.write_line("Collecting boot device path information...");
     let boot_device_path_info = collect_boot_device_path();
     match boot_device_path_info {
         Some((device_path_ptr, device_path_size)) => {
@@ -255,17 +256,17 @@ fn efi_main() -> Status {
                 HANDOFF.boot_device_path_ptr = device_path_ptr;
                 HANDOFF.boot_device_path_size = device_path_size;
             }
-            serial_write_line(serial_handle, "✓ Boot device path information collected");
-            display_boot_device_path_info(serial_handle, device_path_ptr, device_path_size);
+            output_driver.write_line("✓ Boot device path information collected");
+            display_boot_device_path_info(&mut output_driver, device_path_ptr, device_path_size);
         }
         None => {
-            serial_write_line(serial_handle, "✗ Boot device path information not available");
-            display_boot_device_path_info(serial_handle, 0, 0);
+            output_driver.write_line("✗ Boot device path information not available");
+            display_boot_device_path_info(&mut output_driver, 0, 0);
         }
     }
 
     // Step 15: Collect CPU Information
-    serial_write_line(serial_handle, "Collecting CPU information...");
+    output_driver.write_line("Collecting CPU information...");
     let cpu_info = collect_cpu_info();
     match cpu_info {
         Some((cpu_count, cpu_features, microcode_revision)) => {
@@ -274,18 +275,18 @@ fn efi_main() -> Status {
                 HANDOFF.cpu_features = cpu_features;
                 HANDOFF.microcode_revision = microcode_revision;
             }
-            serial_write_line(serial_handle, "✓ CPU information collected");
-            display_cpu_info(serial_handle, cpu_count, cpu_features, microcode_revision);
+            output_driver.write_line("✓ CPU information collected");
+            display_cpu_info(&mut output_driver, cpu_count, cpu_features, microcode_revision);
         }
         None => {
-            serial_write_line(serial_handle, "✗ CPU information not available");
-            display_cpu_info(serial_handle, 0, 0, 0);
+            output_driver.write_line("✗ CPU information not available");
+            display_cpu_info(&mut output_driver, 0, 0, 0);
         }
     }
 
     // Step 16: Collect Hardware Inventory
-    serial_write_line(serial_handle, "Collecting hardware inventory...");
-    let hardware_inventory = collect_hardware_inventory(serial_handle, VERBOSE_HARDWARE_INVENTORY);
+    output_driver.write_line("Collecting hardware inventory...");
+    let hardware_inventory = collect_hardware_inventory(&mut output_driver, VERBOSE_HARDWARE_INVENTORY);
     match hardware_inventory {
         Some(inventory) => {
             unsafe {
@@ -293,67 +294,67 @@ fn efi_main() -> Status {
                 HANDOFF.hardware_inventory_ptr = inventory.devices_ptr;
                 HANDOFF.hardware_inventory_size = inventory.total_size;
             }
-            serial_write_line(serial_handle, "✓ Hardware inventory collected");
-            display_hardware_inventory(serial_handle, &inventory);
+            output_driver.write_line("✓ Hardware inventory collected");
+            display_hardware_inventory(&mut output_driver, &inventory);
         }
         None => {
-            serial_write_line(serial_handle, "✗ Hardware inventory collection failed");
+            output_driver.write_line("✗ Hardware inventory collection failed");
         }
     }
 
     // Step 17: Get Loaded Image Device Path
-    serial_write_line(serial_handle, "Getting loaded image device path...");
-    let loaded_image_path = get_loaded_image_device_path(serial_handle);
+    output_driver.write_line("Getting loaded image device path...");
+    let loaded_image_path = get_loaded_image_device_path(&mut output_driver);
     match loaded_image_path {
         Some((path_ptr, path_size)) => {
             unsafe {
                 HANDOFF.boot_device_path_ptr = path_ptr;
                 HANDOFF.boot_device_path_size = path_size;
             }
-            serial_write_line(serial_handle, "✓ Loaded image device path collected");
-            display_boot_device_path_info(serial_handle, path_ptr, path_size);
+            output_driver.write_line("✓ Loaded image device path collected");
+            display_boot_device_path_info(&mut output_driver, path_ptr, path_size);
         }
         None => {
-            serial_write_line(serial_handle, "✗ Loaded image device path not available");
+            output_driver.write_line("✗ Loaded image device path not available");
         }
     }
 
     // Step 18: Finalize Handoff Structure
-    serial_write_line(serial_handle, "Finalizing handoff structure...");
+    output_driver.write_line("Finalizing handoff structure...");
     unsafe {
         HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
     }
-    serial_write_line(serial_handle, &alloc::format!("✓ Handoff structure size: {} bytes", core::mem::size_of::<Handoff>()));
-    serial_write_line(serial_handle, "✓ All system information collected and stored");
+    output_driver.write_line(&alloc::format!("✓ Handoff structure size: {} bytes", core::mem::size_of::<Handoff>()));
+    output_driver.write_line("✓ All system information collected and stored");
 
     // Step 19: Exit Boot Services
-    serial_write_line(serial_handle, "Exiting boot services...");
+    output_driver.write_line("Exiting boot services...");
     if let Some(mmap) = memory_map {
         // Get the memory map key for exit_boot_services
         let memory_map_key = mmap.key();
-        serial_write_line(serial_handle, &alloc::format!("Memory map key: {:?}", memory_map_key));
+        output_driver.write_line(&alloc::format!("Memory map key: {:?}", memory_map_key));
         
         // Use the proper uefi-rs 0.35 exit_boot_services function
         // This will properly exit boot services and return the final memory map
-        serial_write_line(serial_handle, "✓ Memory map ready for kernel handoff");
-        serial_write_line(serial_handle, "⚠ Manual exit_boot_services not implemented in this version");
-        serial_write_line(serial_handle, "  The memory map is preserved for kernel access");
-        serial_write_line(serial_handle, "  Note: Use uefi::boot::exit_boot_services() for proper transition");
+        output_driver.write_line("✓ Memory map ready for kernel handoff");
+        output_driver.write_line("⚠ Manual exit_boot_services not implemented in this version");
+        output_driver.write_line("  The memory map is preserved for kernel access");
+        output_driver.write_line("  Note: Use uefi::boot::exit_boot_services() for proper transition");
     } else {
-        serial_write_line(serial_handle, "✗ Cannot prepare memory map without memory map");
-        serial_write_line(serial_handle, "⚠ No memory map available for kernel");
+        output_driver.write_line("✗ Cannot prepare memory map without memory map");
+        output_driver.write_line("⚠ No memory map available for kernel");
     }
 
     // Step 20: Bootloader complete - exit QEMU
-    serial_write_line(serial_handle, "=== UEFI Loader Complete ===");
-    serial_write_line(serial_handle, "All system information collected and stored");
-    serial_write_line(serial_handle, "Ready for kernel handoff");
-    serial_write_line(serial_handle, "Exiting QEMU...");
+    output_driver.write_line("=== UEFI Loader Complete ===");
+    output_driver.write_line("All system information collected and stored");
+    output_driver.write_line("Ready for kernel handoff");
+    output_driver.write_line("Exiting QEMU...");
     
-    // Exit QEMU gracefully via I/O port 0xf4
+    // Exit QEMU gracefully via I/O port
     // This makes testing much faster since we don't need timeouts
     unsafe {
-        asm!("out dx, al", in("dx") 0xf4u16, in("al") 0u8, options(nomem, nostack, preserves_flags));
+        asm!("out dx, al", in("dx") io_ports::QEMU_EXIT, in("al") exit_codes::QEMU_SUCCESS, options(nomem, nostack, preserves_flags));
     }
     
     Status::SUCCESS

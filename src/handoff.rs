@@ -80,6 +80,17 @@ pub struct Handoff {
 }
 
 /// Static storage for handoff data
+/// 
+/// # Safety
+/// 
+/// This global mutable static is safe to use in the UEFI bootloader context because:
+/// - It is only written to during the single-threaded UEFI boot process
+/// - No other threads or concurrent access occurs during bootloader execution
+/// - Once boot services are exited and control is passed to the kernel, this structure
+///   is no longer modified by the bootloader
+/// - The kernel receives a copy of this data and should not modify the original
+/// 
+/// The lack of synchronization primitives is intentional and safe for this use case.
 pub static mut HANDOFF: Handoff = Handoff {
     size: 0,
     handoff_version: 1,
