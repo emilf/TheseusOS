@@ -32,7 +32,7 @@ fi
 if [[ "$HEADLESS" == "true" || "$HEADLESS" == "headless" ]]; then
   echo "Starting QEMU in headless mode..."
   echo "  QEMU Debug Driver output: stdout (port 0xe9)"
-  QEMU_DISPLAY="-nographic -serial null"
+  QEMU_DISPLAY="-display none -serial null"
   QEMU_MONITOR="-monitor null"
   QEMU_DEBUG="-device isa-debugcon,chardev=debugcon"
   QEMU_DEBUG_CHAR="-chardev stdio,id=debugcon"
