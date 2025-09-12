@@ -13,34 +13,20 @@ pushd "$SCRIPT_DIR" >/dev/null
 echo "Building project..."
 make all
 
-# Use project-local OVMF firmware
-OVMF_DIR=${OVMF_DIR:-"$SCRIPT_DIR/OVMF"}
-OVMF_CODE=${OVMF_CODE:-"$OVMF_DIR/OVMF_CODE.fd"}
+# Use BIOS files set up by Makefile
+OVMF_CODE="$SCRIPT_DIR/OVMF/OVMF_CODE.fd"
+OVMF_VARS_RW="$SCRIPT_DIR/build/OVMF_VARS.fd"
 
-# Set up OVMF_CODE file
-mkdir -p "$OVMF_DIR"
+# Verify BIOS files exist (they should be set up by make all)
 if [[ ! -f "$OVMF_CODE" ]]; then
-  echo "Setting up OVMF_CODE..."
-  for base in \
-    /usr/share/edk2-ovmf/x64 \
-    /usr/share/edk2/x64 \
-    /usr/share/OVMF; do
-    if [[ -f "$base/OVMF_CODE.fd" ]]; then
-      echo "Found OVMF_CODE.fd in $base"
-      cp -f "$base/OVMF_CODE.fd" "$OVMF_CODE"
-      break
-    fi
-  done
-fi
-
-if [[ ! -f "$OVMF_CODE" ]]; then
-  echo "Missing OVMF_CODE.fd" >&2
-  echo "Please install edk2-ovmf package" >&2
+  echo "Missing OVMF_CODE.fd - run 'make all' first" >&2
   exit 1
 fi
 
-# OVMF_VARS_RW is already set up by make bios
-OVMF_VARS_RW="$SCRIPT_DIR/build/OVMF_VARS.fd"
+if [[ ! -f "$OVMF_VARS_RW" ]]; then
+  echo "Missing OVMF_VARS.fd - run 'make all' first" >&2
+  exit 1
+fi
 
 # Configure QEMU options based on mode
 if [[ "$HEADLESS" == "true" || "$HEADLESS" == "headless" ]]; then
