@@ -60,7 +60,7 @@ QEMU_CMD="qemu-system-x86_64 \
   $QEMU_DEBUG_CHAR \
   $QEMU_DISPLAY \
   $QEMU_MONITOR \
-  -drive format=raw,file=fat:rw:build \
+  -drive format=raw,file=\"$SCRIPT_DIR/build/disk.img\" \
   -nic none \
   -no-reboot \
   ${QEMU_OPTS}"

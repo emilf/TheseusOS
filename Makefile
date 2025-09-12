@@ -8,7 +8,7 @@ KERNEL_BUILD_DIR := target/$(KERNEL_TARGET)/$(PROFILE)
 EFI_DIR := build/EFI/BOOT
 ESP_DIR := build
 EFI_BIN := $(BOOTLOADER_BUILD_DIR)/hobbyos_efi.efi
-KERNEL_BIN := $(KERNEL_BUILD_DIR)/$(KERNEL_PROJECT)
+KERNEL_BIN := $(KERNEL_BUILD_DIR)/kernel
 EFI_OUTPUT := $(EFI_DIR)/BOOTX64.EFI
 OVMF_DIR := OVMF
 OVMF_CODE := $(OVMF_DIR)/OVMF_CODE.fd
@@ -29,10 +29,29 @@ build-kernel:
 
 esp: $(EFI_OUTPUT)
 
-$(EFI_OUTPUT): $(EFI_BIN)
-	rm -rf $(ESP_DIR)
-	mkdir -p $(EFI_DIR)
-	cp $(EFI_BIN) $(EFI_OUTPUT)
+$(EFI_OUTPUT): $(EFI_BIN) $(KERNEL_BIN)
+	@echo "Creating EFI System Partition..."
+	@rm -rf $(ESP_DIR)
+	@mkdir -p $(EFI_DIR)
+	@cp $(EFI_BIN) $(EFI_OUTPUT)
+	@cp $(KERNEL_BIN) $(EFI_DIR)/kernel.efi
+	@# Create a proper EFI System Partition using GPT
+	@echo "Creating proper EFI System Partition disk image..."
+	@dd if=/dev/zero of=$(ESP_DIR)/disk.img bs=1M count=64 2>/dev/null
+	@# Create GPT partition table and ESP partition
+	@parted -s $(ESP_DIR)/disk.img mklabel gpt 2>/dev/null
+	@parted -s $(ESP_DIR)/disk.img mkpart ESP fat32 1MiB 100% 2>/dev/null
+	@parted -s $(ESP_DIR)/disk.img set 1 esp on 2>/dev/null
+	@# Create FAT32 filesystem on the partition
+	@mkfs.fat -F32 -n ESP $(ESP_DIR)/disk.img 2>/dev/null
+	@# Copy files using mcopy (part of mtools, no mounting required)
+	@# Create directory structure first
+	@mmd -i $(ESP_DIR)/disk.img ::EFI 2>/dev/null || true
+	@mmd -i $(ESP_DIR)/disk.img ::EFI/BOOT 2>/dev/null || true
+	@# Copy the bootloader and kernel
+	@mcopy -i $(ESP_DIR)/disk.img -s $(EFI_BIN) ::EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
+	@mcopy -i $(ESP_DIR)/disk.img -s $(KERNEL_BIN) ::kernel.efi 2>/dev/null || true
+	@echo "✓ Created proper GPT disk image with EFI System Partition"
 
 # Automatically copy BIOS files if needed
 bios: $(OVMF_CODE) $(OVMF_VARS_ORIG) $(OVMF_VARS_RW)

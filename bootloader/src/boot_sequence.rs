@@ -307,25 +307,10 @@ pub fn prepare_boot_services_exit(
         output_driver.write_line("✓ Memory map ready for kernel handoff");
         output_driver.write_line("Exiting boot services...");
         
-        // Call exit_boot_services (it takes no parameters in uefi-rs 0.35)
-        // Note: This function is unsafe and will exit boot services
-        let final_memory_map = unsafe {
-            uefi::boot::exit_boot_services(None)
-        };
-        
-        output_driver.write_line("✓ Successfully exited boot services");
-        output_driver.write_line(&format!("Final memory map has {} entries", final_memory_map.len()));
-        
-        // Update the handoff structure with the final memory map
-        unsafe {
-            HANDOFF.memory_map_entries = final_memory_map.len() as u32;
-            // Calculate memory map size using the standard UEFI descriptor size
-            HANDOFF.memory_map_size = (final_memory_map.len() * hobbyos_shared::constants::memory::UEFI_MEMORY_DESCRIPTOR_SIZE) as u32;
-            // Note: The memory map buffer pointer is already set in collect_memory_map
-        }
-        
-        // Load the kernel binary (simplified version)
-        match load_kernel_binary(&final_memory_map, output_driver) {
+        // Load the kernel binary BEFORE exiting boot services
+        // (we need UEFI file system protocols to read the kernel file)
+        output_driver.write_line("About to call load_kernel_binary...");
+        match load_kernel_binary(mmap, output_driver) {
             Ok((kernel_physical_base, kernel_entry_point)) => {
                 // Update the handoff structure with the actual kernel information
                 unsafe {
@@ -333,7 +318,23 @@ pub fn prepare_boot_services_exit(
                     HANDOFF.kernel_virtual_entry = kernel_entry_point;
                 }
                 
-                output_driver.write_line("✓ Kernel loaded successfully, jumping to kernel...");
+                output_driver.write_line("✓ Kernel loaded successfully, exiting boot services...");
+                
+                // Now exit boot services
+                let final_memory_map = unsafe {
+                    uefi::boot::exit_boot_services(None)
+                };
+                
+                output_driver.write_line("✓ Successfully exited boot services");
+                output_driver.write_line(&format!("Final memory map has {} entries", final_memory_map.len()));
+                
+                // Update the handoff structure with the final memory map
+                unsafe {
+                    HANDOFF.memory_map_entries = final_memory_map.len() as u32;
+                    // Calculate memory map size using the standard UEFI descriptor size
+                    HANDOFF.memory_map_size = (final_memory_map.len() * hobbyos_shared::constants::memory::UEFI_MEMORY_DESCRIPTOR_SIZE) as u32;
+                    // Note: The memory map buffer pointer is already set in collect_memory_map
+                }
                 
                 // Jump to kernel
                 unsafe {
@@ -455,14 +456,18 @@ fn load_kernel_binary(
     
     output_driver.write_line("=== Loading Kernel Binary ===");
     
-    // Find the kernel file (placeholder)
-    find_kernel_file(output_driver)?;
+    // Find and open the kernel file
+    output_driver.write_line("Starting kernel loading process...");
+    let mut kernel_file = find_kernel_file(output_driver)?;
+    output_driver.write_line("✓ Kernel file found");
     
     // Get kernel file information
-    let file_size = get_kernel_file_info(output_driver)?;
+    let file_size = get_kernel_file_info(&mut kernel_file, output_driver)?;
+    output_driver.write_line("✓ Kernel file info obtained");
     
-    // Create a placeholder kernel binary
-    let kernel_buffer = create_kernel_binary(file_size, output_driver)?;
+    // Read the kernel binary from file
+    let kernel_buffer = read_kernel_binary(&mut kernel_file, file_size, output_driver)?;
+    output_driver.write_line("✓ Kernel binary read");
     
     // Analyze the kernel binary
     let mut kernel_info = analyze_kernel_binary(&kernel_buffer, output_driver)?;

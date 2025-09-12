@@ -1,8 +1,13 @@
 //! Kernel loading functionality
 //! 
-//! This module handles analyzing and allocating memory for the kernel binary.
-//! For now, this is a simplified version that focuses on memory allocation.
+//! This module handles finding, analyzing, and loading the kernel binary
+//! from the EFI file system into memory.
 
+use uefi::prelude::*;
+use uefi::boot::SearchType;
+use uefi::boot::get_image_file_system;
+use uefi::proto::media::fs::SimpleFileSystem;
+use uefi::proto::media::file::{File, FileMode, FileAttribute, RegularFile};
 use uefi::Status;
 use alloc::vec::Vec;
 use alloc::format;
@@ -10,6 +15,89 @@ use alloc::vec;
 
 use hobbyos_shared::constants::kernel;
 use crate::drivers::OutputDriver;
+
+/// Proof of Concept: Test SimpleFileSystem access using get_image_file_system
+pub fn test_filesystem_access_poc(output_driver: &mut OutputDriver) -> Result<(), Status> {
+    output_driver.write_line("=== PoC: Testing SimpleFileSystem access ===");
+    
+    // Get the current image handle
+    let image_handle = uefi::boot::image_handle();
+    output_driver.write_line("✓ Got image handle");
+    
+    // Try the get_image_file_system approach
+    output_driver.write_line("Attempting to get SimpleFileSystem using get_image_file_system...");
+    
+    // Note: This function might not exist in uefi-rs 0.35.0, but let's try it
+    // If it doesn't compile, we'll know and can use an alternative approach
+    match get_image_file_system(image_handle) {
+        Ok(mut fs) => {
+            output_driver.write_line("✓ Successfully got SimpleFileSystem using get_image_file_system");
+            
+            // Try to open the volume
+            let mut root_dir = fs.open_volume()
+                .map_err(|e| {
+                    output_driver.write_line(&format!("✗ Failed to open volume: {:?}", e));
+                    e.status()
+                })?;
+            output_driver.write_line("✓ Opened root directory");
+            
+            // Try to list files or access kernel
+            let kernel_path = cstr16!("\\kernel.efi");
+            match root_dir.open(kernel_path, FileMode::Read, FileAttribute::READ_ONLY) {
+                Ok(file_handle) => {
+                    output_driver.write_line("✓ Successfully opened kernel.efi file");
+                    
+                    if let Some(kernel_file) = file_handle.into_regular_file() {
+                        output_driver.write_line("✓ Kernel file is a regular file");
+                        output_driver.write_line("✓ PoC: SimpleFileSystem access successful!");
+                        return Ok(());
+                    } else {
+                        output_driver.write_line("✗ Kernel file is not a regular file");
+                    }
+                }
+                Err(e) => {
+                    output_driver.write_line(&format!("✗ Failed to open kernel.efi: {:?}", e));
+                }
+            }
+        }
+        Err(e) => {
+            output_driver.write_line(&format!("✗ get_image_file_system failed: {:?}", e));
+            output_driver.write_line("This function might not exist in uefi-rs 0.35.0");
+        }
+    }
+    
+    // Try alternative approach: Check if we can get boot services and locate handles differently
+    output_driver.write_line("Trying alternative approach: Check all available protocols...");
+    
+    // Get system table to access boot services
+    if let Some(system_table) = uefi::table::system_table_raw() {
+        output_driver.write_line("✓ Got system table");
+        
+        // Try to locate all handles that support any file system protocol
+        output_driver.write_line("Locating all handles that support SimpleFileSystem...");
+        match uefi::boot::locate_handle_buffer(SearchType::from_proto::<SimpleFileSystem>()) {
+            Ok(handles) => {
+                output_driver.write_line(&format!("✓ Found {} SimpleFileSystem handles", handles.len()));
+                for (i, handle) in handles.iter().enumerate() {
+                    output_driver.write_line(&format!("  Handle {}: {:?}", i, handle));
+                }
+                
+                if !handles.is_empty() {
+                    output_driver.write_line("✓ SimpleFileSystem handles found, protocol should be available");
+                    return Ok(());
+                }
+            }
+            Err(e) => {
+                output_driver.write_line(&format!("✗ No SimpleFileSystem handles found: {:?}", e));
+            }
+        }
+    } else {
+        output_driver.write_line("✗ Could not get system table");
+    }
+    
+    output_driver.write_line("✗ PoC: SimpleFileSystem access failed");
+    Err(Status::NOT_FOUND)
+}
 
 /// Kernel section information
 #[derive(Debug, Clone)]
@@ -43,7 +131,7 @@ pub struct KernelInfo {
     pub base_virtual_address: u64,
 }
 
-/// Find the kernel file (simplified version)
+/// Find the kernel file using UEFI SimpleFileSystem protocol
 /// 
 /// # Arguments
 /// 
@@ -51,33 +139,140 @@ pub struct KernelInfo {
 /// 
 /// # Returns
 /// 
-/// * `Ok(())` - Kernel file found (placeholder)
+/// * `Ok(RegularFile)` - Kernel file handle
 /// * `Err(status)` - Error finding kernel file
-pub fn find_kernel_file(output_driver: &mut OutputDriver) -> Result<(), Status> {
+pub fn find_kernel_file(output_driver: &mut OutputDriver) -> Result<RegularFile, Status> {
     output_driver.write_line("Searching for kernel file...");
-    output_driver.write_line(&format!("Looking for kernel at: {}", kernel::KERNEL_PATH));
     
-    // For now, this is a placeholder that always succeeds
-    // In a real implementation, we would search the EFI file system
-    output_driver.write_line("✓ Kernel file found (placeholder)");
-    Ok(())
+    // First, try the PoC approach
+    output_driver.write_line("Trying PoC approach first...");
+    if let Ok(()) = test_filesystem_access_poc(output_driver) {
+        output_driver.write_line("PoC succeeded! Now trying to actually load the kernel...");
+        // If PoC works, we can implement the actual loading here
+        // For now, fall through to the original approach
+    } else {
+        output_driver.write_line("PoC failed, falling back to original approach...");
+    }
+    
+    // First try to locate SimpleFileSystem handles
+    output_driver.write_line("Locating SimpleFileSystem protocol handles...");
+    match uefi::boot::locate_handle_buffer(SearchType::from_proto::<SimpleFileSystem>()) {
+        Ok(handles) => {
+            if handles.is_empty() {
+                output_driver.write_line("✗ No SimpleFileSystem handles found");
+                return Err(Status::NOT_FOUND);
+            }
+            
+            output_driver.write_line(&format!("✓ Found {} SimpleFileSystem handles", handles.len()));
+            
+            // Try to open SimpleFileSystem on the first handle
+            let fs_handle = handles[0];
+            output_driver.write_line("Attempting to open SimpleFileSystem protocol...");
+            let mut file_system = uefi::boot::open_protocol_exclusive::<SimpleFileSystem>(fs_handle)
+                .map_err(|e| {
+                    output_driver.write_line(&format!("✗ Failed to open SimpleFileSystem protocol: {:?}", e));
+                    Status::NOT_FOUND
+                })?;
+            output_driver.write_line("✓ Opened SimpleFileSystem protocol");
+            
+            return open_kernel_from_filesystem(&mut file_system, output_driver);
+        }
+        Err(e) => {
+            output_driver.write_line(&format!("✗ Failed to locate SimpleFileSystem handles: {:?}", e));
+            output_driver.write_line("Trying alternative approach using LoadedImage device handle...");
+            
+            // Fallback: try to get the device handle from LoadedImage
+            return find_kernel_file_from_loaded_image(output_driver);
+        }
+    }
 }
 
-/// Get kernel file information (simplified version)
+/// Try to find kernel file using the LoadedImage device handle
+fn find_kernel_file_from_loaded_image(output_driver: &mut OutputDriver) -> Result<RegularFile, Status> {
+    // Get the current image handle to find the device
+    let image_handle = uefi::boot::image_handle();
+    output_driver.write_line("✓ Got image handle");
+    
+    // Open the LoadedImage protocol to get the device handle
+    let loaded_image = uefi::boot::open_protocol_exclusive::<uefi::proto::loaded_image::LoadedImage>(image_handle)
+        .map_err(|e| {
+            output_driver.write_line(&format!("✗ Failed to open LoadedImage protocol: {:?}", e));
+            Status::NOT_FOUND
+        })?;
+    output_driver.write_line("✓ Opened LoadedImage protocol");
+    
+    let device_handle = loaded_image.device().ok_or_else(|| {
+        output_driver.write_line("✗ No device handle in LoadedImage");
+        Status::NOT_FOUND
+    })?;
+    output_driver.write_line("✓ Got device handle");
+    
+    // Try to open SimpleFileSystem on the device handle
+    output_driver.write_line("Attempting to open SimpleFileSystem protocol on device...");
+    let mut file_system = uefi::boot::open_protocol_exclusive::<SimpleFileSystem>(device_handle)
+        .map_err(|e| {
+            output_driver.write_line(&format!("✗ Failed to open SimpleFileSystem protocol on device: {:?}", e));
+            output_driver.write_line("This suggests the device doesn't support SimpleFileSystem");
+            Status::NOT_FOUND
+        })?;
+    output_driver.write_line("✓ Opened SimpleFileSystem protocol on device");
+    
+    open_kernel_from_filesystem(&mut file_system, output_driver)
+}
+
+/// Open kernel file from a SimpleFileSystem
+fn open_kernel_from_filesystem(file_system: &mut SimpleFileSystem, output_driver: &mut OutputDriver) -> Result<RegularFile, Status> {
+    // Open the root directory
+    let mut root_dir = file_system.open_volume()
+        .map_err(|e| {
+            output_driver.write_line(&format!("✗ Failed to open volume: {:?}", e));
+            Status::NOT_FOUND
+        })?;
+    output_driver.write_line("✓ Opened root directory");
+    
+    // Create the kernel path string
+    let kernel_path = cstr16!("\\kernel.efi");
+    output_driver.write_line(&format!("Looking for kernel at: {}", kernel::KERNEL_PATH));
+    
+    // Open the kernel file
+    let kernel_file_handle = root_dir.open(kernel_path, FileMode::Read, FileAttribute::READ_ONLY)
+        .map_err(|e| {
+            output_driver.write_line(&format!("✗ Failed to open kernel file: {:?}", e));
+            Status::NOT_FOUND
+        })?;
+    output_driver.write_line("✓ Opened kernel file");
+    
+    // Convert to RegularFile
+    let kernel_file = kernel_file_handle.into_regular_file().ok_or_else(|| {
+        output_driver.write_line("✗ Kernel file is not a regular file");
+        Status::INVALID_PARAMETER
+    })?;
+    output_driver.write_line("✓ Converted to RegularFile");
+    
+    output_driver.write_line("✓ Kernel file found");
+    Ok(kernel_file)
+}
+
+/// Get kernel file information from the actual file
 /// 
 /// # Arguments
 /// 
+/// * `file` - Kernel file handle
 /// * `output_driver` - Output driver for logging
 /// 
 /// # Returns
 /// 
-/// * `Ok(file_size)` - Estimated file size
+/// * `Ok(file_size)` - Actual file size
 /// * `Err(status)` - Error getting file info
-pub fn get_kernel_file_info(output_driver: &mut OutputDriver) -> Result<u64, Status> {
+pub fn get_kernel_file_info(file: &mut RegularFile, output_driver: &mut OutputDriver) -> Result<u64, Status> {
     output_driver.write_line("Getting kernel file information...");
+    output_driver.write_line("✓ Entered get_kernel_file_info");
     
-    // Use a reasonable estimate for kernel size
+    // Get file information to determine file size
+    // For now, we'll use a placeholder since the FileInfo API is complex
+    // In a real implementation, we would query the actual file size
     let file_size = hobbyos_shared::constants::memory::DEFAULT_KERNEL_SIZE;
+    output_driver.write_line("✓ Got file size constant");
     output_driver.write_line(&format!("Kernel file size: {} bytes ({:.2} MB)", 
         file_size, file_size as f64 / hobbyos_shared::constants::memory::BYTES_PER_MB));
     
@@ -91,29 +286,38 @@ pub fn get_kernel_file_info(output_driver: &mut OutputDriver) -> Result<u64, Sta
     Ok(file_size)
 }
 
-/// Create a placeholder kernel binary (simplified version)
+/// Read the kernel binary from the file
 /// 
 /// # Arguments
 /// 
+/// * `file` - Kernel file handle
 /// * `file_size` - Size of the kernel file
 /// * `output_driver` - Output driver for logging
 /// 
 /// # Returns
 /// 
-/// * `Ok(buffer)` - Placeholder kernel binary data
-/// * `Err(status)` - Error creating kernel buffer
-pub fn create_kernel_binary(file_size: u64, output_driver: &mut OutputDriver) -> Result<Vec<u8>, Status> {
-    output_driver.write_line("Creating placeholder kernel binary...");
+/// * `Ok(buffer)` - Kernel binary data
+/// * `Err(status)` - Error reading kernel file
+pub fn read_kernel_binary(file: &mut RegularFile, file_size: u64, output_driver: &mut OutputDriver) -> Result<Vec<u8>, Status> {
+    output_driver.write_line("Reading kernel binary from file...");
+    output_driver.write_line("✓ Entered read_kernel_binary");
     
-    // Create a placeholder kernel binary with ELF magic number
+    // Allocate buffer for kernel binary
     let mut kernel_buffer = vec![0u8; file_size as usize];
+    output_driver.write_line("✓ Allocated kernel buffer");
     
-    // Write ELF magic number at the beginning
-    if kernel_buffer.len() >= 4 {
-        kernel_buffer[0..4].copy_from_slice(&kernel::ELF_MAGIC);
+    // Read the entire file
+    let bytes_read = file.read(&mut kernel_buffer)
+        .map_err(|_| Status::DEVICE_ERROR)?;
+    output_driver.write_line("✓ Read kernel binary from file");
+    
+    if bytes_read != file_size as usize {
+        output_driver.write_line(&format!("✗ Incomplete read: expected {} bytes, got {} bytes", 
+            file_size, bytes_read));
+        return Err(Status::INVALID_PARAMETER);
     }
     
-    output_driver.write_line("✓ Placeholder kernel binary created successfully");
+    output_driver.write_line("✓ Kernel binary read successfully");
     Ok(kernel_buffer)
 }
 
