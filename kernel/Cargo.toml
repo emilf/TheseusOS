@@ -1,0 +1,18 @@
+[package]
+name = "hobbyos-kernel"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+
+[dependencies]
+hobbyos-shared = { path = "../shared" }
+log = { workspace = true }
+acpi = { workspace = true }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1

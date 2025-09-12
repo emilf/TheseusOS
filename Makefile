@@ -1,22 +1,31 @@
-PROJECT := hobbyos_efi
-TARGET := x86_64-unknown-uefi
+BOOTLOADER_PROJECT := hobbyos-bootloader
+KERNEL_PROJECT := hobbyos-kernel
+BOOTLOADER_TARGET := x86_64-unknown-uefi
+KERNEL_TARGET := x86_64-unknown-none
 PROFILE := release
-BUILD_DIR := target/$(TARGET)/$(PROFILE)
+BOOTLOADER_BUILD_DIR := target/$(BOOTLOADER_TARGET)/$(PROFILE)
+KERNEL_BUILD_DIR := target/$(KERNEL_TARGET)/$(PROFILE)
 EFI_DIR := build/EFI/BOOT
 ESP_DIR := build
-EFI_BIN := $(BUILD_DIR)/$(PROJECT).efi
+EFI_BIN := $(BOOTLOADER_BUILD_DIR)/$(BOOTLOADER_PROJECT).efi
+KERNEL_BIN := $(KERNEL_BUILD_DIR)/$(KERNEL_PROJECT)
 EFI_OUTPUT := $(EFI_DIR)/BOOTX64.EFI
 OVMF_DIR := OVMF
 OVMF_CODE := $(OVMF_DIR)/OVMF_CODE.fd
 OVMF_VARS_ORIG := $(OVMF_DIR)/OVMF_VARS.fd
 OVMF_VARS_RW := $(ESP_DIR)/OVMF_VARS.fd
 
-.PHONY: all clean clean-all run build esp bios
+.PHONY: all clean clean-all run build-bootloader build-kernel build esp bios
 
 all: build esp bios
 
-build:
-	cargo build --$(PROFILE)
+build: build-bootloader build-kernel
+
+build-bootloader:
+	cargo build --package $(BOOTLOADER_PROJECT) --target $(BOOTLOADER_TARGET) --$(PROFILE)
+
+build-kernel:
+	cargo build --package $(KERNEL_PROJECT) --target $(KERNEL_TARGET) --$(PROFILE)
 
 esp: $(EFI_OUTPUT)
 

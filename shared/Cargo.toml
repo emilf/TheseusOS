@@ -1,0 +1,8 @@
+[package]
+name = "hobbyos-shared"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = { workspace = true }
+acpi = { workspace = true }

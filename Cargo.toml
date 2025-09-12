@@ -1,21 +1,18 @@
-[package]
-name = "hobbyos_efi"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+members = ["bootloader", "kernel", "shared"]
+resolver = "2"
 
-[[bin]]
-name = "hobbyos_efi"
-path = "src/main.rs"
-
-[dependencies]
-uefi = { version = "0.35", default-features = false, features = ["alloc", "global_allocator"] }
+[workspace.dependencies]
 log = "0.4"
 acpi = "4.0"
+uefi = { version = "0.35", default-features = false, features = ["alloc", "global_allocator"] }
+
+[profile.dev]
+panic = "abort"
 
 [profile.release]
 opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
-
-
+panic = "abort"

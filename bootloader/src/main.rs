@@ -13,31 +13,60 @@ use uefi::prelude::*;
 const VERBOSE_HARDWARE_INVENTORY: bool = false;
 
 // Include our modules
-mod constants;
-mod handoff;
 mod serial;
 mod display;
 mod hardware;
 mod acpi;
 mod system_info;
-mod drivers;
 mod boot_sequence;
 mod qemu_exit;
+
+// Use shared library
+use hobbyos_shared::constants;
+
+// Include bootloader-specific modules
+mod drivers;
 
 use boot_sequence::*;
 use uefi::Status;
 
-/// Custom panic handler for QEMU debugging
-/// 
-/// This panic handler provides useful debugging information when the application panics
-/// by writing the panic message directly to the QEMU debug port before exiting.
+/// Panic handler for bootloader
 #[panic_handler]
 fn panic_handler(panic_info: &core::panic::PanicInfo) -> ! {
-    unsafe {
-        crate::qemu_exit::exit_qemu_on_panic(panic_info);
+    // Try to output panic information to QEMU debug port
+    let message = alloc::format!("BOOTLOADER PANIC: {:?}", panic_info.message());
+    
+    for byte in message.bytes() {
+        unsafe {
+            core::arch::asm!(
+                "out dx, al",
+                in("dx") constants::io_ports::QEMU_DEBUG,
+                in("al") byte,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
     }
     
-    // This should never be reached since exit_qemu_on_panic exits the guest
+    // Write newline
+    unsafe {
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") constants::io_ports::QEMU_DEBUG,
+            in("al") b'\n',
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    
+    // Exit QEMU with error
+    unsafe {
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") constants::io_ports::QEMU_EXIT,
+            in("al") constants::exit_codes::QEMU_ERROR,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    
     loop {}
 }
 

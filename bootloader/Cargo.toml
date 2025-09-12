@@ -1,0 +1,20 @@
+[package]
+name = "hobbyos-bootloader"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "hobbyos_efi"
+path = "src/main.rs"
+
+[dependencies]
+hobbyos-shared = { path = "../shared" }
+uefi = { workspace = true }
+log = { workspace = true }
+acpi = { workspace = true }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

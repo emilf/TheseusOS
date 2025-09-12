@@ -3,7 +3,7 @@ extern crate alloc;
 use uefi::{boot::SearchType, Identify};
 use uefi::proto::loaded_image::LoadedImage;
 use uefi::proto::device_path::{DevicePath, text::{DevicePathToText, AllowShortcuts, DisplayOnly}};
-use crate::constants::hardware;
+use hobbyos_shared::constants::hardware;
 use crate::drivers::OutputDriver;
 use alloc::vec::Vec;
 use alloc::format;

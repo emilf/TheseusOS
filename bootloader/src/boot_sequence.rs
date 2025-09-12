@@ -10,7 +10,7 @@ use uefi::boot::{SearchType, MemoryType};
 use uefi::mem::memory_map::MemoryMap;
 use uefi::Status;
 
-use crate::handoff::{Handoff, HANDOFF};
+use hobbyos_shared::handoff::{Handoff, HANDOFF};
 use crate::display::*;
 use crate::hardware::{collect_hardware_inventory, get_loaded_image_device_path, display_hardware_inventory};
 use crate::system_info::*;

@@ -1,7 +1,6 @@
 /// Handoff structure passed to the kernel
 /// Layout is stable (repr C) to allow consumption from any language
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
 pub struct Handoff {
     /// Total size of this struct in bytes
     pub size: u32,
