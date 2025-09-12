@@ -10,7 +10,7 @@ use uefi::proto::console::gop::PixelFormat as UefiPixelFormat;
 use uefi::boot::{SearchType, MemoryType};
 use core::arch::asm;
 use uefi::mem::memory_map::MemoryMap;
-// alloc::format imported in display module
+use alloc::format;
 
 // Configuration Options
 // Hardware Inventory Verbose Output
@@ -274,7 +274,7 @@ fn efi_main() -> Status {
             unsafe {
                 HANDOFF.hardware_device_count = inventory.device_count;
                 HANDOFF.hardware_inventory_ptr = inventory.devices_ptr;
-                HANDOFF.hardware_inventory_size = inventory.total_size;
+                HANDOFF.hardware_inventory_size = inventory.total_size as u32;
             }
             serial_write_line(serial_handle, "✓ Hardware inventory collected");
             display_hardware_inventory(serial_handle, &inventory);

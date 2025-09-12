@@ -4,6 +4,7 @@ use uefi::prelude::*;
 use uefi::proto::console::gop::PixelFormat as UefiPixelFormat;
 use uefi::mem::memory_map::MemoryMap;
 use crate::serial::serial_write_line;
+use crate::acpi::parse_acpi_tables;
 use alloc::format;
 
 /// Helper function to display prettily formatted GOP information
@@ -220,37 +221,6 @@ pub fn display_cpu_info(serial_handle: Option<Handle>, cpu_count: u32, cpu_featu
     serial_write_line(serial_handle, "");
 }
 
-/// Helper function to display hardware inventory information
-pub fn display_hardware_inventory_info(serial_handle: Option<Handle>, device_count: u32, inventory_ptr: u64, inventory_size: u64) {
-    serial_write_line(serial_handle, "");
-    serial_write_line(serial_handle, "┌─────────────────────────────────────────────────────────┐");
-    serial_write_line(serial_handle, "│                Hardware Inventory Information           │");
-    serial_write_line(serial_handle, "├─────────────────────────────────────────────────────────┤");
-    
-    if device_count != 0 {
-        serial_write_line(serial_handle, &format!("│ Device Count: {} devices found                      │", device_count));
-        serial_write_line(serial_handle, &format!("│ Inventory Pointer: 0x{:016x}                   │", inventory_ptr));
-        serial_write_line(serial_handle, &format!("│ Inventory Size: {} bytes ({:.2} KB)           │", inventory_size, inventory_size as f64 / 1024.0));
-        serial_write_line(serial_handle, "│ Status: ✓ Hardware inventory collected              │");
-    } else {
-        serial_write_line(serial_handle, "│ Device Count: No devices found (0)                   │");
-        serial_write_line(serial_handle, "│ Inventory Pointer: Not available (0x0000000000000000) │");
-        serial_write_line(serial_handle, "│ Inventory Size: 0 bytes                             │");
-        serial_write_line(serial_handle, "│ Status: ✗ Hardware inventory not available          │");
-    }
-    
-    serial_write_line(serial_handle, "└─────────────────────────────────────────────────────────┘");
-    serial_write_line(serial_handle, "");
-}
+// Hardware inventory display moved to hardware.rs module
 
-// Placeholder function for ACPI parsing (moved from main.rs)
-fn parse_acpi_tables(serial_handle: Option<Handle>, rsdp_address: u64) -> Result<(), &'static str> {
-    if rsdp_address == 0 {
-        return Err("No RSDP address provided");
-    }
-
-    // TODO: Implement ACPI table parsing
-    // This would use the acpi crate to parse tables
-    
-    Ok(())
-}
+// ACPI parsing moved to acpi.rs module
