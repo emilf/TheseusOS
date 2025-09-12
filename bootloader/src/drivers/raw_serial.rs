@@ -3,7 +3,7 @@
 //! Direct hardware access to serial ports. Fallback option when other drivers fail.
 
 use core::arch::asm;
-use crate::constants::{io_ports::com1, hardware};
+use hobbyos_shared::constants::{io_ports::com1, hardware};
 
 /// Raw Serial driver implementation
 pub struct RawSerialDriver;
