@@ -8,7 +8,7 @@ name = "hobbyos_efi"
 path = "src/main.rs"
 
 [dependencies]
-uefi = { version = "0.35", default-features = false, features = ["panic_handler", "alloc", "global_allocator"] }
+uefi = { version = "0.35", default-features = false, features = ["alloc", "global_allocator"] }
 log = "0.4"
 acpi = "4.0"
 

@@ -22,9 +22,24 @@ mod acpi;
 mod system_info;
 mod drivers;
 mod boot_sequence;
+mod qemu_exit;
 
 use boot_sequence::*;
 use uefi::Status;
+
+/// Custom panic handler for QEMU debugging
+/// 
+/// This panic handler provides useful debugging information when the application panics
+/// by writing the panic message directly to the QEMU debug port before exiting.
+#[panic_handler]
+fn panic_handler(panic_info: &core::panic::PanicInfo) -> ! {
+    unsafe {
+        crate::qemu_exit::exit_qemu_on_panic(panic_info);
+    }
+    
+    // This should never be reached since exit_qemu_on_panic exits the guest
+    loop {}
+}
 
 /// Main UEFI entry point
 /// 
@@ -47,6 +62,9 @@ fn efi_main() -> Status {
         Ok(driver) => driver,
         Err(_) => return Status::ABORTED,
     };
+
+    // Test panic handler (uncomment to test)
+    // panic!("Testing panic handler - this should exit QEMU with error message");
 
     // Collect all system information
     collect_graphics_info(&mut output_driver);

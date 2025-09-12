@@ -16,7 +16,6 @@ use crate::hardware::{collect_hardware_inventory, get_loaded_image_device_path, 
 use crate::system_info::*;
 use crate::acpi::find_acpi_rsdp;
 use crate::drivers::OutputDriver;
-use crate::constants::{io_ports, exit_codes};
 use alloc::format;
 
 /// Initialize the UEFI environment and output driver
@@ -319,9 +318,8 @@ pub fn complete_bootloader_and_exit(output_driver: &mut OutputDriver) {
     output_driver.write_line("Ready for kernel handoff");
     output_driver.write_line("Exiting QEMU...");
     
-    // Exit QEMU gracefully via I/O port
-    // This makes testing much faster since we don't need timeouts
+    // Exit QEMU gracefully with success message
     unsafe {
-        core::arch::asm!("out dx, al", in("dx") io_ports::QEMU_EXIT, in("al") exit_codes::QEMU_SUCCESS, options(nomem, nostack, preserves_flags));
+        crate::qemu_exit::exit_qemu_success("UEFI Loader completed successfully");
     }
 }
