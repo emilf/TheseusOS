@@ -120,10 +120,12 @@ fn efi_main() -> Status {
     // Finalize handoff structure
     finalize_handoff_structure(&mut output_driver);
 
-    // Prepare for boot services exit
+    // Prepare for boot services exit and jump to kernel
+    // This function will either jump to the kernel or exit QEMU if there's an error
     prepare_boot_services_exit(&mut output_driver, &memory_map);
 
-    // Complete bootloader and exit QEMU
+    // If we reach here, it means there was an error in the handoff process
+    // Complete bootloader and exit QEMU gracefully
     complete_bootloader_and_exit(&mut output_driver);
     
     Status::SUCCESS
