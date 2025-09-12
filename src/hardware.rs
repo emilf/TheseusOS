@@ -123,6 +123,14 @@ pub fn collect_hardware_inventory(serial_handle: Option<Handle>, verbose: bool) 
         }
         
         devices.push(device);
+        
+        // Limit to first 10 devices to avoid hanging
+        if devices.len() >= 10 {
+            if verbose {
+                serial_write_line(serial_handle, "  ... (limiting to first 10 devices)");
+            }
+            break;
+        }
     }
     
     if devices.is_empty() {

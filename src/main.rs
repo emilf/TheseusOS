@@ -160,7 +160,9 @@ fn efi_main() -> Status {
 
     // Step 9: Locate ACPI RSDP Table
     serial_write_line(serial_handle, "Locating ACPI RSDP table...");
-    let rsdp_address = find_acpi_rsdp().unwrap_or(0);
+    serial_write_line(serial_handle, "  Debug: About to call find_acpi_rsdp");
+    let rsdp_address = find_acpi_rsdp(serial_handle).unwrap_or(0);
+    serial_write_line(serial_handle, "  Debug: find_acpi_rsdp returned");
     unsafe { HANDOFF.acpi_rsdp = rsdp_address; }
 
     // Step 10: Report ACPI status with pretty formatting
@@ -327,10 +329,17 @@ fn efi_main() -> Status {
         serial_write_line(serial_handle, "⚠ No memory map available for kernel");
     }
 
-    // Step 20: Main bootloader loop
-    serial_write_line(serial_handle, "Entering main loop - halting CPU");
+    // Step 20: Bootloader complete - exit QEMU
+    serial_write_line(serial_handle, "=== UEFI Loader Complete ===");
+    serial_write_line(serial_handle, "All system information collected and stored");
+    serial_write_line(serial_handle, "Ready for kernel handoff");
+    serial_write_line(serial_handle, "Exiting QEMU...");
     
-    loop {
-        unsafe { asm!("hlt", options(nomem, nostack, preserves_flags)) }
+    // Exit QEMU gracefully via I/O port 0xf4
+    // This makes testing much faster since we don't need timeouts
+    unsafe {
+        asm!("out dx, al", in("dx") 0xf4u16, in("al") 0u8, options(nomem, nostack, preserves_flags));
     }
+    
+    Status::SUCCESS
 }

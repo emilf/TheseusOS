@@ -7,6 +7,7 @@
 use acpi::{AcpiHandler, PhysicalMapping, AcpiTables};
 use core::ptr::NonNull;
 use uefi::prelude::*;
+use uefi::Handle;
 
 /// ACPI Handler for UEFI environment
 /// 
@@ -55,23 +56,95 @@ impl AcpiHandler for UefiAcpiHandler {
 /// Find the ACPI RSDP (Root System Description Pointer) table
 /// 
 /// This function searches for the ACPI RSDP table in the UEFI configuration table.
-/// The RSDP is the entry point for all ACPI tables.
+/// The RSDP is the entry point for all ACPI tables. It searches for both ACPI 1.0
+/// and ACPI 2.0 RSDP tables, preferring ACPI 2.0 if both are available.
+/// 
+/// # Arguments
+/// 
+/// * `serial_handle` - Optional handle for debug output
 /// 
 /// # Returns
 /// 
 /// * `Some(u64)` - Physical address of the RSDP table if found
 /// * `None` - If the RSDP table is not found
 /// 
-/// # Note
+/// # Safety
 /// 
-/// This is currently a placeholder implementation. The actual UEFI-RS 0.35 API
-/// for accessing the configuration table needs to be implemented.
-pub fn find_acpi_rsdp() -> Option<u64> {
-    // TODO: Implement proper RSDP table lookup using UEFI configuration table
-    // This requires finding the correct API in uefi-rs 0.35 for accessing
-    // the system table's configuration table entries
+/// This function accesses the UEFI system table and configuration table.
+/// It is safe to call during UEFI boot services phase.
+pub fn find_acpi_rsdp(serial_handle: Option<Handle>) -> Option<u64> {
+    use uefi::table::cfg::{ACPI_GUID, ACPI2_GUID, ConfigTableEntry};
+    use uefi::table;
+    use core::slice;
     
-    // For now, return None to indicate ACPI is not available
+    // Debug: Function called
+    if let Some(handle) = serial_handle {
+        crate::serial::serial_write_line(Some(handle), "  Debug: find_acpi_rsdp function called");
+    }
+    
+    // Get the system table
+    let system_table = match table::system_table_raw() {
+        Some(st) => st,
+        None => {
+            if let Some(handle) = serial_handle {
+                crate::serial::serial_write_line(Some(handle), "  Debug: System table not available");
+            }
+            return None;
+        }
+    };
+    
+    // SAFETY: The system table is valid as it was obtained from the global state
+    let st = unsafe { system_table.as_ref() };
+    
+    // Check if configuration table is available
+    if st.configuration_table.is_null() || st.number_of_configuration_table_entries == 0 {
+        if let Some(handle) = serial_handle {
+            crate::serial::serial_write_line(Some(handle), "  Debug: Configuration table not available");
+        }
+        return None;
+    }
+    
+    if let Some(handle) = serial_handle {
+        crate::serial::serial_write_line(Some(handle), &alloc::format!("  Debug: Found {} configuration table entries", st.number_of_configuration_table_entries));
+    }
+    
+    // SAFETY: We have a valid pointer and count from the system table
+    let config_entries = unsafe {
+        slice::from_raw_parts(
+            st.configuration_table as *const ConfigTableEntry,
+            st.number_of_configuration_table_entries
+        )
+    };
+    
+    // Search for ACPI 2.0 RSDP first (preferred)
+    for (i, entry) in config_entries.iter().enumerate() {
+        if let Some(handle) = serial_handle {
+            crate::serial::serial_write_line(Some(handle), &alloc::format!("  Debug: Entry {} - GUID: {:?}", i, entry.guid));
+        }
+        
+        if entry.guid == ACPI2_GUID {
+            if let Some(handle) = serial_handle {
+                crate::serial::serial_write_line(Some(handle), &alloc::format!("  Debug: Found ACPI 2.0 RSDP at 0x{:016X}", entry.address as u64));
+            }
+            return Some(entry.address as u64);
+        }
+    }
+    
+    // Fall back to ACPI 1.0 RSDP
+    for entry in config_entries {
+        if entry.guid == ACPI_GUID {
+            if let Some(handle) = serial_handle {
+                crate::serial::serial_write_line(Some(handle), &alloc::format!("  Debug: Found ACPI 1.0 RSDP at 0x{:016X}", entry.address as u64));
+            }
+            return Some(entry.address as u64);
+        }
+    }
+    
+    if let Some(handle) = serial_handle {
+        crate::serial::serial_write_line(Some(handle), "  Debug: No ACPI RSDP table found in configuration table");
+    }
+    
+    // No ACPI table found
     None
 }
 
