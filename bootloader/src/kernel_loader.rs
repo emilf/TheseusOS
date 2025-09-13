@@ -187,47 +187,117 @@ pub fn analyze_kernel_binary(kernel_data: &[u8], ) -> Result<KernelInfo, Status>
     
     write_line("✓ Valid ELF magic number found");
     
-    // For now, create a simple kernel info structure based on actual file size
-    // The kernel file is 16,168 bytes, so we'll create sections that fit
-    let entry_point = 0xFFFFFFFF80000000; // Virtual entry point
-    let file_size = kernel_data.len() as u64;
+    // Parse ELF header (64-bit)
+    if kernel_data.len() < 64 {
+        write_line("✗ ELF file too small to contain header");
+        return Err(Status::INVALID_PARAMETER);
+    }
     
-    // Create sections that match the actual file size
-    let sections = vec![
-        KernelSection {
-            name: ".text",
-            virtual_address: 0xFFFFFFFF80000000,
-            physical_address: 0x100000, // Will be updated during loading
-            size: file_size, // Use actual file size
-            file_offset: 0,
-            flags: 0x5, // RX (readable, executable)
-        },
-        KernelSection {
-            name: ".bss",
-            virtual_address: 0xFFFFFFFF80010000,
-            physical_address: 0x100000 + file_size,
-            size: 4096, // Small BSS section
-            file_offset: 0, // BSS has no file data
-            flags: 0x6, // RW (readable, writable)
-        },
-    ];
+    // Read entry point from ELF header (offset 24, 8 bytes)
+    let entry_point = u64::from_le_bytes([
+        kernel_data[24], kernel_data[25], kernel_data[26], kernel_data[27],
+        kernel_data[28], kernel_data[29], kernel_data[30], kernel_data[31],
+    ]);
     
-    let total_memory_size = sections.iter().map(|s| s.size).sum();
+    // Read program header offset (offset 32, 8 bytes)
+    let ph_offset = u64::from_le_bytes([
+        kernel_data[32], kernel_data[33], kernel_data[34], kernel_data[35],
+        kernel_data[36], kernel_data[37], kernel_data[38], kernel_data[39],
+    ]);
+    
+    // Read number of program headers (offset 56, 2 bytes)
+    let ph_num = u16::from_le_bytes([kernel_data[56], kernel_data[57]]) as usize;
+    
+    write_line(&format!("  ELF Entry Point: 0x{:016X}", entry_point));
+    write_line(&format!("  Program Headers: {} entries at offset 0x{:X}", ph_num, ph_offset));
+    
+    // Parse program headers to find loadable segments
+    let mut sections = Vec::new();
+    let mut total_memory_size = 0u64;
+    
+    for i in 0..ph_num {
+        let ph_start = (ph_offset as usize) + (i * 56); // 56 bytes per program header
+        if ph_start + 56 > kernel_data.len() {
+            write_line("✗ Program header extends beyond file");
+            return Err(Status::INVALID_PARAMETER);
+        }
+        
+        // Read segment type (offset 0, 4 bytes)
+        let segment_type = u32::from_le_bytes([
+            kernel_data[ph_start], kernel_data[ph_start + 1], 
+            kernel_data[ph_start + 2], kernel_data[ph_start + 3],
+        ]);
+        
+        // Only process LOAD segments (type 1)
+        if segment_type == 1 {
+            // Read segment flags (offset 4, 4 bytes)
+            let flags = u32::from_le_bytes([
+                kernel_data[ph_start + 4], kernel_data[ph_start + 5], 
+                kernel_data[ph_start + 6], kernel_data[ph_start + 7],
+            ]);
+            
+            // Read virtual address (offset 16, 8 bytes)
+            let virt_addr = u64::from_le_bytes([
+                kernel_data[ph_start + 16], kernel_data[ph_start + 17],
+                kernel_data[ph_start + 18], kernel_data[ph_start + 19],
+                kernel_data[ph_start + 20], kernel_data[ph_start + 21],
+                kernel_data[ph_start + 22], kernel_data[ph_start + 23],
+            ]);
+            
+            // Read file offset (offset 8, 8 bytes)
+            let file_offset = u64::from_le_bytes([
+                kernel_data[ph_start + 8], kernel_data[ph_start + 9],
+                kernel_data[ph_start + 10], kernel_data[ph_start + 11],
+                kernel_data[ph_start + 12], kernel_data[ph_start + 13],
+                kernel_data[ph_start + 14], kernel_data[ph_start + 15],
+            ]);
+            
+            // Read memory size (offset 40, 8 bytes)
+            let mem_size = u64::from_le_bytes([
+                kernel_data[ph_start + 40], kernel_data[ph_start + 41],
+                kernel_data[ph_start + 42], kernel_data[ph_start + 43],
+                kernel_data[ph_start + 44], kernel_data[ph_start + 45],
+                kernel_data[ph_start + 46], kernel_data[ph_start + 47],
+            ]);
+            
+            // Determine section name based on virtual address
+            let section_name = if virt_addr == 0xffffffff80000000 {
+                ".text"
+            } else if virt_addr == 0xffffffff80001ad8 {
+                ".dynsym"
+            } else if virt_addr == 0xffffffff80001e80 {
+                ".rodata"
+            } else if virt_addr == 0xffffffff80002640 {
+                ".dynamic"
+            } else if virt_addr == 0xffffffff80002728 {
+                ".data"
+            } else if virt_addr == 0xffffffff80002a68 {
+                ".bss"
+            } else {
+                "unknown"
+            };
+            
+            sections.push(KernelSection {
+                name: section_name,
+                virtual_address: virt_addr,
+                physical_address: 0, // Will be set during loading
+                size: mem_size,
+                file_offset: file_offset,
+                flags: flags,
+            });
+            
+            total_memory_size += mem_size;
+            
+            write_line(&format!("    {}: 0x{:016X} ({} bytes, flags: 0x{:X})",
+                section_name, virt_addr, mem_size, flags));
+        }
+    }
     
     write_line("✓ Kernel analysis complete");
     write_line(&format!("  Entry point: 0x{:016X}", entry_point));
     write_line(&format!("  Total memory required: {} bytes ({:.2} MB)", 
         total_memory_size, total_memory_size as f64 / theseus_shared::constants::memory::BYTES_PER_MB));
-    write_line(&format!("  Sections: {}", sections.len()));
-    
-    for section in &sections {
-        write_line(&format!("    {}: 0x{:016X} - 0x{:016X} ({} bytes)",
-            section.name,
-            section.virtual_address,
-            section.virtual_address + section.size - 1,
-            section.size
-        ));
-    }
+    write_line(&format!("  Loadable segments: {}", sections.len()));
     
     Ok(KernelInfo {
         entry_point,
@@ -254,14 +324,22 @@ pub fn load_kernel_sections(kernel_info: &mut KernelInfo, kernel_data: &[u8], ph
     write_line("Loading kernel sections into memory...");
     write_line(&format!("Loading kernel at physical address: 0x{:016X}", physical_base));
     
-    let mut current_physical = physical_base;
+    // Calculate the offset between virtual and physical addresses
+    // Virtual base is 0xffffffff80000000, physical base is the allocated address
+    // Use u64 arithmetic to avoid overflow, then convert to i64 for the offset calculation
+    let virtual_base = 0xffffffff80000000u64;
+    let virtual_to_physical_offset = physical_base as i64 - virtual_base as i64;
+    
     let mut physical_entry = 0;
     
     for section in &mut kernel_info.sections {
-        section.physical_address = current_physical;
+        // Calculate physical address by applying the offset
+        section.physical_address = (section.virtual_address as i64 + virtual_to_physical_offset) as u64;
         
-        if section.name == ".text" && section.virtual_address == kernel_info.entry_point {
-            physical_entry = current_physical;
+        // Find the physical entry point (text section with entry point virtual address)
+        if section.name == ".text" && section.virtual_address == 0xffffffff80000000 {
+            // Calculate physical entry point by adding the offset to the virtual entry point
+            physical_entry = (kernel_info.entry_point as i64 + virtual_to_physical_offset) as u64;
         }
         
         write_line(&format!("  {}: 0x{:016X} -> 0x{:016X}",
@@ -293,29 +371,45 @@ pub fn load_kernel_sections(kernel_info: &mut KernelInfo, kernel_data: &[u8], ph
                 return Err(Status::INVALID_PARAMETER);
             }
             
-            // Validate file data bounds
-            let file_end = section.file_offset + section.size;
-            if file_end > kernel_data.len() as u64 {
-                write_line(&format!("    ✗ ERROR: File data out of bounds (end: {}, data_len: {})", 
-                    file_end, kernel_data.len()));
-                return Err(Status::INVALID_PARAMETER);
-            }
-            
-            let file_data = &kernel_data[section.file_offset as usize..(section.file_offset + section.size) as usize];
-            write_line(&format!("    File data slice length: {}", file_data.len()));
-            
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    file_data.as_ptr(),
-                    section.physical_address as *mut u8,
-                    section.size as usize,
-                );
+            // For sections with file data, copy from file
+            if section.file_offset > 0 || section.name != ".bss" {
+                // Calculate how much data to copy from file
+                let file_size = if section.file_offset + section.size > kernel_data.len() as u64 {
+                    kernel_data.len() as u64 - section.file_offset
+                } else {
+                    section.size
+                };
+                
+                if file_size > 0 {
+                    let file_data = &kernel_data[section.file_offset as usize..(section.file_offset + file_size) as usize];
+                    write_line(&format!("    File data slice length: {}", file_data.len()));
+                    
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            file_data.as_ptr(),
+                            section.physical_address as *mut u8,
+                            file_size as usize,
+                        );
+                    }
+                }
+                
+                // If memory size is larger than file size, zero the remainder
+                if section.size > file_size {
+                    let remaining_size = section.size - file_size;
+                    write_line(&format!("    Zeroing remaining {} bytes", remaining_size));
+                    unsafe {
+                        core::ptr::write_bytes(
+                            (section.physical_address + file_size) as *mut u8,
+                            0,
+                            remaining_size as usize,
+                        );
+                    }
+                }
             }
         }
-        
-        current_physical += section.size;
     }
     
+    write_line(&format!("Physical entry point: 0x{:016X}", physical_entry));
     write_line("✓ Kernel sections loaded successfully");
     Ok(physical_entry)
 }

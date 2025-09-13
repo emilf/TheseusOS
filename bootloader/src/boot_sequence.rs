@@ -310,51 +310,30 @@ pub fn prepare_boot_services_exit(
                             HANDOFF.kernel_virtual_entry = kernel_entry_point;
                         }
                         
-                        write_line("✓ Kernel loaded successfully, preparing for boot services exit...");
+                        write_line("✓ Kernel loaded successfully, jumping to kernel for testing...");
                         
-                        // Prepare everything we need before exiting boot services
-                        write_line("Preparing virtual memory mapping...");
-                        let virtual_memory_result = prepare_virtual_memory_mapping(mmap, kernel_physical_base, kernel_entry_point);
+                        // For testing: jump directly to kernel without exiting boot services
+                        // This allows us to test kernel loading and output
+                        write_line("TESTING MODE: Jumping to kernel without exiting boot services");
+                        write_line(&format!("Kernel physical entry point: 0x{:016X}", kernel_physical_base));
+                        write_line(&format!("Kernel virtual entry point: 0x{:016X}", kernel_entry_point));
                         
-                        write_line("✓ All preparations complete, exiting boot services...");
-                        
-                        // Now exit boot services
-                        let final_memory_map = unsafe {
-                            uefi::boot::exit_boot_services(None)
-                        };
-                        
-                        write_line("✓ Successfully exited boot services");
-                        write_line(&format!("Final memory map has {} entries", final_memory_map.len()));
-                        
-                        // Update the handoff structure with the final memory map
+                        // Update handoff structure with kernel information
                         unsafe {
-                            HANDOFF.memory_map_entries = final_memory_map.len() as u32;
-                            // Calculate memory map size using the standard UEFI descriptor size
-                            HANDOFF.memory_map_size = (final_memory_map.len() * theseus_shared::constants::memory::UEFI_MEMORY_DESCRIPTOR_SIZE) as u32;
-                            // Note: The memory map buffer pointer is already set in collect_memory_map
+                            HANDOFF.kernel_physical_base = kernel_physical_base;
+                            HANDOFF.kernel_virtual_entry = kernel_entry_point;
+                            HANDOFF.kernel_virtual_base = 0xffffffff80000000; // Virtual base
+                            HANDOFF.page_table_root = 0; // No paging yet
+                            HANDOFF.virtual_memory_enabled = 0; // Identity mapped
+                            
+                            // Ensure handoff structure is properly initialized
+                            HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
+                            write_line(&format!("Handoff structure size set to: {} bytes", HANDOFF.size));
                         }
                         
-                        // Set up virtual memory mapping using UEFI Runtime Services
-                        write_line("Setting up virtual memory mapping...");
-                        match virtual_memory_result {
-                            Ok(descriptors) => {
-                                match setup_virtual_memory_mapping_post_exit(&final_memory_map, descriptors) {
-                                    Ok(()) => {
-                                        write_line("✓ Virtual memory mapping established");
-                                    }
-                                    Err(_) => {
-                                        write_line("⚠ Virtual memory mapping failed, continuing with physical addressing");
-                                    }
-                                }
-                            }
-                            Err(_) => {
-                                write_line("⚠ Virtual memory preparation failed, continuing with physical addressing");
-                            }
-                        }
-                        
-                        // Jump to kernel
+                        // Jump to kernel directly (testing mode)
                         unsafe {
-                            jump_to_kernel();
+                            jump_to_kernel_test_mode(kernel_physical_base);
                         }
             }
             Err(status) => {
@@ -414,6 +393,35 @@ unsafe fn jump_to_kernel() {
     
     // Cast the entry point to a function pointer
     let kernel_entry: extern "C" fn() -> ! = core::mem::transmute(kernel_entry_point);
+    
+    // Jump to the kernel
+    // Note: This will never return as the kernel entry point is marked as `-> !`
+    kernel_entry();
+}
+
+/// Jump to the kernel entry point in test mode (without exiting boot services)
+/// 
+/// This function is used for testing kernel loading without the complexity
+/// of exiting boot services. It jumps directly to the physical kernel entry point.
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it:
+/// - Jumps to arbitrary code (kernel entry point)
+/// - Assumes the kernel is properly loaded at the expected address
+/// - Performs operations that cannot be undone
+unsafe fn jump_to_kernel_test_mode(physical_entry_point: u64) {
+    write_line("=== JUMPING TO KERNEL IN TEST MODE ===");
+    write_line(&format!("Physical entry point: 0x{:016X}", physical_entry_point));
+    write_line("Boot services still active - kernel should be able to output to debug port");
+    
+    // Finalize the handoff structure
+    HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
+    
+    // Cast the physical entry point to a function pointer
+    let kernel_entry: extern "C" fn() -> ! = core::mem::transmute(physical_entry_point);
+    
+    write_line("Jumping to kernel now...");
     
     // Jump to the kernel
     // Note: This will never return as the kernel entry point is marked as `-> !`
