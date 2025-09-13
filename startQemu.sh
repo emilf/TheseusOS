@@ -9,6 +9,9 @@ TIMEOUT=${2:-0}
 
 pushd "$SCRIPT_DIR" >/dev/null
 
+# Remove debug.log
+rm -f debug.log
+
 # Build everything including BIOS files
 echo "Building project..."
 make all
@@ -28,47 +31,55 @@ if [[ ! -f "$OVMF_VARS_RW" ]]; then
   exit 1
 fi
 
-# Configure QEMU options based on mode
+## Configure QEMU options based on mode
 if [[ "$HEADLESS" == "true" || "$HEADLESS" == "headless" ]]; then
   echo "Starting QEMU in headless mode..."
   echo "  QEMU Debug Driver output: stdout (port 0xe9)"
-  QEMU_DISPLAY="-display none -serial null"
-  QEMU_MONITOR="-monitor null"
-  QEMU_DEBUG="-device isa-debugcon,chardev=debugcon"
-  QEMU_DEBUG_CHAR="-chardev stdio,id=debugcon"
+  QEMU_DISPLAY_ARGS=( -display none -serial null )
+  QEMU_MONITOR_ARGS=()
+  QEMU_DEBUG_ARGS=( -device isa-debugcon,chardev=debugcon )
+  QEMU_DEBUG_CHAR_ARGS=( -chardev stdio,id=debugcon )
 else
   echo "Starting QEMU in headed mode..."
   echo "  QEMU Debug Driver output: debug.log"
-  QEMU_DISPLAY=""
-  QEMU_MONITOR="-monitor stdio"
-  QEMU_DEBUG="-device isa-debugcon,chardev=debugcon"
-  QEMU_DEBUG_CHAR="-chardev file,id=debugcon,path=debug.log"
+  QEMU_DISPLAY_ARGS=()
+  QEMU_MONITOR_ARGS=( -monitor stdio )
+  QEMU_DEBUG_ARGS=( -device isa-debugcon,chardev=debugcon )
+  QEMU_DEBUG_CHAR_ARGS=( -chardev file,id=debugcon,path=debug.log )
 fi
 
 # Optional extra QEMU options (e.g., -S -s) via QEMU_OPTS env
 QEMU_OPTS=${QEMU_OPTS:-}
 
-# Build QEMU command
-QEMU_CMD="qemu-system-x86_64 \
-  -machine q35,accel=kvm:tcg \
-  -cpu max \
-  -m 256M \
-  -drive if=pflash,format=raw,readonly=on,file=\"$OVMF_CODE\" \
-  -drive if=pflash,format=raw,file=\"$OVMF_VARS_RW\" \
-  -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-  $QEMU_DEBUG \
-  $QEMU_DEBUG_CHAR \
-  $QEMU_DISPLAY \
-  $QEMU_MONITOR \
-  -drive format=raw,file=\"$SCRIPT_DIR/build/disk.img\" \
-  -nic none \
-  -no-reboot \
-  ${QEMU_OPTS}"
+## Build QEMU command as an array (robust quoting, no eval needed)
+QEMU_CMD=(
+  qemu-system-x86_64
+  -machine q35,accel=kvm:tcg
+  -cpu max
+  -m 256M
+  -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE"
+  -drive if=pflash,format=raw,file="$OVMF_VARS_RW"
+  -device isa-debug-exit,iobase=0xf4,iosize=0x04
+  ${QEMU_DEBUG_ARGS[@]}
+  ${QEMU_DEBUG_CHAR_ARGS[@]}
+  ${QEMU_DISPLAY_ARGS[@]}
+  ${QEMU_MONITOR_ARGS[@]}
+  -drive format=raw,file="$SCRIPT_DIR/build/disk.img"
+  -nic none
+  -no-reboot
+)
 
-# Run QEMU with optional timeout
+# Append extra options from QEMU_OPTS (split on spaces safely)
+if [[ -n "${QEMU_OPTS}" ]]; then
+  # shellcheck disable=SC2206
+  EXTRA_OPTS=( ${QEMU_OPTS} )
+  QEMU_CMD+=( "${EXTRA_OPTS[@]}" )
+fi
+
+## Run QEMU with optional timeout
 if [[ "$TIMEOUT" -gt 0 ]]; then
   echo "Running QEMU with ${TIMEOUT}s timeout..."
-  timeout "$TIMEOUT"s bash -c "eval '$QEMU_CMD'"
+  timeout --foreground "${TIMEOUT}s" "${QEMU_CMD[@]}"
   EXIT_CODE=$?
   if [[ $EXIT_CODE -eq 1 ]]; then
     echo "✓ QEMU exited gracefully from guest"
@@ -79,7 +90,7 @@ if [[ "$TIMEOUT" -gt 0 ]]; then
   fi
 else
   echo "Running QEMU (no timeout)..."
-  eval "$QEMU_CMD"
+  "${QEMU_CMD[@]}"
   EXIT_CODE=$?
   if [[ $EXIT_CODE -eq 1 ]]; then
     echo "✓ QEMU exited gracefully from guest"
