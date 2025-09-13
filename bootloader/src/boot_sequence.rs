@@ -328,6 +328,10 @@ pub fn prepare_boot_services_exit(
                     // Note: The memory map buffer pointer is already set in collect_memory_map
                 }
                 
+                // Set up virtual memory mapping using UEFI Runtime Services
+                // Note: We can't use write_line after exit_boot_services due to heap allocation issues
+                // For now, skip virtual memory mapping and jump directly to kernel
+                
                 // Jump to kernel
                 unsafe {
                     jump_to_kernel();
@@ -371,8 +375,8 @@ pub fn prepare_boot_services_exit(
 /// - Assumes the kernel is properly loaded at the expected address
 /// - Performs operations that cannot be undone
 unsafe fn jump_to_kernel() {
-    write_line("=== Jumping to Kernel ===");
-    write_line("Setting up kernel environment...");
+    // Note: We can't use write_line after exit_boot_services due to heap allocation issues
+    // Direct UEFI output would be needed here, but for now we'll proceed silently
     
     // Finalize the handoff structure
     HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
@@ -384,39 +388,12 @@ unsafe fn jump_to_kernel() {
     HANDOFF.page_table_root = 0;                       // No paging setup yet
     HANDOFF.virtual_memory_enabled = 0;                // Identity mapped for now
     
-    // Log the handoff information (copy values to avoid shared references to mutable static)
-    let handoff_size = HANDOFF.size;
-    let memory_map_entries = HANDOFF.memory_map_entries;
-    let memory_map_size = HANDOFF.memory_map_size;
-    let acpi_rsdp = HANDOFF.acpi_rsdp;
-    let kernel_virtual_base = HANDOFF.kernel_virtual_base;
-    let kernel_physical_base = HANDOFF.kernel_physical_base;
-    let virtual_memory_enabled = HANDOFF.virtual_memory_enabled;
-    
-    write_line(&format!("Handoff structure size: {} bytes", handoff_size));
-    write_line(&format!("Memory map entries: {}", memory_map_entries));
-    write_line(&format!("Memory map size: {} bytes", memory_map_size));
-    
-    if acpi_rsdp != 0 {
-        write_line(&format!("ACPI RSDP: 0x{:016X}", acpi_rsdp));
-    }
-    
-    write_line(&format!("Kernel virtual base: 0x{:016X}", kernel_virtual_base));
-    write_line(&format!("Kernel physical base: 0x{:016X}", kernel_physical_base));
-    write_line(&format!("Virtual memory enabled: {}", virtual_memory_enabled));
-    write_line("Jumping to kernel...");
-    
     // Get the kernel information from the handoff structure
     let kernel_physical_base = HANDOFF.kernel_physical_base;
     let kernel_entry_point = HANDOFF.kernel_virtual_entry;
     
-    write_line(&format!("Kernel physical base: 0x{:016X}", kernel_physical_base));
-    write_line(&format!("Kernel entry point: 0x{:016X}", kernel_entry_point));
-    
     // Cast the entry point to a function pointer
     let kernel_entry: extern "C" fn() -> ! = core::mem::transmute(kernel_entry_point);
-    
-    write_line("Jumping to kernel entry point...");
     
     // Jump to the kernel
     // Note: This will never return as the kernel entry point is marked as `-> !`

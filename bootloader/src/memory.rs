@@ -5,8 +5,9 @@
 //! before calling exit_boot_services.
 
 use uefi::Status;
-use uefi::mem::memory_map::MemoryType;
+use uefi::mem::memory_map::{MemoryType, MemoryDescriptor, MemoryMap, MemoryAttribute};
 use uefi::boot::{self, AllocateType};
+use uefi::runtime;
 use crate::drivers::manager::write_line;
 use alloc::format;
 
@@ -129,6 +130,8 @@ pub fn free_memory(region: MemoryRegion) -> MemoryResult<()> {
 /// # Arguments
 /// 
 /// * `memory_map` - The UEFI memory map to use for virtual mapping
+/// * `kernel_physical_base` - Physical base address of the kernel
+/// * `kernel_virtual_base` - Virtual base address where kernel should be mapped
 /// 
 /// # Returns
 /// 
@@ -139,20 +142,99 @@ pub fn free_memory(region: MemoryRegion) -> MemoryResult<()> {
 /// 
 /// This function should be called after exit_boot_services. It modifies the
 /// virtual memory mapping of the system.
-pub fn setup_virtual_memory_mapping(_memory_map: &uefi::mem::memory_map::MemoryMapOwned) -> MemoryResult<()> {
+pub fn setup_virtual_memory_mapping(
+    memory_map: &uefi::mem::memory_map::MemoryMapOwned,
+    kernel_physical_base: u64,
+    kernel_virtual_base: u64,
+) -> MemoryResult<()> {
     write_line("Setting up virtual memory mapping...");
     
-    // TODO: Implement actual UEFI virtual memory mapping
-    // This requires more complex handling of the memory map structure
-    // and proper access to the Runtime Services table
+    // Get the system table to access runtime services
+    let system_table = match uefi::table::system_table_raw() {
+        Some(st) => st,
+        None => {
+            write_line("  ✗ System table not available");
+            return Err(Status::UNSUPPORTED);
+        }
+    };
     
-    write_line("  WARNING: Virtual memory mapping not yet implemented");
-    write_line("  This is a placeholder - actual implementation requires:");
-    write_line("    1. Access to Runtime Services table");
-    write_line("    2. Proper memory map descriptor handling");
-    write_line("    3. Virtual address mapping setup");
+    // SAFETY: We have a valid system table pointer
+    let st = unsafe { &*system_table.as_ptr() };
     
-    // Placeholder: return success for now
+    // Check if runtime services are available
+    if st.runtime_services.is_null() {
+        write_line("  ✗ Runtime services not available");
+        return Err(Status::UNSUPPORTED);
+    }
+    
+    write_line("  ✓ Runtime services available");
+    
+    // Create a memory descriptor array for set_virtual_address_map
+    // We need to avoid heap allocations after exit_boot_services, so we'll use a fixed-size array
+    const MAX_DESCRIPTORS: usize = 200; // Should be enough for most systems
+    let mut descriptors: [MemoryDescriptor; MAX_DESCRIPTORS] = unsafe { core::mem::zeroed() };
+    let mut descriptor_count = 0;
+    
+    // Convert memory map entries to descriptors
+    for entry in memory_map.entries() {
+        if descriptor_count >= MAX_DESCRIPTORS {
+            write_line("  ⚠ Too many memory descriptors, truncating");
+            break;
+        }
+        
+        descriptors[descriptor_count] = MemoryDescriptor {
+            ty: entry.ty,
+            phys_start: entry.phys_start,
+            virt_start: if entry.ty == MemoryType::CONVENTIONAL {
+                // Map conventional memory 1:1 (identity mapping)
+                entry.phys_start
+            } else {
+                // Keep other memory types at their physical addresses
+                entry.phys_start
+            },
+            page_count: entry.page_count,
+            att: entry.att,
+        };
+        descriptor_count += 1;
+    }
+    
+    write_line("  Created memory descriptors");
+    
+    // Set up kernel mapping: map kernel physical address to virtual address
+    if descriptor_count < MAX_DESCRIPTORS {
+        descriptors[descriptor_count] = MemoryDescriptor {
+            ty: MemoryType::LOADER_DATA,
+            phys_start: kernel_physical_base,
+            virt_start: kernel_virtual_base,
+            page_count: 32, // 32 pages = 128KB for kernel
+            att: MemoryAttribute::from_bits_truncate(0x0000000f), // Standard attributes
+        };
+        descriptor_count += 1;
+        write_line("  Added kernel mapping");
+    } else {
+        write_line("  ⚠ No space for kernel mapping descriptor");
+    }
+    
+    // Call set_virtual_address_map
+    write_line("  Calling UEFI set_virtual_address_map...");
+    
+    // SAFETY: We're calling this after exit_boot_services as required
+    match unsafe { 
+        runtime::set_virtual_address_map(
+            &mut descriptors[..descriptor_count],
+            system_table.as_ptr()
+        ) 
+    } {
+        Ok(()) => {
+            write_line("  ✓ Virtual memory mapping established successfully");
+            write_line("  ✓ Kernel mapped to virtual address");
+        }
+        Err(err) => {
+            write_line("  ✗ set_virtual_address_map failed");
+            return Err(err.status());
+        }
+    }
+    
     Ok(())
 }
 

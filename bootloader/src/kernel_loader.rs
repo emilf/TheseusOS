@@ -187,39 +187,26 @@ pub fn analyze_kernel_binary(kernel_data: &[u8], ) -> Result<KernelInfo, Status>
     
     write_line("✓ Valid ELF magic number found");
     
-    // For now, create a simple kernel info structure
-    // In a real implementation, this would parse the ELF headers
+    // For now, create a simple kernel info structure based on actual file size
+    // The kernel file is 16,168 bytes, so we'll create sections that fit
     let entry_point = 0xFFFFFFFF80000000; // Virtual entry point
+    let file_size = kernel_data.len() as u64;
+    
+    // Create sections that match the actual file size
     let sections = vec![
         KernelSection {
             name: ".text",
             virtual_address: 0xFFFFFFFF80000000,
             physical_address: 0x100000, // Will be updated during loading
-            size: 65536,
+            size: file_size, // Use actual file size
             file_offset: 0,
             flags: 0x5, // RX (readable, executable)
         },
         KernelSection {
-            name: ".rodata",
-            virtual_address: 0xFFFFFFFF80010000,
-            physical_address: 0x110000,
-            size: 32768,
-            file_offset: 65536,
-            flags: 0x4, // R (readable)
-        },
-        KernelSection {
-            name: ".data",
-            virtual_address: 0xFFFFFFFF80018000,
-            physical_address: 0x118000,
-            size: 16384,
-            file_offset: 98304,
-            flags: 0x6, // RW (readable, writable)
-        },
-        KernelSection {
             name: ".bss",
-            virtual_address: 0xFFFFFFFF8001C000,
-            physical_address: 0x11C000,
-            size: 16384,
+            virtual_address: 0xFFFFFFFF80010000,
+            physical_address: 0x100000 + file_size,
+            size: 4096, // Small BSS section
             file_offset: 0, // BSS has no file data
             flags: 0x6, // RW (readable, writable)
         },
@@ -283,13 +270,40 @@ pub fn load_kernel_sections(kernel_info: &mut KernelInfo, kernel_data: &[u8], ph
         if section.name == ".bss" {
             // BSS section needs to be zeroed
             write_line(&format!("    BSS section: {} bytes (zeroing)", section.size));
+            write_line(&format!("    BSS physical address: 0x{:016X}", section.physical_address));
+            
+            // Validate physical address
+            if section.physical_address == 0 {
+                write_line("    ✗ ERROR: Invalid physical address (0x0) for BSS section");
+                return Err(Status::INVALID_PARAMETER);
+            }
+            
             unsafe {
                 core::ptr::write_bytes(section.physical_address as *mut u8, 0, section.size as usize);
             }
         } else {
             // Copy section data from file to allocated memory
-            let file_data = &kernel_data[section.file_offset as usize..(section.file_offset + section.size) as usize];
             write_line(&format!("    {} section: {} bytes (copying)", section.name, section.size));
+            write_line(&format!("    Physical address: 0x{:016X}", section.physical_address));
+            write_line(&format!("    File offset: 0x{:016X}, size: {}", section.file_offset, section.size));
+            
+            // Validate physical address
+            if section.physical_address == 0 {
+                write_line("    ✗ ERROR: Invalid physical address (0x0) for section");
+                return Err(Status::INVALID_PARAMETER);
+            }
+            
+            // Validate file data bounds
+            let file_end = section.file_offset + section.size;
+            if file_end > kernel_data.len() as u64 {
+                write_line(&format!("    ✗ ERROR: File data out of bounds (end: {}, data_len: {})", 
+                    file_end, kernel_data.len()));
+                return Err(Status::INVALID_PARAMETER);
+            }
+            
+            let file_data = &kernel_data[section.file_offset as usize..(section.file_offset + section.size) as usize];
+            write_line(&format!("    File data slice length: {}", file_data.len()));
+            
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     file_data.as_ptr(),
