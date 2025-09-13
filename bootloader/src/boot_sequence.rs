@@ -299,43 +299,63 @@ pub fn prepare_boot_services_exit(
         write_line("✓ Memory map ready for kernel handoff");
         write_line("Exiting boot services...");
         
-        // Load the kernel binary BEFORE exiting boot services
-        // (we need UEFI file system protocols to read the kernel file)
-        write_line("About to call load_kernel_binary...");
-        match crate::kernel_loader::load_kernel_binary(mmap) {
-            Ok((kernel_physical_base, kernel_entry_point)) => {
-                // Update the handoff structure with the actual kernel information
-                unsafe {
-                    HANDOFF.kernel_physical_base = kernel_physical_base;
-                    HANDOFF.kernel_virtual_entry = kernel_entry_point;
-                }
-                
-                write_line("✓ Kernel loaded successfully, exiting boot services...");
-                
-                // Now exit boot services
-                let final_memory_map = unsafe {
-                    uefi::boot::exit_boot_services(None)
-                };
-                
-                write_line("✓ Successfully exited boot services");
-                write_line(&format!("Final memory map has {} entries", final_memory_map.len()));
-                
-                // Update the handoff structure with the final memory map
-                unsafe {
-                    HANDOFF.memory_map_entries = final_memory_map.len() as u32;
-                    // Calculate memory map size using the standard UEFI descriptor size
-                    HANDOFF.memory_map_size = (final_memory_map.len() * theseus_shared::constants::memory::UEFI_MEMORY_DESCRIPTOR_SIZE) as u32;
-                    // Note: The memory map buffer pointer is already set in collect_memory_map
-                }
-                
-                // Set up virtual memory mapping using UEFI Runtime Services
-                // Note: We can't use write_line after exit_boot_services due to heap allocation issues
-                // For now, skip virtual memory mapping and jump directly to kernel
-                
-                // Jump to kernel
-                unsafe {
-                    jump_to_kernel();
-                }
+                // Load the kernel binary BEFORE exiting boot services
+                // (we need UEFI file system protocols to read the kernel file)
+                write_line("About to call load_kernel_binary...");
+                match crate::kernel_loader::load_kernel_binary(mmap) {
+                    Ok((kernel_physical_base, kernel_entry_point)) => {
+                        // Update the handoff structure with the actual kernel information
+                        unsafe {
+                            HANDOFF.kernel_physical_base = kernel_physical_base;
+                            HANDOFF.kernel_virtual_entry = kernel_entry_point;
+                        }
+                        
+                        write_line("✓ Kernel loaded successfully, preparing for boot services exit...");
+                        
+                        // Prepare everything we need before exiting boot services
+                        write_line("Preparing virtual memory mapping...");
+                        let virtual_memory_result = prepare_virtual_memory_mapping(mmap, kernel_physical_base, kernel_entry_point);
+                        
+                        write_line("✓ All preparations complete, exiting boot services...");
+                        
+                        // Now exit boot services
+                        let final_memory_map = unsafe {
+                            uefi::boot::exit_boot_services(None)
+                        };
+                        
+                        write_line("✓ Successfully exited boot services");
+                        write_line(&format!("Final memory map has {} entries", final_memory_map.len()));
+                        
+                        // Update the handoff structure with the final memory map
+                        unsafe {
+                            HANDOFF.memory_map_entries = final_memory_map.len() as u32;
+                            // Calculate memory map size using the standard UEFI descriptor size
+                            HANDOFF.memory_map_size = (final_memory_map.len() * theseus_shared::constants::memory::UEFI_MEMORY_DESCRIPTOR_SIZE) as u32;
+                            // Note: The memory map buffer pointer is already set in collect_memory_map
+                        }
+                        
+                        // Set up virtual memory mapping using UEFI Runtime Services
+                        write_line("Setting up virtual memory mapping...");
+                        match virtual_memory_result {
+                            Ok(descriptors) => {
+                                match setup_virtual_memory_mapping_post_exit(&final_memory_map, descriptors) {
+                                    Ok(()) => {
+                                        write_line("✓ Virtual memory mapping established");
+                                    }
+                                    Err(_) => {
+                                        write_line("⚠ Virtual memory mapping failed, continuing with physical addressing");
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                write_line("⚠ Virtual memory preparation failed, continuing with physical addressing");
+                            }
+                        }
+                        
+                        // Jump to kernel
+                        unsafe {
+                            jump_to_kernel();
+                        }
             }
             Err(status) => {
                 write_line(&format!("✗ Failed to load kernel: {:?}", status));
@@ -398,6 +418,93 @@ unsafe fn jump_to_kernel() {
     // Jump to the kernel
     // Note: This will never return as the kernel entry point is marked as `-> !`
     kernel_entry();
+}
+
+/// Prepare virtual memory mapping before exiting boot services
+/// This function prepares all the data structures needed for virtual memory mapping
+/// without actually calling set_virtual_address_map (which must be done after exit_boot_services)
+fn prepare_virtual_memory_mapping(
+    memory_map: &uefi::mem::memory_map::MemoryMapOwned,
+    kernel_physical_base: u64,
+    kernel_virtual_base: u64,
+) -> Result<[uefi::mem::memory_map::MemoryDescriptor; 200], uefi::Status> {
+    use uefi::mem::memory_map::{MemoryDescriptor, MemoryType, MemoryAttribute};
+    
+    // Create a fixed-size array for memory descriptors
+    let mut descriptors: [MemoryDescriptor; 200] = unsafe { core::mem::zeroed() };
+    let mut descriptor_count = 0;
+    
+    // Convert memory map entries to descriptors
+    for entry in memory_map.entries() {
+        if descriptor_count >= 200 {
+            break;
+        }
+        
+        descriptors[descriptor_count] = MemoryDescriptor {
+            ty: entry.ty,
+            phys_start: entry.phys_start,
+            virt_start: if entry.ty == MemoryType::CONVENTIONAL {
+                // Map conventional memory 1:1 (identity mapping)
+                entry.phys_start
+            } else {
+                // Keep other memory types at their physical addresses
+                entry.phys_start
+            },
+            page_count: entry.page_count,
+            att: entry.att,
+        };
+        descriptor_count += 1;
+    }
+    
+    // Add kernel mapping
+    if descriptor_count < 200 {
+        descriptors[descriptor_count] = MemoryDescriptor {
+            ty: MemoryType::LOADER_DATA,
+            phys_start: kernel_physical_base,
+            virt_start: kernel_virtual_base,
+            page_count: 32, // 32 pages = 128KB for kernel
+            att: MemoryAttribute::from_bits_truncate(0x0000000f),
+        };
+        descriptor_count += 1;
+    }
+    
+    Ok(descriptors)
+}
+
+/// Set up virtual memory mapping after exiting boot services
+/// This function calls set_virtual_address_map without using heap allocations
+fn setup_virtual_memory_mapping_post_exit(
+    _memory_map: &uefi::mem::memory_map::MemoryMapOwned,
+    mut descriptors: [uefi::mem::memory_map::MemoryDescriptor; 200],
+) -> Result<(), uefi::Status> {
+    use uefi::runtime;
+    
+    // Count non-zero descriptors
+    let mut descriptor_count = 0;
+    for i in 0..200 {
+        if descriptors[i].phys_start != 0 || descriptors[i].virt_start != 0 {
+            descriptor_count = i + 1;
+        } else {
+            break;
+        }
+    }
+    
+    // Get the system table to access runtime services
+    let system_table = match uefi::table::system_table_raw() {
+        Some(st) => st,
+        None => return Err(uefi::Status::UNSUPPORTED),
+    };
+    
+    // Call set_virtual_address_map
+    match unsafe { 
+        runtime::set_virtual_address_map(
+            &mut descriptors[..descriptor_count],
+            system_table.as_ptr()
+        ) 
+    } {
+        Ok(()) => Ok(()),
+        Err(err) => Err(err.status()),
+    }
 }
 
 /// Complete the bootloader and exit QEMU
