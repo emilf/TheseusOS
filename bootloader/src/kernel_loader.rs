@@ -6,8 +6,6 @@
 use uefi::prelude::*;
 use uefi::boot::get_image_file_system;
 use uefi::proto::media::file::{File, FileMode, FileAttribute, RegularFile, FileInfo};
-use uefi::mem::memory_map::MemoryMap;
-use uefi::mem::memory_map::MemoryType;
 use uefi::Status;
 use alloc::vec::Vec;
 use alloc::format;
@@ -251,59 +249,6 @@ pub fn analyze_kernel_binary(kernel_data: &[u8], ) -> Result<KernelInfo, Status>
     })
 }
 
-/// Find a suitable free memory region for the kernel
-/// 
-/// # Arguments
-/// 
-/// * `memory_map` - UEFI memory map
-/// * `required_size` - Size of memory needed
-/// * `output_driver` - Output driver for logging
-/// 
-/// # Returns
-/// 
-/// * `Ok(address)` - Physical address of free memory region
-/// * `Err(status)` - Error finding free memory
-pub fn find_free_memory_region(memory_map: &uefi::mem::memory_map::MemoryMapOwned, required_size: u64, ) -> Result<u64, Status> {
-    write_line(&format!("Searching for free memory region ({} bytes required)...", required_size));
-    
-    let mut best_address = None;
-    let mut best_size = 0;
-    let mut total_free = 0;
-    
-    for descriptor in memory_map.entries() {
-        if descriptor.ty == MemoryType::CONVENTIONAL {
-            total_free += descriptor.page_count * 4096;
-            if descriptor.page_count * 4096 >= required_size {
-                if best_address.is_none() || descriptor.page_count * 4096 < best_size {
-                    best_address = Some(descriptor.phys_start);
-                    best_size = descriptor.page_count * 4096;
-                    write_line(&format!("  Free region: 0x{:016X} - 0x{:016X} ({} bytes)",
-                        descriptor.phys_start,
-                        descriptor.phys_start + descriptor.page_count * 4096 - 1,
-                        descriptor.page_count * 4096
-                    ));
-                    write_line(&format!("    ✓ Suitable region found at 0x{:016X} ({} bytes)",
-                        descriptor.phys_start, descriptor.page_count * 4096));
-                }
-            }
-        }
-    }
-    
-    write_line(&format!("Total free memory available: {} bytes ({:.2} MB)",
-        total_free, total_free as f64 / theseus_shared::constants::memory::BYTES_PER_MB));
-    
-    match best_address {
-        Some(address) => {
-            write_line(&format!("✓ Selected memory region: 0x{:016X} ({} bytes, {:.2} MB)",
-                address, best_size, best_size as f64 / theseus_shared::constants::memory::BYTES_PER_MB));
-            Ok(address)
-        }
-        None => {
-            write_line("✗ No suitable free memory region found");
-            Err(Status::OUT_OF_RESOURCES)
-        }
-    }
-}
 
 /// Load kernel sections into allocated memory
 /// 
@@ -337,18 +282,19 @@ pub fn load_kernel_sections(kernel_info: &mut KernelInfo, kernel_data: &[u8], ph
         
         if section.name == ".bss" {
             // BSS section needs to be zeroed
+            write_line(&format!("    BSS section: {} bytes (zeroing)", section.size));
             unsafe {
-                core::ptr::write_bytes(current_physical as *mut u8, 0, section.size as usize);
+                core::ptr::write_bytes(section.physical_address as *mut u8, 0, section.size as usize);
             }
-            write_line(&format!("    Zeroing {} bytes for BSS section", section.size));
         } else {
-            // Copy section data from file
+            // Copy section data from file to allocated memory
             let file_data = &kernel_data[section.file_offset as usize..(section.file_offset + section.size) as usize];
+            write_line(&format!("    {} section: {} bytes (copying)", section.name, section.size));
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     file_data.as_ptr(),
-                    current_physical as *mut u8,
-                    section.size as usize
+                    section.physical_address as *mut u8,
+                    section.size as usize,
                 );
             }
         }
@@ -372,7 +318,7 @@ pub fn load_kernel_sections(kernel_info: &mut KernelInfo, kernel_data: &[u8], ph
 /// 
 /// * `Ok((physical_entry, virtual_entry))` - Entry point addresses
 /// * `Err(status)` - Error loading kernel
-pub fn load_kernel_binary(memory_map: &uefi::mem::memory_map::MemoryMapOwned, ) -> Result<(u64, u64), uefi::Status> {
+pub fn load_kernel_binary(_memory_map: &uefi::mem::memory_map::MemoryMapOwned, ) -> Result<(u64, u64), uefi::Status> {
     write_line("=== Loading Kernel Binary ===");
     write_line("Starting kernel loading process...");
     
@@ -388,11 +334,11 @@ pub fn load_kernel_binary(memory_map: &uefi::mem::memory_map::MemoryMapOwned, ) 
     // Analyze kernel binary
     let mut kernel_info = analyze_kernel_binary(&kernel_data)?;
     
-    // Find free memory region
-    let physical_base = find_free_memory_region(memory_map, kernel_info.total_memory_size)?;
+    // Allocate memory using UEFI Boot Services
+    let memory_region = crate::memory::allocate_memory(kernel_info.total_memory_size, uefi::mem::memory_map::MemoryType::LOADER_DATA)?;
+    let physical_base = memory_region.physical_address;
     
-    // Allocate memory (in a real implementation, this would use UEFI memory allocation)
-    write_line("✓ Memory allocated");
+    write_line("✓ Memory allocated using UEFI Boot Services");
     
     // Load kernel sections
     let physical_entry = load_kernel_sections(&mut kernel_info, &kernel_data, physical_base)?;

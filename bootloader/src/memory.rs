@@ -5,39 +5,13 @@
 //! before calling exit_boot_services.
 
 use uefi::Status;
-use uefi::mem::memory_map::{MemoryType, MemoryMap};
-use uefi::table;
+use uefi::mem::memory_map::MemoryType;
+use uefi::boot::{self, AllocateType};
 use crate::drivers::manager::write_line;
 use alloc::format;
 
 /// Memory allocation result
 pub type MemoryResult<T> = Result<T, Status>;
-
-/// Get the UEFI Boot Services table
-/// 
-/// This function safely retrieves the UEFI Boot Services table from the global system table.
-/// It returns None if boot services are not available (e.g., after exit_boot_services).
-/// 
-/// # Returns
-/// 
-/// * `Some(*const u8)` - Raw pointer to the Boot Services table if available
-/// * `None` - If boot services are not available
-#[allow(dead_code)] // Intended for future use when implementing proper UEFI calls
-fn get_boot_services() -> Option<*const u8> {
-    // Get the system table
-    let system_table = table::system_table_raw()?;
-    
-    // SAFETY: The system table is valid as it was obtained from the global state
-    let st = unsafe { system_table.as_ref() };
-    
-    // Check if boot services are available
-    if st.boot_services.is_null() {
-        return None;
-    }
-    
-    // Return the raw pointer to boot services
-    Some(st.boot_services as *const u8)
-}
 
 /// Allocated memory region information
 #[derive(Debug, Clone, Copy)]
@@ -71,63 +45,29 @@ pub struct MemoryRegion {
 /// This function is safe to call before exit_boot_services. The returned memory
 /// must be freed using free_memory before calling exit_boot_services.
 pub fn allocate_memory(size: u64, memory_type: MemoryType) -> MemoryResult<MemoryRegion> {
-    write_line(&format!("Allocating {} bytes of memory (type: {:?})", size, memory_type));
-    
-    // Calculate number of pages needed (round up)
+    write_line(&format!("Allocating {} bytes using UEFI allocate_pages (type: {:?})", size, memory_type));
+
     let page_size = 4096u64; // UEFI page size is 4KB
     let page_count = (size + page_size - 1) / page_size;
-    
+
     write_line(&format!("  Requesting {} pages ({} bytes)", page_count, page_count * page_size));
-    
-    // For now, we'll use a simplified approach that finds free memory
-    // TODO: Implement proper UEFI allocate_pages call
-    // The uefi-rs crate structure makes direct access to Boot Services functions complex
-    
-    write_line("  WARNING: Using memory map-based allocation instead of UEFI allocate_pages");
-    write_line("  This is a temporary implementation - proper UEFI allocation requires:");
-    write_line("    1. Direct access to Boot Services table function pointers");
-    write_line("    2. Proper handling of UEFI function call conventions");
-    write_line("    3. Memory type validation and allocation policies");
-    
-    // Find a suitable free memory region
-    let _system_table = match table::system_table_raw() {
-        Some(st) => st,
-        None => {
-            write_line("  ✗ System table not available");
-            return Err(Status::UNSUPPORTED);
+
+    // Allocate memory using UEFI Boot Services
+    let memory_ptr = match boot::allocate_pages(
+        AllocateType::AnyPages,
+        memory_type,
+        page_count as usize,
+    ) {
+        Ok(ptr) => ptr,
+        Err(err) => {
+            write_line(&format!("  ✗ UEFI allocate_pages failed with error: {:?}", err));
+            return Err(err.status());
         }
     };
-    
-    // Get memory map to find free memory
-    let memory_map = match uefi::boot::memory_map(MemoryType::LOADER_DATA) {
-        Ok(map) => map,
-        Err(error) => {
-            write_line(&format!("  ✗ Failed to get memory map: {:?}", error));
-            return Err(error.status());
-        }
-    };
-    
-    // Find a suitable free memory region
-    let mut physical_address = 0u64;
-    for entry in memory_map.entries() {
-        if entry.ty == MemoryType::CONVENTIONAL {
-            let region_size = entry.page_count * 4096; // UEFI page size
-            if region_size >= size {
-                physical_address = entry.phys_start;
-                write_line(&format!("  ✓ Found suitable memory region: 0x{:016X} ({} bytes)", 
-                    physical_address, region_size));
-                break;
-            }
-        }
-    }
-    
-    if physical_address == 0 {
-        write_line("  ✗ No suitable memory region found");
-        return Err(Status::OUT_OF_RESOURCES);
-    }
-    
-    write_line(&format!("  ✓ Memory allocated at: 0x{:016X}", physical_address));
-    
+
+    let physical_address = memory_ptr.as_ptr() as u64;
+    write_line(&format!("  ✓ UEFI memory allocated at: 0x{:016X}", physical_address));
+
     Ok(MemoryRegion {
         physical_address,
         size: page_count * page_size,
@@ -135,7 +75,7 @@ pub fn allocate_memory(size: u64, memory_type: MemoryType) -> MemoryResult<Memor
     })
 }
 
-/// Free memory allocated using UEFI Boot Services
+/// Free memory using UEFI Boot Services
 /// 
 /// This function frees memory that was previously allocated using allocate_memory.
 /// The memory must be freed before calling exit_boot_services.
@@ -154,23 +94,29 @@ pub fn allocate_memory(size: u64, memory_type: MemoryType) -> MemoryResult<Memor
 /// This function is safe to call before exit_boot_services. The memory region
 /// must have been allocated using allocate_memory.
 pub fn free_memory(region: MemoryRegion) -> MemoryResult<()> {
-    write_line(&format!("Freeing memory region: 0x{:016X} ({} bytes)", 
+    write_line(&format!("Freeing UEFI memory region: 0x{:016X} ({} bytes)",
         region.physical_address, region.size));
-    
-    // For now, we'll use a simplified approach that just logs the deallocation
-    // TODO: Implement proper UEFI free_pages call
-    // The uefi-rs crate structure makes direct access to Boot Services functions complex
-    
-    write_line("  WARNING: Using simplified deallocation instead of UEFI free_pages");
-    write_line("  This is a temporary implementation - proper UEFI deallocation requires:");
-    write_line("    1. Direct access to Boot Services table function pointers");
-    write_line("    2. Proper handling of UEFI function call conventions");
-    write_line("    3. Memory type validation and deallocation policies");
-    
-    // In a real implementation, we would call UEFI's free_pages here
-    // For now, we just log that we're "freeing" the memory
-    write_line(&format!("  ✓ Memory deallocation logged: 0x{:016X}", region.physical_address));
-    
+
+    // Free memory using UEFI Boot Services
+    // Convert physical address back to NonNull<u8>
+    let memory_ptr = match core::ptr::NonNull::new(region.physical_address as *mut u8) {
+        Some(ptr) => ptr,
+        None => {
+            write_line("  ✗ Invalid memory pointer for free_pages");
+            return Err(Status::INVALID_PARAMETER);
+        }
+    };
+
+    match unsafe { boot::free_pages(memory_ptr, region.page_count as usize) } {
+        Ok(()) => {
+            write_line(&format!("  ✓ UEFI memory freed: 0x{:016X}", region.physical_address));
+        }
+        Err(err) => {
+            write_line(&format!("  ✗ UEFI free_pages failed with error: {:?}", err));
+            return Err(err.status());
+        }
+    }
+
     Ok(())
 }
 
@@ -275,85 +221,4 @@ pub fn test_memory_allocation() -> MemoryResult<()> {
     
     write_line("=== Memory Allocation Tests Complete ===");
     Ok(())
-}
-
-/// Find the best free memory region for kernel loading
-/// 
-/// This function searches the UEFI memory map for the best free memory region
-/// that can accommodate the kernel. It considers factors like size, alignment,
-/// and location to find the optimal region.
-/// 
-/// # Arguments
-/// 
-/// * `memory_map` - The UEFI memory map to search
-/// * `required_size` - Minimum size needed for the kernel
-/// * `preferred_address` - Preferred physical address (0 for any)
-/// 
-/// # Returns
-/// 
-/// * `Some(MemoryRegion)` - Best available memory region
-/// * `None` - No suitable memory region found
-pub fn find_best_memory_region(
-    memory_map: &uefi::mem::memory_map::MemoryMapOwned,
-    required_size: u64,
-    preferred_address: u64,
-) -> Option<MemoryRegion> {
-    write_line(&format!("Searching for memory region: {} bytes (preferred: 0x{:016X})", 
-        required_size, preferred_address));
-    
-    let page_size = 4096u64;
-    let required_pages = (required_size + page_size - 1) / page_size;
-    
-    let mut best_region: Option<MemoryRegion> = None;
-    let mut best_score = 0u64;
-    
-    for entry in memory_map.entries() {
-        if entry.ty == MemoryType::CONVENTIONAL {
-            let region_size = entry.page_count * page_size;
-            let region_pages = entry.page_count;
-            
-            if region_pages >= required_pages {
-                // Calculate score based on various factors
-                let mut score = region_pages;
-                
-                // Prefer regions closer to preferred address
-                if preferred_address != 0 {
-                    let distance = if entry.phys_start > preferred_address {
-                        entry.phys_start - preferred_address
-                    } else {
-                        preferred_address - entry.phys_start
-                    };
-                    score = score.saturating_sub(distance / page_size);
-                }
-                
-                // Prefer smaller regions (better fit)
-                if let Some(ref current_best) = best_region {
-                    if region_pages < current_best.page_count {
-                        score += 1000; // Bonus for better fit
-                    }
-                }
-                
-                if score > best_score {
-                    best_region = Some(MemoryRegion {
-                        physical_address: entry.phys_start,
-                        size: region_size,
-                        page_count: region_pages,
-                    });
-                    best_score = score;
-                    
-                    write_line(&format!("  ✓ Found suitable region: 0x{:016X} ({} bytes, score: {})", 
-                        entry.phys_start, region_size, score));
-                }
-            }
-        }
-    }
-    
-    if let Some(ref region) = best_region {
-        write_line(&format!("  ✓ Best region selected: 0x{:016X} ({} bytes)", 
-            region.physical_address, region.size));
-    } else {
-        write_line("  ✗ No suitable memory region found");
-    }
-    
-    best_region
 }
