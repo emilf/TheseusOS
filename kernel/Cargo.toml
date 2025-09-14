@@ -11,6 +11,7 @@ path = "src/main.rs"
 theseus-shared = { path = "../shared" }
 log = { workspace = true }
 acpi = { workspace = true }
+uefi-raw = "0.1.0"
 
 
 # Release profile defined in workspace root

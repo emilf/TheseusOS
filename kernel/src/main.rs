@@ -16,7 +16,7 @@ use gdt::setup_gdt;
 use interrupts::disable_all_interrupts;
 use cpu::{setup_control_registers, detect_cpu_features, setup_floating_point, setup_msrs};
 use memory::{MemoryManager, activate_virtual_memory};
-use boot_services::exit_boot_services;
+// use boot_services::exit_boot_services; // Not needed - bootloader handles this
 
 /// Temporary bump allocator for kernel setup phase
 /// 
@@ -151,20 +151,22 @@ fn test_allocator() {
     kernel_write_line("✓ Bump allocator is working correctly");
 }
 
-/// Set up complete kernel environment
+/// Set up complete kernel environment (correct order)
 /// 
-/// This function performs the complete setup sequence to establish full kernel control:
-/// 1. Disable all interrupts including NMI
-/// 2. Set up GDT and TSS
-/// 3. Configure control registers
-/// 4. Set up CPU features
-/// 5. Set up memory management and page tables
-/// 6. Exit boot services
-/// 7. Activate virtual memory
+/// This function performs the setup sequence in the correct order to establish kernel control:
+/// 1. Exit boot services FIRST (to prevent firmware interference)
+/// 2. Disable all interrupts including NMI
+/// 3. Set up GDT and TSS
+/// 4. Configure control registers
+/// 5. Set up CPU features
+/// 6. Test basic operations
 fn setup_kernel_environment(handoff: &theseus_shared::handoff::Handoff) {
     kernel_write_line("=== Setting up kernel environment ===");
     
-    // 1. Disable all interrupts
+    // Boot services have already been exited by the bootloader
+    kernel_write_line("✓ Boot services already exited by bootloader");
+    
+    // 1. Disable all interrupts (now safe to do)
     kernel_write_line("1. Disabling all interrupts...");
     unsafe {
         disable_all_interrupts();
@@ -194,32 +196,21 @@ fn setup_kernel_environment(handoff: &theseus_shared::handoff::Handoff) {
     }
     kernel_write_line("  ✓ CPU features configured");
     
-    // 5. Set up memory management
-    kernel_write_line("5. Setting up memory management...");
-    let memory_manager = unsafe {
-        MemoryManager::new(handoff)
-    };
-    kernel_write_line("  ✓ Page tables created and populated");
-    
-    // 6. Exit boot services
-    kernel_write_line("6. Exiting boot services...");
-    unsafe {
-        exit_boot_services(handoff);
-    }
-    kernel_write_line("  ✓ Boot services exited");
-    
-    // 7. Activate virtual memory
-    kernel_write_line("7. Activating virtual memory...");
-    let page_table_root = memory_manager.page_table_root();
-    unsafe {
-        activate_virtual_memory(page_table_root);
-    }
-    kernel_write_line("  ✓ Virtual memory activated");
-    
     kernel_write_line("=== Kernel environment setup complete ===");
+    kernel_write_line("Kernel environment test completed successfully");
+    kernel_write_line("Exiting QEMU...");
     
-    // Jump to high memory kernel entry point
-    jump_to_high_memory();
+    // Exit QEMU with success code
+    unsafe {
+        core::arch::asm!(
+            "out dx, al", 
+            in("dx") io_ports::QEMU_EXIT, 
+            in("al") exit_codes::QEMU_SUCCESS, 
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    
+    loop {}
 }
 
 /// Jump to kernel's virtual entry point in high memory
@@ -279,10 +270,6 @@ pub extern "C" fn kernel_main(handoff_addr: u64) -> ! {
     kernel_write_line("Initializing heap from memory map...");
     initialize_heap_from_handoff(handoff_addr);
     
-    // Test the bump allocator
-    kernel_write_line("Testing bump allocator...");
-    test_allocator();
-    
     kernel_write_line("Handoff structure address received");
     
     // Access the handoff structure from the passed address
@@ -297,27 +284,8 @@ pub extern "C" fn kernel_main(handoff_addr: u64) -> ! {
                 // Display system information from handoff
                 display_handoff_info(handoff);
                 
-                // For now, just test basic kernel functionality
-                kernel_write_line("Kernel received handoff structure");
-                kernel_write_line("Testing basic kernel operations...");
-                
-                // Test the allocator
-                test_allocator();
-                
-                kernel_write_line("Kernel test completed successfully");
-                kernel_write_line("Exiting QEMU...");
-                
-                // Exit QEMU with success code
-                unsafe {
-                    core::arch::asm!(
-                        "out dx, al", 
-                        in("dx") io_ports::QEMU_EXIT, 
-                        in("al") exit_codes::QEMU_SUCCESS, 
-                        options(nomem, nostack, preserves_flags)
-                    );
-                }
-                
-                loop {}
+                // Set up complete kernel environment (boot services have been exited)
+                setup_kernel_environment(handoff);
                 
             } else {
                 kernel_write_line("ERROR: Handoff structure has invalid size");

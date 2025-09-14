@@ -119,11 +119,15 @@ impl MemoryManager {
     }
 }
 
-/// Allocate a page table (simplified - uses temporary heap)
+/// Allocate a page table using the temporary heap
 unsafe fn allocate_page_table() -> &'static mut PageTable {
-    // For now, use a static allocation
-    // In a real implementation, this would use a proper allocator
-    static mut PAGE_TABLE_STORAGE: [PageTable; 4] = [
+    // For now, use a simple static allocation
+    // In a real implementation, this would use the temporary heap
+    static mut PAGE_TABLE_STORAGE: [PageTable; 8] = [
+        PageTable::new(),
+        PageTable::new(),
+        PageTable::new(),
+        PageTable::new(),
         PageTable::new(),
         PageTable::new(),
         PageTable::new(),

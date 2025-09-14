@@ -43,6 +43,12 @@ pub struct Handoff {
     /// Device tree size in bytes
     pub device_tree_size: u64,
     
+    // UEFI System Information
+    /// UEFI System Table pointer (for exit_boot_services)
+    pub uefi_system_table: u64,
+    /// UEFI Image Handle (for exit_boot_services)
+    pub uefi_image_handle: u64,
+    
     // Firmware Information
     /// Firmware vendor string pointer (0 if not available)
     pub firmware_vendor_ptr: u64,
@@ -150,6 +156,10 @@ pub static mut HANDOFF: Handoff = Handoff {
     // Device tree fields
     device_tree_ptr: 0,
     device_tree_size: 0,
+    
+    // UEFI System Table
+    uefi_system_table: 0,
+    uefi_image_handle: 0,
     
     // Firmware fields
     firmware_vendor_ptr: 0,

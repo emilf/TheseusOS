@@ -163,6 +163,26 @@ pub fn collect_system_info() {
         }
     }
 
+    // UEFI System Table and Image Handle
+    write_line("Collecting UEFI system table and image handle...");
+    match uefi::table::system_table_raw() {
+        Some(system_table) => {
+            let image_handle = uefi::boot::image_handle();
+            unsafe {
+                HANDOFF.uefi_system_table = system_table.as_ptr() as u64;
+                HANDOFF.uefi_image_handle = image_handle.as_ptr() as u64;
+            }
+            write_line("✓ UEFI system table and image handle collected");
+        }
+        None => {
+            write_line("✗ UEFI system table not available");
+            unsafe {
+                HANDOFF.uefi_system_table = 0;
+                HANDOFF.uefi_image_handle = 0;
+            }
+        }
+    }
+
     // Firmware Information
     write_line("Collecting firmware information...");
     match collect_firmware_info() {
@@ -329,6 +349,15 @@ pub fn finalize_handoff_structure() {
 /// - Performs operations that cannot be undone
 /// - Accesses memory after exit_boot_services
 pub unsafe fn jump_to_kernel_with_handoff(physical_entry_point: u64, handoff_ptr: *const Handoff) {
+    write_line("Exiting boot services before kernel handoff...");
+    
+    // Exit boot services using uefi-rs
+    // The function takes an optional memory type and returns the memory map
+    let _memory_map = unsafe { uefi::boot::exit_boot_services(None) };
+    write_line("✓ Boot services exited successfully");
+    
+    write_line("Jumping to kernel...");
+    
     // Cast the physical entry point to a function pointer that takes handoff address
     // The kernel entry point should accept the handoff structure address as a parameter
     let kernel_entry: extern "C" fn(handoff_addr: u64) -> ! = core::mem::transmute(physical_entry_point);
