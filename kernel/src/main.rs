@@ -1,3 +1,27 @@
+//! TheseusOS Kernel
+//! 
+//! This is the main kernel module for TheseusOS, a bare-metal operating system
+//! designed for x86-64 systems. The kernel is loaded by a UEFI bootloader and
+//! takes control after boot services have been exited.
+//! 
+//! ## Architecture
+//! 
+//! The kernel is organized into several modules:
+//! - `gdt`: Global Descriptor Table setup and management
+//! - `interrupts`: Interrupt handling and control
+//! - `cpu`: CPU feature detection and configuration
+//! - `memory`: Memory management and page table structures (not yet active)
+//! 
+//! ## Boot Process
+//! 
+//! 1. UEFI bootloader loads the kernel binary
+//! 2. Bootloader collects system information (memory map, ACPI, etc.)
+//! 3. Bootloader exits UEFI boot services
+//! 4. Bootloader jumps to kernel entry point
+//! 5. Kernel initializes heap from pre-allocated memory
+//! 6. Kernel sets up environment (interrupts, GDT, CPU features)
+//! 7. Kernel begins normal operation
+
 #![no_std]
 #![no_main]
 
@@ -10,12 +34,11 @@ mod gdt;
 mod interrupts;
 mod cpu;
 mod memory;
-mod boot_services;
 
 use gdt::setup_gdt;
 use interrupts::disable_all_interrupts;
 use cpu::{setup_control_registers, detect_cpu_features, setup_floating_point, setup_msrs};
-use memory::{MemoryManager, activate_virtual_memory};
+// use memory::{MemoryManager, activate_virtual_memory}; // Not used yet
 // use boot_services::exit_boot_services; // Not needed - bootloader handles this
 
 /// Temporary bump allocator for kernel setup phase
@@ -160,7 +183,7 @@ fn test_allocator() {
 /// 4. Configure control registers
 /// 5. Set up CPU features
 /// 6. Test basic operations
-fn setup_kernel_environment(handoff: &theseus_shared::handoff::Handoff) {
+fn setup_kernel_environment(_handoff: &theseus_shared::handoff::Handoff) {
     kernel_write_line("=== Setting up kernel environment ===");
     
     // Boot services have already been exited by the bootloader
@@ -213,17 +236,6 @@ fn setup_kernel_environment(handoff: &theseus_shared::handoff::Handoff) {
     loop {}
 }
 
-/// Jump to kernel's virtual entry point in high memory
-fn jump_to_high_memory() -> ! {
-    kernel_write_line("Jumping to high memory kernel entry point...");
-    
-    unsafe {
-        // Jump to kernel's virtual entry point
-        let virtual_entry = 0xFFFFFFFF80000000u64;
-        let entry_fn: extern "C" fn() -> ! = core::mem::transmute(virtual_entry);
-        entry_fn();
-    }
-}
 
 /// Simple kernel output function that writes directly to QEMU debug port
 fn kernel_write_line(message: &str) {
@@ -349,24 +361,6 @@ fn display_handoff_info(handoff: &theseus_shared::handoff::Handoff) {
     kernel_write_line("");
 }
 
-/// Initialize kernel subsystems
-fn initialize_kernel_subsystems() {
-    kernel_write_line("Initializing kernel subsystems...");
-    
-    // TODO: Initialize memory management
-    kernel_write_line("  - Memory management: TODO");
-    
-    // TODO: Initialize ACPI subsystem
-    kernel_write_line("  - ACPI subsystem: TODO");
-    
-    // TODO: Initialize device drivers
-    kernel_write_line("  - Device drivers: TODO");
-    
-    // TODO: Initialize process management
-    kernel_write_line("  - Process management: TODO");
-    
-    kernel_write_line("Kernel subsystem initialization complete");
-}
 
 /// Panic handler for kernel
 #[panic_handler]

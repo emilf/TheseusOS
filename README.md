@@ -1,6 +1,29 @@
-# TheseusOS UEFI Bootloader (Rust)
+# TheseusOS
 
-A comprehensive UEFI application in Rust that provides a complete system information collection and kernel loading infrastructure. Features beautiful serial output formatting, comprehensive system information gathering, proper memory management, real kernel loading from EFI file system, and a detailed C-compatible Handoff struct for kernel consumption.
+A bare-metal operating system for x86-64 systems, consisting of a UEFI bootloader and kernel written in Rust. TheseusOS demonstrates modern OS development practices with comprehensive system information collection, proper UEFI boot services management, and kernel environment setup.
+
+## Architecture
+
+TheseusOS is composed of three main components:
+
+1. **UEFI Bootloader**: Comprehensive system information collection and kernel loading
+2. **Kernel**: Bare-metal kernel with environment setup and memory management foundations
+3. **Shared Library**: Common data structures and constants
+
+## Current Status
+
+✅ **Working Features:**
+- Complete UEFI bootloader with system information collection
+- Real kernel loading from EFI filesystem with ELF parsing
+- Proper UEFI boot services exit using uefi-rs 0.35.0
+- Kernel environment setup (interrupts, GDT, CPU features)
+- Temporary heap allocator for kernel initialization
+- Comprehensive handoff structure for kernel-bootloader communication
+
+🚧 **In Development:**
+- Virtual memory management and page tables
+- Device driver framework
+- Process management and scheduling
 
 ## Prerequisites
 - Rust (stable) with target `x86_64-unknown-uefi`
@@ -69,18 +92,21 @@ telnet 127.0.0.1 55555
 - **Section loading**: Loads kernel sections (.text, .rodata, .data, .bss) into allocated memory
 
 ### Boot Sequence:
-1. **System Information Collection**: Memory map, ACPI, hardware inventory
-2. **Kernel Discovery**: Locates `kernel.efi` in EFI System Partition
-3. **File Analysis**: Reads kernel binary and analyzes ELF structure
-4. **Memory Allocation**: Finds free memory region for kernel loading
-5. **Kernel Loading**: Copies kernel sections to allocated memory
-6. **Boot Services Exit**: Exits UEFI boot services with proper memory map
-7. **Kernel Jump**: Transfers control to kernel entry point
+1. **System Information Collection**: Memory map, ACPI, hardware inventory, graphics info
+2. **Temporary Heap Allocation**: Allocates 1MB heap for kernel use during initialization
+3. **Kernel Discovery**: Locates `kernel.efi` in EFI System Partition
+4. **File Analysis**: Reads kernel binary and analyzes ELF structure
+5. **Memory Allocation**: Finds free memory region for kernel loading
+6. **Kernel Loading**: Copies kernel sections to allocated memory
+7. **Boot Services Exit**: Calls `uefi::boot::exit_boot_services()` to exit UEFI environment
+8. **Kernel Jump**: Transfers control to kernel entry point with handoff structure
+9. **Kernel Environment Setup**: Kernel initializes heap, disables interrupts, sets up GDT and CPU features
 
 ## Handoff ABI (to your kernel)
 - **Location**: Static storage inside the EFI image
 - **Register**: RDI = pointer to `Handoff`
-- **Size**: `Handoff.size` bytes (208 bytes total)
+- **Size**: `Handoff.size` bytes (248 bytes total)
+- **Boot Services Status**: `Handoff.boot_services_exited` indicates if boot services have been exited
 
 ### Comprehensive System Information:
 - **Graphics**: GOP framebuffer base/size, resolution, stride, pixel format
@@ -92,6 +118,9 @@ telnet 127.0.0.1 55555
 - **CPU**: Processor count, features, and microcode revision
 - **Hardware Inventory**: Comprehensive device enumeration with handles and metadata
 - **Kernel Information**: Physical and virtual addresses, entry points, memory layout
+- **Temporary Heap**: Pre-allocated 1MB heap region for kernel initialization
+- **UEFI Context**: System table and image handle for boot services management
+- **Boot Services Status**: Indicates whether UEFI boot services have been exited
 
 ## Technical Implementation
 

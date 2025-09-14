@@ -49,10 +49,6 @@ pub unsafe fn exit_qemu_with_message(message: &str, exit_code: u8) {
     );
 }
 
-/// Exit QEMU successfully with a message
-pub unsafe fn exit_qemu_success(message: &str) {
-    exit_qemu_with_message(message, exit_codes::QEMU_SUCCESS);
-}
 
 /// Exit QEMU with error and a message
 #[allow(dead_code)] // Intended for future use

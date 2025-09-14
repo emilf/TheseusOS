@@ -1,3 +1,31 @@
+//! TheseusOS UEFI Bootloader
+//! 
+//! This is the UEFI bootloader for TheseusOS. It runs in the UEFI environment
+//! and is responsible for:
+//! 
+//! 1. **System Information Collection**: Gathering memory maps, ACPI tables,
+//!    graphics information, hardware inventory, and other system details
+//! 2. **Kernel Loading**: Loading the kernel binary from the EFI system partition
+//!    and parsing its ELF structure
+//! 3. **Memory Management**: Allocating memory for the kernel and temporary heap
+//! 4. **Boot Services Exit**: Calling UEFI's ExitBootServices to transition
+//!    control from firmware to the kernel
+//! 5. **Kernel Handoff**: Jumping to the kernel entry point with a handoff
+//!    structure containing all collected system information
+//! 
+//! ## Architecture
+//! 
+//! The bootloader is organized into several modules:
+//! - `serial`: Serial communication and output
+//! - `display`: Console output and display management
+//! - `hardware`: Hardware detection and inventory
+//! - `acpi`: ACPI table discovery and parsing
+//! - `memory`: Memory map collection and management
+//! - `graphics`: Graphics Output Protocol (GOP) setup
+//! - `kernel_loader`: ELF parsing and kernel loading
+//! - `boot_sequence`: Main boot sequence orchestration
+//! - `qemu_exit`: QEMU exit device integration for testing
+
 #![no_std]
 #![no_main]
 
@@ -130,25 +158,6 @@ fn allocate_temp_heap_for_kernel() {
     }
 }
 
-/// Complete the bootloader and exit QEMU
-fn complete_bootloader_and_exit() {
-    write_line("=== TheseusOS UEFI Loader Complete ===");
-    write_line("All system information collected and stored");
-    write_line("Ready for kernel handoff");
-    write_line("Exiting QEMU...");
-    
-    // Exit QEMU gracefully with success message
-    unsafe {
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") constants::io_ports::QEMU_EXIT,
-            in("al") constants::exit_codes::QEMU_SUCCESS,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-    
-    loop {}
-}
 
 /// Main UEFI entry point
 /// 
@@ -243,8 +252,7 @@ fn efi_main() -> Status {
     }
 
     // If we reach here, it means there was an error in the handoff process
-    // Complete bootloader and exit QEMU gracefully
-    complete_bootloader_and_exit();
-    
-    Status::SUCCESS
+    // This should never happen since we jump to the kernel on success
+    write_line("✗ ERROR: Unexpected bootloader completion - kernel handoff failed");
+    panic!("Bootloader should never reach this point");
 }

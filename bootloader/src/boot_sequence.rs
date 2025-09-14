@@ -368,15 +368,3 @@ pub unsafe fn jump_to_kernel_with_handoff(physical_entry_point: u64, handoff_ptr
 }
 
 
-/// Complete the bootloader and exit QEMU
-pub fn complete_bootloader_and_exit() {
-    write_line("=== TheseusOS UEFI Loader Complete ===");
-    write_line("All system information collected and stored");
-    write_line("Ready for kernel handoff");
-    write_line("Exiting QEMU...");
-    
-    // Exit QEMU gracefully with success message
-    unsafe {
-        crate::qemu_exit::exit_qemu_success("UEFI Loader completed successfully");
-    }
-}
