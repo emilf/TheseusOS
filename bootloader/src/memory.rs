@@ -121,6 +121,51 @@ pub fn free_memory(region: MemoryRegion) -> MemoryResult<()> {
     Ok(())
 }
 
+/// Allocate persistent memory for handoff structure
+/// 
+/// This function allocates memory that will remain accessible after exit_boot_services.
+/// The memory is allocated as LOADER_DATA type as per UEFI specifications.
+/// 
+/// # Arguments
+/// 
+/// * `size` - Size in bytes to allocate
+/// 
+/// # Returns
+/// 
+/// * `Ok(MemoryRegion)` - Information about the allocated memory region
+/// * `Err(Status)` - UEFI error status if allocation failed
+pub fn allocate_persistent_memory(size: u64) -> MemoryResult<MemoryRegion> {
+    write_line(&format!("Allocating {} bytes of persistent memory for handoff structure", size));
+
+    let page_size = 4096u64; // UEFI page size is 4KB
+    let page_count = (size + page_size - 1) / page_size;
+
+    write_line(&format!("  Requesting {} pages ({} bytes) as LOADER_DATA", page_count, page_count * page_size));
+
+    // Allocate memory using UEFI Boot Services as LOADER_DATA
+    // This ensures the memory remains accessible after exit_boot_services
+    let memory_ptr = match boot::allocate_pages(
+        AllocateType::AnyPages,
+        MemoryType::LOADER_DATA,
+        page_count as usize,
+    ) {
+        Ok(ptr) => ptr,
+        Err(err) => {
+            write_line(&format!("  ✗ UEFI allocate_pages failed with error: {:?}", err));
+            return Err(err.status());
+        }
+    };
+
+    let physical_address = memory_ptr.as_ptr() as u64;
+    write_line(&format!("  ✓ Persistent memory allocated at: 0x{:016X}", physical_address));
+
+    Ok(MemoryRegion {
+        physical_address,
+        size: page_count * page_size,
+        page_count,
+    })
+}
+
 /// Set up virtual memory mapping using UEFI Runtime Services
 /// 
 /// This function sets up virtual memory mapping using UEFI's set_virtual_address_map
@@ -142,6 +187,7 @@ pub fn free_memory(region: MemoryRegion) -> MemoryResult<()> {
 /// 
 /// This function should be called after exit_boot_services. It modifies the
 /// virtual memory mapping of the system.
+#[allow(dead_code)]
 pub fn setup_virtual_memory_mapping(
     memory_map: &uefi::mem::memory_map::MemoryMapOwned,
     kernel_physical_base: u64,

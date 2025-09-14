@@ -29,6 +29,168 @@ pub fn initialize_uefi_environment() -> Result<(), Status> {
     Ok(())
 }
 
+/// Test only identity mapping to verify basic virtual memory functionality
+/// This function tests that identity mapping works correctly after set_virtual_address_map
+unsafe fn test_identity_mapping_only(handoff_physical_addr: u64) {
+    // Use QEMU debug port for output (no heap allocation needed)
+    let debug_port: u16 = 0xe9;
+    
+    // Output test start message
+    output_debug_string("=== Identity Mapping Test ===\n", debug_port);
+    
+    // Test data to write
+    let test_data: [u8; 8] = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE];
+    
+    // Use a safe memory location for identity mapping test
+    // We'll use a location in the handoff structure that we know is safe
+    let identity_test_addr = handoff_physical_addr + 0x200; // 512 bytes into handoff
+    
+    // Write to physical address
+    let identity_phys_ptr = identity_test_addr as *mut u8;
+    for i in 0..8 {
+        *identity_phys_ptr.add(i) = test_data[i];
+    }
+    
+    // Read back from same physical address (identity mapping)
+    let identity_read_ptr = identity_test_addr as *const u8;
+    let mut success = true;
+    for i in 0..8 {
+        if *identity_read_ptr.add(i) != test_data[i] {
+            success = false;
+            break;
+        }
+    }
+    
+    if success {
+        output_debug_string("  ✓ Identity mapping works after set_virtual_address_map\n", debug_port);
+    } else {
+        output_debug_string("  ✗ Identity mapping failed after set_virtual_address_map\n", debug_port);
+    }
+    
+    // Output test completion message
+    output_debug_string("=== Identity Mapping Test Complete ===\n", debug_port);
+    output_debug_string("Exiting QEMU...\n", debug_port);
+    
+    // Exit QEMU using the QEMU exit device
+    exit_qemu(0);
+}
+
+/// Test virtual memory mapping by writing to high virtual addresses and reading from low physical addresses
+/// This function tests that our virtual memory mapping is working correctly
+/// It writes test data to high virtual memory and verifies it appears in low physical memory
+unsafe fn test_virtual_memory_mapping(kernel_physical_base: u64, handoff_physical_addr: u64) {
+    // Use QEMU debug port for output (no heap allocation needed)
+    let debug_port: u16 = 0xe9;
+    
+    // Output test start message
+    output_debug_string("=== Virtual Memory Mapping Test ===\n", debug_port);
+    
+    // Test data to write
+    let test_data: [u8; 8] = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE];
+    
+    // Test 1: Simple identity mapping test first
+    output_debug_string("Test 1: Identity mapping test\n", debug_port);
+    
+    // Use a safe memory location for identity mapping test
+    // We'll use a location in the handoff structure that we know is safe
+    let identity_test_addr = handoff_physical_addr + 0x200; // 512 bytes into handoff
+    
+    // Write to physical address
+    let identity_phys_ptr = identity_test_addr as *mut u8;
+    for i in 0..8 {
+        *identity_phys_ptr.add(i) = test_data[i];
+    }
+    
+    // Read back from same physical address (identity mapping)
+    let identity_read_ptr = identity_test_addr as *const u8;
+    let mut success = true;
+    for i in 0..8 {
+        if *identity_read_ptr.add(i) != test_data[i] {
+            success = false;
+            break;
+        }
+    }
+    
+    if success {
+        output_debug_string("  ✓ Identity mapping works\n", debug_port);
+    } else {
+        output_debug_string("  ✗ Identity mapping failed\n", debug_port);
+    }
+    
+    // Test 2: Kernel virtual memory mapping (more conservative approach)
+    output_debug_string("Test 2: Kernel virtual memory mapping\n", debug_port);
+    
+    // Kernel virtual address: 0xffffffff80000000
+    let kernel_virtual_addr = 0xffffffff80000000u64;
+    let kernel_test_offset = 0x1000; // 4KB offset into kernel memory
+    let kernel_test_virt_addr = kernel_virtual_addr + kernel_test_offset;
+    let kernel_test_phys_addr = kernel_physical_base + kernel_test_offset;
+    
+    // Try to write a single byte first to test if the mapping works
+    let kernel_virt_ptr = kernel_test_virt_addr as *mut u8;
+    *kernel_virt_ptr = 0x42; // Write a test byte
+    
+    // Read back from low physical address
+    let kernel_phys_ptr = kernel_test_phys_addr as *const u8;
+    if *kernel_phys_ptr == 0x42 {
+        output_debug_string("  ✓ Kernel virtual->physical mapping works\n", debug_port);
+    } else {
+        output_debug_string("  ✗ Kernel virtual->physical mapping failed\n", debug_port);
+    }
+    
+    // Test 3: Handoff virtual memory mapping (more conservative approach)
+    output_debug_string("Test 3: Handoff virtual memory mapping\n", debug_port);
+    
+    // Handoff virtual address: 0xffffffff80010000
+    let handoff_virtual_addr = 0xffffffff80010000u64;
+    let handoff_test_offset = 0x100; // 256 byte offset into handoff memory
+    let handoff_test_virt_addr = handoff_virtual_addr + handoff_test_offset;
+    let handoff_test_phys_addr = handoff_physical_addr + handoff_test_offset;
+    
+    // Try to write a single byte first to test if the mapping works
+    let handoff_virt_ptr = handoff_test_virt_addr as *mut u8;
+    *handoff_virt_ptr = 0x84; // Write a test byte
+    
+    // Read back from low physical address
+    let handoff_phys_ptr = handoff_test_phys_addr as *const u8;
+    if *handoff_phys_ptr == 0x84 {
+        output_debug_string("  ✓ Handoff virtual->physical mapping works\n", debug_port);
+    } else {
+        output_debug_string("  ✗ Handoff virtual->physical mapping failed\n", debug_port);
+    }
+    
+    // Output test completion message
+    output_debug_string("=== Virtual Memory Mapping Test Complete ===\n", debug_port);
+    output_debug_string("Exiting QEMU...\n", debug_port);
+    
+    // Exit QEMU using the QEMU exit device
+    exit_qemu(0);
+}
+
+/// Output a string to the QEMU debug port (0xe9)
+/// This function doesn't use heap allocation and is safe to call after boot services exit
+unsafe fn output_debug_string(s: &str, port: u16) {
+    for byte in s.bytes() {
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") port,
+            in("al") byte,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
+/// Exit QEMU using the QEMU exit device
+unsafe fn exit_qemu(exit_code: u32) {
+    const QEMU_EXIT_PORT: u16 = 0xf4;
+    core::arch::asm!(
+        "out dx, eax",
+        in("dx") QEMU_EXIT_PORT,
+        in("eax") exit_code,
+        options(nostack, preserves_flags)
+    );
+}
+
 /// Collect graphics output protocol information
 pub fn collect_graphics_info() -> bool {
     write_line("Collecting graphics information...");
@@ -284,6 +446,37 @@ pub fn finalize_handoff_structure() {
     write_line("✓ All system information collected and stored");
 }
 
+/// Copy handoff structure to persistent memory
+/// 
+/// This function allocates persistent memory and copies the current handoff structure
+/// there so it remains accessible after exit_boot_services.
+/// 
+/// # Returns
+/// 
+/// * `Ok(u64)` - Physical address of the persistent handoff structure
+/// * `Err(Status)` - Error if allocation or copying failed
+fn copy_handoff_to_persistent_memory() -> Result<u64, Status> {
+    use crate::memory::allocate_persistent_memory;
+    
+    write_line("Copying handoff structure to persistent memory...");
+    
+    // Allocate persistent memory for the handoff structure
+    let handoff_size = core::mem::size_of::<Handoff>() as u64;
+    let persistent_region = allocate_persistent_memory(handoff_size)?;
+    
+    // Copy the current handoff structure to the persistent memory
+    unsafe {
+        let src = &raw const HANDOFF as *const Handoff;
+        let dst = persistent_region.physical_address as *mut Handoff;
+        
+        core::ptr::copy_nonoverlapping(src, dst, 1);
+        
+        write_line(&format!("✓ Handoff structure copied to persistent memory at 0x{:016X}", persistent_region.physical_address));
+    }
+    
+    Ok(persistent_region.physical_address)
+}
+
 /// Prepare for boot services exit
 pub fn prepare_boot_services_exit(
     memory_map: &Option<uefi::mem::memory_map::MemoryMapOwned>
@@ -310,13 +503,7 @@ pub fn prepare_boot_services_exit(
                             HANDOFF.kernel_virtual_entry = kernel_entry_point;
                         }
                         
-                        write_line("✓ Kernel loaded successfully, jumping to kernel for testing...");
-                        
-                        // For testing: jump directly to kernel without exiting boot services
-                        // This allows us to test kernel loading and output
-                        write_line("TESTING MODE: Jumping to kernel without exiting boot services");
-                        write_line(&format!("Kernel physical entry point: 0x{:016X}", kernel_physical_base));
-                        write_line(&format!("Kernel virtual entry point: 0x{:016X}", kernel_entry_point));
+                        write_line("✓ Kernel loaded successfully, preparing for boot services exit...");
                         
                         // Update handoff structure with kernel information
                         unsafe {
@@ -328,12 +515,89 @@ pub fn prepare_boot_services_exit(
                             
                             // Ensure handoff structure is properly initialized
                             HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
-                            write_line(&format!("Handoff structure size set to: {} bytes", HANDOFF.size));
+                            write_line(&format!("Handoff structure size set to: {} bytes", core::mem::size_of::<Handoff>()));
                         }
                         
-                        // Jump to kernel directly (testing mode)
+                        // Copy handoff structure to persistent memory BEFORE exiting boot services
+                        let persistent_handoff_addr = match copy_handoff_to_persistent_memory() {
+                            Ok(addr) => addr,
+                            Err(status) => {
+                                write_line(&format!("✗ Failed to copy handoff structure to persistent memory: {:?}", status));
+                                return;
+                            }
+                        };
+                        
+                        // Prepare everything we need before exiting boot services
+                        write_line("Preparing virtual memory mapping...");
+                        let virtual_memory_result = prepare_virtual_memory_mapping(mmap, kernel_physical_base, kernel_entry_point, persistent_handoff_addr);
+                        
+                        write_line("✓ All preparations complete, exiting boot services...");
+                        
+                        // Now exit boot services
+                        let final_memory_map = unsafe {
+                            uefi::boot::exit_boot_services(None)
+                        };
+                        
+                        // Note: We can't use write_line after exit_boot_services due to heap allocation issues
+                        
+                        // Update the persistent handoff structure with the final memory map
                         unsafe {
-                            jump_to_kernel_test_mode(kernel_physical_base);
+                            let persistent_handoff = persistent_handoff_addr as *mut Handoff;
+                            (*persistent_handoff).memory_map_entries = final_memory_map.len() as u32;
+                            // Calculate memory map size using the standard UEFI descriptor size
+                            (*persistent_handoff).memory_map_size = (final_memory_map.len() * theseus_shared::constants::memory::UEFI_MEMORY_DESCRIPTOR_SIZE) as u32;
+                            // Note: The memory map buffer pointer is already set in collect_memory_map
+                        }
+                        
+                        // Update virtual memory status in persistent handoff
+                        let virtual_memory_enabled = match virtual_memory_result {
+                            Ok(_) => 1, // Virtual memory mapping was prepared
+                            Err(_) => 0, // Virtual memory mapping failed, using identity mapping
+                        };
+                        
+                        unsafe {
+                            let persistent_handoff = persistent_handoff_addr as *mut Handoff;
+                            (*persistent_handoff).virtual_memory_enabled = virtual_memory_enabled;
+                        }
+                        
+                        // Set up virtual memory mapping using UEFI Runtime Services
+                        // This must be done after exit_boot_services and without heap allocation
+                        match virtual_memory_result {
+                            Ok((descriptors, count)) => {
+                                match setup_virtual_memory_mapping_post_exit(&final_memory_map, descriptors, count) {
+                                    Ok(()) => {
+                                        // Virtual memory mapping established successfully
+                                        // Test virtual memory mapping by accessing high memory addresses
+                                        unsafe {
+                                            test_identity_mapping_only(persistent_handoff_addr);
+                                        }
+                                    }
+                                    Err(_) => {
+                                        // Virtual memory mapping failed, but we can continue with physical addressing
+                                        // This is not fatal - the kernel can still run with identity mapping
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                // Virtual memory preparation failed, continuing with physical addressing
+                            }
+                        }
+                        
+                        // Jump to kernel with persistent handoff structure address
+                        // Use virtual addresses if virtual memory mapping was successful
+                        let (kernel_entry_addr, handoff_virt_addr) = match virtual_memory_result {
+                            Ok(_) => {
+                                // Virtual memory mapping was prepared, use virtual addresses
+                                (kernel_entry_point, 0xffffffff80010000u64) // Handoff structure virtual address
+                            }
+                            Err(_) => {
+                                // Virtual memory mapping failed, use physical addresses
+                                (kernel_physical_base, persistent_handoff_addr)
+                            }
+                        };
+                        
+                        unsafe {
+                            jump_to_kernel_with_persistent_handoff(kernel_entry_addr, handoff_virt_addr);
                         }
             }
             Err(status) => {
@@ -373,36 +637,13 @@ pub fn prepare_boot_services_exit(
 /// - Jumps to arbitrary code (kernel entry point)
 /// - Assumes the kernel is properly loaded at the expected address
 /// - Performs operations that cannot be undone
-unsafe fn jump_to_kernel() {
-    // Note: We can't use write_line after exit_boot_services due to heap allocation issues
-    // Direct UEFI output would be needed here, but for now we'll proceed silently
-    
-    // Finalize the handoff structure
-    HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
-    
-    // Set virtual memory information
-    HANDOFF.kernel_virtual_base = 0xffffffff80000000;  // Kernel virtual base
-    HANDOFF.kernel_physical_base = 0x100000;           // Physical load address
-    HANDOFF.kernel_virtual_entry = 0xffffffff80000000; // Virtual entry point
-    HANDOFF.page_table_root = 0;                       // No paging setup yet
-    HANDOFF.virtual_memory_enabled = 0;                // Identity mapped for now
-    
-    // Get the kernel information from the handoff structure
-    let kernel_physical_base = HANDOFF.kernel_physical_base;
-    let kernel_entry_point = HANDOFF.kernel_virtual_entry;
-    
-    // Cast the entry point to a function pointer
-    let kernel_entry: extern "C" fn() -> ! = core::mem::transmute(kernel_entry_point);
-    
-    // Jump to the kernel
-    // Note: This will never return as the kernel entry point is marked as `-> !`
-    kernel_entry();
-}
 
-/// Jump to the kernel entry point in test mode (without exiting boot services)
+
+/// Jump to the kernel entry point with persistent handoff structure
 /// 
-/// This function is used for testing kernel loading without the complexity
-/// of exiting boot services. It jumps directly to the physical kernel entry point.
+/// This function performs the final handoff from bootloader to kernel after
+/// exiting boot services. It passes the persistent handoff structure address
+/// to the kernel.
 /// 
 /// # Safety
 /// 
@@ -410,22 +651,18 @@ unsafe fn jump_to_kernel() {
 /// - Jumps to arbitrary code (kernel entry point)
 /// - Assumes the kernel is properly loaded at the expected address
 /// - Performs operations that cannot be undone
-unsafe fn jump_to_kernel_test_mode(physical_entry_point: u64) {
-    write_line("=== JUMPING TO KERNEL IN TEST MODE ===");
-    write_line(&format!("Physical entry point: 0x{:016X}", physical_entry_point));
-    write_line("Boot services still active - kernel should be able to output to debug port");
+/// - Accesses memory after exit_boot_services
+unsafe fn jump_to_kernel_with_persistent_handoff(physical_entry_point: u64, persistent_handoff_addr: u64) {
+    // Note: We can't use write_line after exit_boot_services due to heap allocation issues
+    // Direct UEFI output would be needed here, but for now we'll proceed silently
     
-    // Finalize the handoff structure
-    HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
+    // Cast the physical entry point to a function pointer that takes handoff address
+    // The kernel entry point should accept the handoff structure address as a parameter
+    let kernel_entry: extern "C" fn(handoff_addr: u64) -> ! = core::mem::transmute(physical_entry_point);
     
-    // Cast the physical entry point to a function pointer
-    let kernel_entry: extern "C" fn() -> ! = core::mem::transmute(physical_entry_point);
-    
-    write_line("Jumping to kernel now...");
-    
-    // Jump to the kernel
+    // Jump to the kernel with the persistent handoff structure address
     // Note: This will never return as the kernel entry point is marked as `-> !`
-    kernel_entry();
+    kernel_entry(persistent_handoff_addr);
 }
 
 /// Prepare virtual memory mapping before exiting boot services
@@ -435,7 +672,8 @@ fn prepare_virtual_memory_mapping(
     memory_map: &uefi::mem::memory_map::MemoryMapOwned,
     kernel_physical_base: u64,
     kernel_virtual_base: u64,
-) -> Result<[uefi::mem::memory_map::MemoryDescriptor; 200], uefi::Status> {
+    handoff_physical_addr: u64,
+) -> Result<([uefi::mem::memory_map::MemoryDescriptor; 200], usize), uefi::Status> {
     use uefi::mem::memory_map::{MemoryDescriptor, MemoryType, MemoryAttribute};
     
     // Create a fixed-size array for memory descriptors
@@ -464,19 +702,34 @@ fn prepare_virtual_memory_mapping(
         descriptor_count += 1;
     }
     
-    // Add kernel mapping
-    if descriptor_count < 200 {
-        descriptors[descriptor_count] = MemoryDescriptor {
-            ty: MemoryType::LOADER_DATA,
-            phys_start: kernel_physical_base,
-            virt_start: kernel_virtual_base,
-            page_count: 32, // 32 pages = 128KB for kernel
-            att: MemoryAttribute::from_bits_truncate(0x0000000f),
-        };
-        descriptor_count += 1;
-    }
+    // For now, only test identity mapping
+    // TODO: Add kernel and handoff high memory mappings once identity mapping is confirmed working
+    // 
+    // // Add kernel mapping to high virtual memory
+    // if descriptor_count < 200 {
+    //     descriptors[descriptor_count] = MemoryDescriptor {
+    //         ty: MemoryType::LOADER_DATA,
+    //         phys_start: kernel_physical_base,
+    //         virt_start: kernel_virtual_base,
+    //         page_count: 32, // 32 pages = 128KB for kernel
+    //         att: MemoryAttribute::from_bits_truncate(0x0000000f),
+    //     };
+    //     descriptor_count += 1;
+    // }
+    // 
+    // // Add handoff structure mapping to high virtual memory
+    // if descriptor_count < 200 {
+    //     descriptors[descriptor_count] = MemoryDescriptor {
+    //         ty: MemoryType::LOADER_DATA,
+    //         phys_start: handoff_physical_addr,
+    //         virt_start: 0xffffffff80010000u64, // Handoff structure at high virtual address
+    //         page_count: 1, // 1 page = 4KB for handoff structure
+    //         att: MemoryAttribute::from_bits_truncate(0x0000000f),
+    //     };
+    //     descriptor_count += 1;
+    // }
     
-    Ok(descriptors)
+    Ok((descriptors, descriptor_count))
 }
 
 /// Set up virtual memory mapping after exiting boot services
@@ -484,18 +737,9 @@ fn prepare_virtual_memory_mapping(
 fn setup_virtual_memory_mapping_post_exit(
     _memory_map: &uefi::mem::memory_map::MemoryMapOwned,
     mut descriptors: [uefi::mem::memory_map::MemoryDescriptor; 200],
+    descriptor_count: usize,
 ) -> Result<(), uefi::Status> {
     use uefi::runtime;
-    
-    // Count non-zero descriptors
-    let mut descriptor_count = 0;
-    for i in 0..200 {
-        if descriptors[i].phys_start != 0 || descriptors[i].virt_start != 0 {
-            descriptor_count = i + 1;
-        } else {
-            break;
-        }
-    }
     
     // Get the system table to access runtime services
     let system_table = match uefi::table::system_table_raw() {
