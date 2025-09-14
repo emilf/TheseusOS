@@ -52,6 +52,13 @@ fi
 # For GDB debugging, use: QEMU_OPTS="-S -s" make run-test
 QEMU_OPTS=${QEMU_OPTS:-}
 
+# If caller asked for CPU debug but no output file, direct to stdout
+if [[ "$QEMU_OPTS" == *"-d"* && "$QEMU_OPTS" != *"-D"* ]]; then
+  # Route QEMU's debug output to stdio by using chardev stdio for serial
+  # and avoid specifying -D so debug goes to stderr; we keep it merged in the console
+  :
+fi
+
 ## Build QEMU command as an array (robust quoting, no eval needed)
 QEMU_CMD=(
   qemu-system-x86_64
@@ -80,7 +87,7 @@ fi
 ## Run QEMU with optional timeout
 if [[ "$TIMEOUT" -gt 0 ]]; then
   echo "Running QEMU with ${TIMEOUT}s timeout..."
-  timeout --foreground "${TIMEOUT}s" "${QEMU_CMD[@]}"
+  timeout --foreground "${TIMEOUT}s" "${QEMU_CMD[@]}" 2>&1
   EXIT_CODE=$?
   if [[ $EXIT_CODE -eq 1 ]]; then
     echo "✓ QEMU exited gracefully from guest"
@@ -91,7 +98,7 @@ if [[ "$TIMEOUT" -gt 0 ]]; then
   fi
 else
   echo "Running QEMU (no timeout)..."
-  "${QEMU_CMD[@]}"
+  "${QEMU_CMD[@]}" 2>&1
   EXIT_CODE=$?
   if [[ $EXIT_CODE -eq 1 ]]; then
     echo "✓ QEMU exited gracefully from guest"
