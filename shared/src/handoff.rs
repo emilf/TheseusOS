@@ -90,6 +90,12 @@ pub struct Handoff {
     pub virtual_memory_enabled: u32,
     /// Reserved for future virtual memory extensions
     pub _reserved_virtual: u32,
+    
+    // Temporary Heap Information
+    /// Temporary heap base address (allocated by bootloader for kernel setup)
+    pub temp_heap_base: u64,
+    /// Temporary heap size in bytes
+    pub temp_heap_size: u64,
 }
 
 /// Static storage for handoff data
@@ -158,4 +164,8 @@ pub static mut HANDOFF: Handoff = Handoff {
     page_table_root: 0,
     virtual_memory_enabled: 0,
     _reserved_virtual: 0,
+    
+    // Temporary heap fields
+    temp_heap_base: 0,
+    temp_heap_size: 0,
 };

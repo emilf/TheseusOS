@@ -49,6 +49,7 @@ else
 fi
 
 # Optional extra QEMU options (e.g., -S -s) via QEMU_OPTS env
+# For GDB debugging, use: QEMU_OPTS="-S -s" make run-test
 QEMU_OPTS=${QEMU_OPTS:-}
 
 ## Build QEMU command as an array (robust quoting, no eval needed)

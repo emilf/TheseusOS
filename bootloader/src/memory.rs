@@ -134,6 +134,7 @@ pub fn free_memory(region: MemoryRegion) -> MemoryResult<()> {
 /// 
 /// * `Ok(MemoryRegion)` - Information about the allocated memory region
 /// * `Err(Status)` - UEFI error status if allocation failed
+#[allow(dead_code)]
 pub fn allocate_persistent_memory(size: u64) -> MemoryResult<MemoryRegion> {
     write_line(&format!("Allocating {} bytes of persistent memory for handoff structure", size));
 

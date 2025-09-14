@@ -5,6 +5,7 @@ extern crate alloc;
 
 use uefi::prelude::*;
 // alloc::format imported in display module
+use theseus_shared::handoff::{Handoff, HANDOFF};
 
 // Configuration Options
 // Hardware Inventory Verbose Output
@@ -88,6 +89,63 @@ fn panic_handler(_panic_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
+/// Allocate temporary heap memory for kernel setup
+/// 
+/// This function allocates a chunk of conventional memory that the kernel can use
+/// for its temporary heap during initialization, before it sets up its own page tables.
+fn allocate_temp_heap_for_kernel() {
+    write_line("=== Allocating Temporary Heap for Kernel ===");
+    
+    // Allocate 1MB of conventional memory for the kernel's temporary heap
+    const TEMP_HEAP_SIZE: u64 = 1024 * 1024; // 1MB
+    
+    match memory::allocate_memory(TEMP_HEAP_SIZE, uefi::boot::MemoryType::LOADER_DATA) {
+        Ok(region) => {
+            write_line(&format!("✓ Temporary heap allocated successfully"));
+            write_line(&format!("  Base address: 0x{:016x}", region.physical_address));
+            write_line(&format!("  Size: {} bytes ({} KB)", region.size, region.size / 1024));
+            
+            // Store the heap information in the handoff structure
+            unsafe {
+                HANDOFF.temp_heap_base = region.physical_address;
+                HANDOFF.temp_heap_size = region.size;
+            }
+            
+            write_line("✓ Temporary heap information stored in handoff structure");
+        },
+        Err(status) => {
+            write_line(&format!("✗ Failed to allocate temporary heap: {:?}", status));
+            write_line("Kernel will need to use fallback heap allocation");
+            
+            // Set heap fields to 0 to indicate allocation failed
+            unsafe {
+                HANDOFF.temp_heap_base = 0;
+                HANDOFF.temp_heap_size = 0;
+            }
+        }
+    }
+}
+
+/// Complete the bootloader and exit QEMU
+fn complete_bootloader_and_exit() {
+    write_line("=== TheseusOS UEFI Loader Complete ===");
+    write_line("All system information collected and stored");
+    write_line("Ready for kernel handoff");
+    write_line("Exiting QEMU...");
+    
+    // Exit QEMU gracefully with success message
+    unsafe {
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") constants::io_ports::QEMU_EXIT,
+            in("al") constants::exit_codes::QEMU_SUCCESS,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    
+    loop {}
+}
+
 /// Main UEFI entry point
 /// 
 /// This function orchestrates the boot sequence by calling specialized functions
@@ -139,12 +197,46 @@ fn efi_main() -> Status {
     collect_hardware_inventory_info(VERBOSE_HARDWARE_INVENTORY);
     collect_loaded_image_path();
 
+    // Allocate temporary heap for kernel
+    allocate_temp_heap_for_kernel();
+
     // Finalize handoff structure
     finalize_handoff_structure();
 
-    // Prepare for boot services exit and jump to kernel
-    // This function will either jump to the kernel or exit QEMU if there's an error
-    prepare_boot_services_exit(&memory_map);
+    // Load kernel and jump to it
+    // The kernel will handle its own boot services exit and virtual memory setup
+    if let Some(mmap) = &memory_map {
+        write_line("About to call load_kernel_binary...");
+        match crate::kernel_loader::load_kernel_binary(mmap) {
+            Ok((kernel_physical_base, kernel_entry_point)) => {
+                // Update the handoff structure with the actual kernel information
+                unsafe {
+                    HANDOFF.kernel_physical_base = kernel_physical_base;
+                    HANDOFF.kernel_virtual_entry = kernel_entry_point;
+                    HANDOFF.kernel_virtual_base = 0xffffffff80000000; // Virtual base
+                    HANDOFF.page_table_root = 0; // No paging yet
+                    HANDOFF.virtual_memory_enabled = 0; // Identity mapped
+                    
+                    // Ensure handoff structure is properly initialized
+                    HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
+                    write_line(&format!("Handoff structure size set to: {} bytes", core::mem::size_of::<Handoff>()));
+                }
+                
+                write_line("✓ All system information collected, jumping to kernel...");
+                
+                // Jump to kernel with handoff structure address
+                unsafe {
+                    crate::boot_sequence::jump_to_kernel_with_handoff(kernel_physical_base, &raw const HANDOFF as *const Handoff);
+                }
+            }
+            Err(status) => {
+                write_line(&format!("✗ Failed to load kernel: {:?}", status));
+                write_line("Cannot proceed with kernel handoff");
+            }
+        }
+    } else {
+        write_line("✗ No memory map available for kernel loading");
+    }
 
     // If we reach here, it means there was an error in the handoff process
     // Complete bootloader and exit QEMU gracefully
