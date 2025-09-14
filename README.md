@@ -1,6 +1,9 @@
 # TheseusOS
 
-A bare-metal operating system for x86-64 systems, consisting of a UEFI bootloader and kernel written in Rust. TheseusOS demonstrates modern OS development practices with comprehensive system information collection, proper UEFI boot services management, and kernel environment setup.
+A bare-metal operating system for x86-64 systems, consisting of a UEFI bootloader and kernel written in Rust. 
+This is an experiment in "vibe coding", as the creator is not well versed in rust, but is using this as a learning experience.
+
+TheseusOS demonstrates modern OS development practices with comprehensive system information collection, proper UEFI boot services management, and kernel environment setup.
 
 ## Architecture
 
