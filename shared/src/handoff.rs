@@ -93,9 +93,24 @@ pub struct Handoff {
     
     // Temporary Heap Information
     /// Temporary heap base address (allocated by bootloader for kernel setup)
+    /// 
+    /// This field contains the physical address of memory pre-allocated by the bootloader
+    /// for use as the kernel's temporary heap during initialization. The kernel can use
+    /// this memory immediately upon entry without needing to parse memory maps or set up
+    /// complex memory management. Set to 0 if allocation failed.
     pub temp_heap_base: u64,
     /// Temporary heap size in bytes
+    /// 
+    /// This field contains the size of the pre-allocated temporary heap in bytes.
+    /// The kernel uses this to determine the bounds of its temporary heap region.
+    /// Set to 0 if allocation failed.
     pub temp_heap_size: u64,
+    
+    /// Boot services exit status
+    /// 
+    /// This field indicates whether UEFI boot services have been exited.
+    /// 0 = boot services still active, 1 = boot services exited.
+    pub boot_services_exited: u32,
 }
 
 /// Static storage for handoff data
@@ -168,4 +183,7 @@ pub static mut HANDOFF: Handoff = Handoff {
     // Temporary heap fields
     temp_heap_base: 0,
     temp_heap_size: 0,
+    
+    // Boot services status
+    boot_services_exited: 0,
 };

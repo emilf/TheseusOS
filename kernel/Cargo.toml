@@ -12,4 +12,5 @@ theseus-shared = { path = "../shared" }
 log = { workspace = true }
 acpi = { workspace = true }
 
+
 # Release profile defined in workspace root

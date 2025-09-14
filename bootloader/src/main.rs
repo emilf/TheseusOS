@@ -91,8 +91,10 @@ fn panic_handler(_panic_info: &core::panic::PanicInfo) -> ! {
 
 /// Allocate temporary heap memory for kernel setup
 /// 
-/// This function allocates a chunk of conventional memory that the kernel can use
-/// for its temporary heap during initialization, before it sets up its own page tables.
+/// This function allocates a chunk of safe memory that the kernel can use for its
+/// temporary heap during initialization. The memory is allocated using UEFI Boot Services
+/// and stored in the handoff structure for the kernel to use. This allows the kernel
+/// to have a working heap immediately upon entry without needing to parse memory maps.
 fn allocate_temp_heap_for_kernel() {
     write_line("=== Allocating Temporary Heap for Kernel ===");
     
@@ -109,6 +111,7 @@ fn allocate_temp_heap_for_kernel() {
             unsafe {
                 HANDOFF.temp_heap_base = region.physical_address;
                 HANDOFF.temp_heap_size = region.size;
+                HANDOFF.boot_services_exited = 0;
             }
             
             write_line("✓ Temporary heap information stored in handoff structure");
@@ -121,6 +124,7 @@ fn allocate_temp_heap_for_kernel() {
             unsafe {
                 HANDOFF.temp_heap_base = 0;
                 HANDOFF.temp_heap_size = 0;
+                HANDOFF.boot_services_exited = 0;
             }
         }
     }

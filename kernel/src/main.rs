@@ -5,7 +5,24 @@ extern crate alloc;
 
 use theseus_shared::constants::{io_ports, exit_codes};
 
-/// Bump allocator that uses memory map to find safe memory regions
+// Include our modules
+mod gdt;
+mod interrupts;
+mod cpu;
+mod memory;
+mod boot_services;
+
+use gdt::setup_gdt;
+use interrupts::disable_all_interrupts;
+use cpu::{setup_control_registers, detect_cpu_features, setup_floating_point, setup_msrs};
+use memory::{MemoryManager, activate_virtual_memory};
+use boot_services::exit_boot_services;
+
+/// Temporary bump allocator for kernel setup phase
+/// 
+/// This allocator uses memory pre-allocated by the bootloader and stored in the handoff structure.
+/// It's designed for use during kernel initialization before proper page tables and memory management
+/// are set up. The allocator provides a simple bump allocation strategy without deallocation support.
 #[global_allocator]
 static ALLOCATOR: BumpAllocator = BumpAllocator;
 
@@ -25,7 +42,6 @@ unsafe impl core::alloc::GlobalAlloc for BumpAllocator {
         }
         
         if HEAP_START.is_null() || HEAP_END.is_null() || HEAP_NEXT.is_null() {
-            kernel_write_line("  ALLOC: Heap pointers are null!");
             return core::ptr::null_mut();
         }
         
@@ -33,25 +49,19 @@ unsafe impl core::alloc::GlobalAlloc for BumpAllocator {
         let align = layout.align();
         let size = layout.size();
         
-        kernel_write_line("  ALLOC: Requesting allocation");
-        
         // Calculate aligned address
         let addr = HEAP_NEXT as usize;
         let aligned_addr = (addr + align - 1) & !(align - 1);
         let new_next = aligned_addr + size;
-        
-        kernel_write_line("  ALLOC: Alignment calculation complete");
         
         // Check if we have enough space
         if new_next <= HEAP_END as usize {
             let result = aligned_addr as *mut u8;
             // Update the next pointer
             HEAP_NEXT = new_next as *mut u8;
-            kernel_write_line("  ALLOC: Allocation successful");
             result
         } else {
             // Out of memory
-            kernel_write_line("  ALLOC: Out of memory");
             core::ptr::null_mut()
         }
     }
@@ -62,7 +72,11 @@ unsafe impl core::alloc::GlobalAlloc for BumpAllocator {
     }
 }
 
-/// Initialize heap from handoff structure
+/// Initialize heap using temporary heap from handoff structure
+/// 
+/// This function sets up the kernel's heap using memory pre-allocated by the bootloader.
+/// The bootloader allocates a chunk of safe memory and stores its address and size in the
+/// handoff structure. If no temporary heap is available, falls back to a fixed safe region.
 fn initialize_heap_from_handoff(handoff_addr: u64) {
     if handoff_addr == 0 {
         kernel_write_line("  No handoff structure provided, using fallback heap");
@@ -116,64 +130,12 @@ unsafe fn init_heap_fallback() {
     kernel_write_line("  Heap initialized using fallback method");
 }
 
-/// Parse memory map and find safe conventional memory regions
-unsafe fn find_conventional_memory(handoff: &theseus_shared::handoff::Handoff) -> Option<(u64, u64)> {
-    if handoff.memory_map_buffer_ptr == 0 || handoff.memory_map_entries == 0 {
-        kernel_write_line("  No memory map available in handoff structure");
-        return None;
-    }
-    
-    kernel_write_line("  Parsing memory map from handoff structure");
-    
-    // Use the raw memory map data from handoff structure
-    let buffer_ptr = handoff.memory_map_buffer_ptr as *const u8;
-    let descriptor_size = handoff.memory_map_descriptor_size as usize;
-    let entry_count = handoff.memory_map_entries as usize;
-    
-    // Find the largest conventional memory region
-    let mut best_start = 0u64;
-    let mut best_size = 0u64;
-    let mut conventional_count = 0;
-    
-    // Limit parsing to prevent infinite loops
-    let max_entries = core::cmp::min(entry_count, 135);
-    
-    // Parse memory descriptors directly
-    for i in 0..max_entries {
-        let desc_ptr = buffer_ptr.add(i * descriptor_size);
-        
-        // Read memory type (first 4 bytes)
-        let mem_type = core::ptr::read_volatile(desc_ptr as *const u32);
-        
-        // Read physical start (offset 8 bytes)
-        let phys_start = core::ptr::read_volatile(desc_ptr.add(8) as *const u64);
-        
-        // Read page count (offset 24 bytes)
-        let page_count = core::ptr::read_volatile(desc_ptr.add(24) as *const u64);
-        
-        // Check if this is conventional memory (type 7)
-        if mem_type == 7 { // MemoryType::CONVENTIONAL
-            conventional_count += 1;
-            let region_size = page_count * 4096; // 4KB per page
-            
-            // Look for a reasonably sized region (at least 64KB)
-            if region_size >= 65536 && region_size > best_size {
-                best_start = phys_start;
-                best_size = region_size;
-            }
-        }
-    }
-    
-    if best_size > 0 {
-        kernel_write_line("  Found suitable conventional memory region");
-        Some((best_start, best_size))
-    } else {
-        kernel_write_line("  No suitable conventional memory found");
-        None
-    }
-}
 
-/// Test the allocator with real memory allocations
+/// Test the temporary allocator with basic memory allocations
+/// 
+/// This function verifies that the bump allocator is working correctly by performing
+/// simple string and vector allocations. It uses minimal allocations to avoid complex
+/// formatting that could cause issues during early kernel initialization.
 fn test_allocator() {
     kernel_write_line("  Testing bump allocator with heap allocations...");
     
@@ -187,6 +149,89 @@ fn test_allocator() {
     kernel_write_line("  Vector allocation successful");
     
     kernel_write_line("✓ Bump allocator is working correctly");
+}
+
+/// Set up complete kernel environment
+/// 
+/// This function performs the complete setup sequence to establish full kernel control:
+/// 1. Disable all interrupts including NMI
+/// 2. Set up GDT and TSS
+/// 3. Configure control registers
+/// 4. Set up CPU features
+/// 5. Set up memory management and page tables
+/// 6. Exit boot services
+/// 7. Activate virtual memory
+fn setup_kernel_environment(handoff: &theseus_shared::handoff::Handoff) {
+    kernel_write_line("=== Setting up kernel environment ===");
+    
+    // 1. Disable all interrupts
+    kernel_write_line("1. Disabling all interrupts...");
+    unsafe {
+        disable_all_interrupts();
+    }
+    kernel_write_line("  ✓ All interrupts disabled");
+    
+    // 2. Set up GDT and TSS
+    kernel_write_line("2. Setting up GDT...");
+    unsafe {
+        setup_gdt();
+    }
+    kernel_write_line("  ✓ GDT loaded and segments reloaded");
+    
+    // 3. Configure control registers
+    kernel_write_line("3. Configuring control registers...");
+    unsafe {
+        setup_control_registers();
+    }
+    kernel_write_line("  ✓ Control registers configured");
+    
+    // 4. Set up CPU features
+    kernel_write_line("4. Setting up CPU features...");
+    unsafe {
+        let features = detect_cpu_features();
+        setup_floating_point(&features);
+        setup_msrs();
+    }
+    kernel_write_line("  ✓ CPU features configured");
+    
+    // 5. Set up memory management
+    kernel_write_line("5. Setting up memory management...");
+    let memory_manager = unsafe {
+        MemoryManager::new(handoff)
+    };
+    kernel_write_line("  ✓ Page tables created and populated");
+    
+    // 6. Exit boot services
+    kernel_write_line("6. Exiting boot services...");
+    unsafe {
+        exit_boot_services(handoff);
+    }
+    kernel_write_line("  ✓ Boot services exited");
+    
+    // 7. Activate virtual memory
+    kernel_write_line("7. Activating virtual memory...");
+    let page_table_root = memory_manager.page_table_root();
+    unsafe {
+        activate_virtual_memory(page_table_root);
+    }
+    kernel_write_line("  ✓ Virtual memory activated");
+    
+    kernel_write_line("=== Kernel environment setup complete ===");
+    
+    // Jump to high memory kernel entry point
+    jump_to_high_memory();
+}
+
+/// Jump to kernel's virtual entry point in high memory
+fn jump_to_high_memory() -> ! {
+    kernel_write_line("Jumping to high memory kernel entry point...");
+    
+    unsafe {
+        // Jump to kernel's virtual entry point
+        let virtual_entry = 0xFFFFFFFF80000000u64;
+        let entry_fn: extern "C" fn() -> ! = core::mem::transmute(virtual_entry);
+        entry_fn();
+    }
 }
 
 /// Simple kernel output function that writes directly to QEMU debug port
@@ -252,8 +297,27 @@ pub extern "C" fn kernel_main(handoff_addr: u64) -> ! {
                 // Display system information from handoff
                 display_handoff_info(handoff);
                 
-                // Initialize kernel subsystems
-                initialize_kernel_subsystems();
+                // For now, just test basic kernel functionality
+                kernel_write_line("Kernel received handoff structure");
+                kernel_write_line("Testing basic kernel operations...");
+                
+                // Test the allocator
+                test_allocator();
+                
+                kernel_write_line("Kernel test completed successfully");
+                kernel_write_line("Exiting QEMU...");
+                
+                // Exit QEMU with success code
+                unsafe {
+                    core::arch::asm!(
+                        "out dx, al", 
+                        in("dx") io_ports::QEMU_EXIT, 
+                        in("al") exit_codes::QEMU_SUCCESS, 
+                        options(nomem, nostack, preserves_flags)
+                    );
+                }
+                
+                loop {}
                 
             } else {
                 kernel_write_line("ERROR: Handoff structure has invalid size");
