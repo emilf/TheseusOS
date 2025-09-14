@@ -212,10 +212,16 @@ fn setup_kernel_environment(_handoff: &theseus_shared::handoff::Handoff) {
     
     // 4. Set up CPU features
     kernel_write_line("4. Setting up CPU features...");
+    kernel_write_line("  Detecting CPU features...");
     unsafe {
         let features = detect_cpu_features();
+        kernel_write_line("  CPU features detected");
+        kernel_write_line("  Setting up floating point...");
         setup_floating_point(&features);
+        kernel_write_line("  Floating point setup complete");
+        kernel_write_line("  Setting up MSRs...");
         setup_msrs();
+        kernel_write_line("  MSR setup complete");
     }
     kernel_write_line("  ✓ CPU features configured");
     

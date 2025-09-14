@@ -121,8 +121,10 @@ static mut GDT: [GdtEntry; 6] = [
 
 /// Set up and load the GDT
 pub unsafe fn setup_gdt() {
-    // Create GDT pointer
-    let gdt_ptr = GdtPointer::new(&GDT);
+    // Create GDT pointer using raw pointer to avoid static_mut_refs warning
+    let gdt_ptr = core::ptr::addr_of!(GDT) as *const GdtEntry;
+    let gdt_slice = core::slice::from_raw_parts(gdt_ptr, 6);
+    let gdt_ptr = GdtPointer::new(gdt_slice);
     
     // Load GDT
     gdt_ptr.load();
@@ -133,6 +135,8 @@ pub unsafe fn setup_gdt() {
 
 /// Reload segment registers with new selectors
 unsafe fn reload_segments() {
+    // Reload data segment registers only
+    // CS is already set up correctly by the bootloader in 64-bit mode
     core::arch::asm!(
         "mov ds, ax",
         "mov es, ax", 
@@ -141,17 +145,5 @@ unsafe fn reload_segments() {
         "mov ss, ax",
         in("ax") KERNEL_DS,
         options(nomem, nostack, preserves_flags)
-    );
-    
-    // Far jump to reload CS
-    core::arch::asm!(
-        "push {0:x}",
-        "lea {1}, [rip + 2]",
-        "push {1}",
-        "retfq",
-        "2:",
-        in(reg_abcd) KERNEL_CS,
-        out(reg) _,
-        options(nomem, nostack)
     );
 }

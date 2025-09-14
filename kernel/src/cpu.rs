@@ -199,18 +199,24 @@ unsafe fn enable_avx() {
 /// Execute CPUID instruction
 unsafe fn cpuid(eax: u32, ecx: u32) -> (u32, u32, u32, u32) {
     let mut eax_out: u32;
-    let ebx_out: u32;
+    let mut ebx_out: u32;
     let mut ecx_out: u32;
     let mut edx_out: u32;
     
     core::arch::asm!(
         "cpuid",
         inout("eax") eax => eax_out,
-        inout("ecx") ecx => ecx_out,
-        out("edx") edx_out,
+        inout("rcx") ecx => ecx_out,
+        inout("rdx") 0 => edx_out,
         options(nomem, nostack, preserves_flags)
     );
-    ebx_out = 0; // We don't use ebx in this case
+    
+    // Get EBX using a separate instruction
+    core::arch::asm!(
+        "mov {0:e}, ebx",
+        out(reg) ebx_out,
+        options(nomem, nostack, preserves_flags)
+    );
     
     (eax_out, ebx_out, ecx_out, edx_out)
 }
