@@ -106,41 +106,17 @@ fn set_virt_phys_offset(offset: i64) {
 impl MemoryManager {
     /// Create a new memory manager
     pub unsafe fn new(handoff: &theseus_shared::handoff::Handoff) -> Self {
-        // trace enter
-        core::arch::asm!("mov al, 'M'", "out dx, al",
-            in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
-            options(nomem, nostack, preserves_flags));
-
         // Establish virt->phys offset for kernel image tables
         set_virt_phys_offset(handoff.kernel_physical_base as i64 - KERNEL_VIRTUAL_BASE as i64);
-        core::arch::asm!("mov al, 'S'", "out dx, al",
-            in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
-            options(nomem, nostack, preserves_flags));
-
         // Allocate PML4 from a static pool and get its physical address
-        core::arch::asm!("mov al, 'A'", "out dx, al",
-            in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
-            options(nomem, nostack, preserves_flags));
         let (pml4, pml4_phys) = alloc_table_from_pool();
-        core::arch::asm!("mov al, 'T'", "out dx, al",
-            in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
-            options(nomem, nostack, preserves_flags));
         // Use kernel VA for table writes; bootloader already mapped high-half
-        core::arch::asm!("mov al, 'U'", "out dx, al",
-            in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
-            options(nomem, nostack, preserves_flags));
 
         // Identity map first 1 GiB using 2MiB pages to cover kernel physical area
         identity_map_first_1gb_2mb(pml4);
-        core::arch::asm!("mov al, 'I'", "out dx, al",
-            in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
-            options(nomem, nostack, preserves_flags));
 
         // Map kernel at high-half virtual base using a 2MiB page
         map_kernel_high_2mb(pml4, handoff);
-        core::arch::asm!("mov al, 'K'", "out dx, al",
-            in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
-            options(nomem, nostack, preserves_flags));
 
         // Map framebuffer and temp heap if available (4KiB pages are fine here)
         if handoff.gop_fb_base != 0 {
@@ -153,27 +129,8 @@ impl MemoryManager {
         let kernel_heap_start = KERNEL_HEAP_BASE;
         let kernel_heap_end = kernel_heap_start + KERNEL_HEAP_SIZE as u64;
 
-        // Quick integrity checks: PML4[0] and PDPT[0]
-        if pml4.entries[0].is_present() {
-            core::arch::asm!("mov al, 'L'", "out dx, al",
-                in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
-                options(nomem, nostack, preserves_flags));
-            let pdpt_pa = pml4.entries[0].physical_addr();
-            let pdpt = &mut *(pdpt_pa as *mut PageTable);
-            if pdpt.entries[0].is_present() {
-                core::arch::asm!("mov al, 'D'", "out dx, al",
-                    in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
-                    options(nomem, nostack, preserves_flags));
-            } else {
-                core::arch::asm!("mov al, 'Y'", "out dx, al",
-                    in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
-                    options(nomem, nostack, preserves_flags));
-            }
-        } else {
-            core::arch::asm!("mov al, 'X'", "out dx, al",
-                in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
-                options(nomem, nostack, preserves_flags));
-        }
+        // Quick integrity checks (optional): ensure first entries are present
+        if !pml4.entries[0].is_present() { panic!("PML4[0] not present"); }
 
         // Done
         Self { pml4, pml4_phys, kernel_heap_start, kernel_heap_end }

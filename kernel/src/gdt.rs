@@ -90,7 +90,7 @@ static GDT: [GdtEntry; 6] = [
 ];
 
 /// Selectors
-const KERNEL_CS: u16 = 0x08; // Entry 1 (kernel code)
+pub const KERNEL_CS: u16 = 0x08; // Entry 1 (kernel code)
 const KERNEL_DS: u16 = 0x10; // Entry 2 (kernel data)
 const USER_CS: u16 = 0x18;   // Entry 3 (user code)
 const USER_DS: u16 = 0x20;   // Entry 4 (user data)

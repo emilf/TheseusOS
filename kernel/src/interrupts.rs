@@ -3,6 +3,131 @@
 //! This module provides functions to disable all interrupts including NMI,
 //! and control various interrupt sources during kernel initialization.
 
+/// Minimal IDT structures for exception handling
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+struct IdtEntry {
+    offset_low: u16,
+    selector: u16,
+    options: u16,
+    offset_mid: u32,
+    offset_high: u32,
+    zero: u32,
+}
+
+impl IdtEntry {
+    const fn missing() -> Self {
+        Self { offset_low: 0, selector: 0, options: 0, offset_mid: 0, offset_high: 0, zero: 0 }
+    }
+
+    fn set_handler(&mut self, handler: extern "C" fn() -> !) {
+        let addr = handler as u64;
+        self.offset_low = addr as u16;
+        self.selector = super::gdt::KERNEL_CS as u16;
+        // present=1, DPL=0, type=0b1110 (interrupt gate)
+        self.options = 0b1000_1110_00000000u16;
+        self.offset_mid = (addr >> 16) as u32;
+        self.offset_high = (addr >> 32) as u32;
+        self.zero = 0;
+    }
+}
+
+#[repr(C, packed)]
+struct IdtPointer {
+    limit: u16,
+    base: u64,
+}
+
+static mut IDT: [IdtEntry; 256] = [const { IdtEntry::missing() }; 256];
+
+#[inline(always)]
+unsafe fn out_char_0xe9(byte: u8) {
+    core::arch::asm!(
+        "out dx, al",
+        in("dx") 0xE9u16,
+        in("al") byte,
+        options(nomem, nostack, preserves_flags)
+    );
+}
+
+unsafe fn print_str_0xe9(s: &str) {
+    for b in s.bytes() { out_char_0xe9(b); }
+}
+
+unsafe fn print_hex_u64_0xe9(mut v: u64) {
+    // print 0xXXXXXXXXXXXXXXX
+    out_char_0xe9(b'0');
+    out_char_0xe9(b'x');
+    for i in (0..16).rev() {
+        let nib = ((v >> (i * 4)) & 0xF) as u8;
+        let ch = if nib < 10 { b'0' + nib } else { b'A' + (nib - 10) };
+        out_char_0xe9(ch);
+    }
+}
+
+/// Set up a basic IDT with exception handlers
+pub unsafe fn setup_idt() {
+    // Install a few critical exception handlers
+    IDT[0].set_handler(isr_de);
+    IDT[13].set_handler(isr_gp);
+    IDT[14].set_handler(isr_pf);
+
+    let idt_ptr = IdtPointer {
+        limit: (core::mem::size_of_val(&IDT) - 1) as u16,
+        base: &IDT as *const _ as u64,
+    };
+    core::arch::asm!("lidt [{}]", in(reg) &idt_ptr, options(readonly, nostack, preserves_flags));
+}
+
+extern "C" fn isr_de() -> ! {
+    unsafe {
+        print_str_0xe9("DE\n");
+        core::arch::asm!(
+            "mov dx, 0xF4",
+            "mov al, 0x01",
+            "out dx, al",
+            "cli",
+            "2: hlt",
+            "jmp 2b",
+            options(noreturn)
+        );
+    }
+}
+
+extern "C" fn isr_gp() -> ! {
+    unsafe {
+        print_str_0xe9("GP\n");
+        core::arch::asm!(
+            "mov dx, 0xF4",
+            "mov al, 0x01",
+            "out dx, al",
+            "cli",
+            "2: hlt",
+            "jmp 2b",
+            options(noreturn)
+        );
+    }
+}
+
+extern "C" fn isr_pf() -> ! {
+    unsafe {
+        let mut cr2v: u64;
+        core::arch::asm!("mov {}, cr2", out(reg) cr2v, options(nomem, nostack, preserves_flags));
+        print_str_0xe9("PF CR2=");
+        print_hex_u64_0xe9(cr2v);
+        out_char_0xe9(b'\n');
+        core::arch::asm!(
+            "mov dx, 0xF4",
+            "mov al, 0x01",
+            "out dx, al",
+            "cli",
+            "2: hlt",
+            "jmp 2b",
+            options(noreturn)
+        );
+    }
+}
+
 /// Disable all interrupts including NMI
 pub unsafe fn disable_all_interrupts() {
     // Disable regular interrupts (CLI)

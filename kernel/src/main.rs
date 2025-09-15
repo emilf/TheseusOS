@@ -36,7 +36,7 @@ mod cpu;
 mod memory;
 
 use gdt::setup_gdt;
-use interrupts::disable_all_interrupts;
+use interrupts::{disable_all_interrupts, setup_idt};
 use cpu::{setup_control_registers, detect_cpu_features, setup_floating_point, setup_msrs};
 use memory::{MemoryManager, activate_virtual_memory};
 // use boot_services::exit_boot_services; // Not needed - bootloader handles this
@@ -219,8 +219,10 @@ fn setup_kernel_environment(_handoff: &theseus_shared::handoff::Handoff) {
     }
     kernel_write_line("  ✓ Paging enabled (identity + high-half kernel)");
     
-    // 4. Set up CPU features
+    // 4. Install IDT and set up CPU features
     kernel_write_line("4. Setting up CPU features...");
+    unsafe { setup_idt(); }
+    kernel_write_line("  IDT installed");
     kernel_write_line("  Detecting CPU features...");
     unsafe {
         let features = detect_cpu_features();
@@ -238,17 +240,17 @@ fn setup_kernel_environment(_handoff: &theseus_shared::handoff::Handoff) {
     kernel_write_line("Kernel environment test completed successfully");
     kernel_write_line("Exiting QEMU...");
     
-    // Exit QEMU with success code
+    // Trigger tests sequentially: #DE, #GP, #PF
+    #[allow(unreachable_code)]
     unsafe {
+        // #DE: divide-by-zero
         core::arch::asm!(
-            "out dx, al", 
-            in("dx") io_ports::QEMU_EXIT, 
-            in("al") exit_codes::QEMU_SUCCESS, 
-            options(nomem, nostack, preserves_flags)
+            "xor rax, rax",
+            "mov rdx, 1",
+            "div rax",
+            options(noreturn)
         );
     }
-    
-    loop {}
 }
 
 
