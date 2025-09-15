@@ -38,7 +38,7 @@ mod memory;
 use gdt::setup_gdt;
 use interrupts::disable_all_interrupts;
 use cpu::{setup_control_registers, detect_cpu_features, setup_floating_point, setup_msrs};
-// use memory::{MemoryManager, activate_virtual_memory}; // Not used yet
+use memory::{MemoryManager, activate_virtual_memory};
 // use boot_services::exit_boot_services; // Not needed - bootloader handles this
 
 /// Temporary bump allocator for kernel setup phase
@@ -203,12 +203,21 @@ fn setup_kernel_environment(_handoff: &theseus_shared::handoff::Handoff) {
     }
     kernel_write_line("  ✓ GDT loaded and segments reloaded");
     
-    // 3. Configure control registers
+    // 3. Configure control registers (PAE etc.)
     kernel_write_line("3. Configuring control registers...");
-    unsafe {
-        setup_control_registers();
-    }
+    unsafe { setup_control_registers(); }
     kernel_write_line("  ✓ Control registers configured");
+
+    // 3.5 Set up paging (identity map + high-half kernel) and load CR3
+    kernel_write_line("3.5. Setting up paging...");
+    unsafe {
+        kernel_write_line("  [vm] before new");
+        let mm = MemoryManager::new(_handoff);
+        kernel_write_line("  [vm] after new; loading CR3");
+        activate_virtual_memory(mm.page_table_root());
+        kernel_write_line("  [vm] after CR3");
+    }
+    kernel_write_line("  ✓ Paging enabled (identity + high-half kernel)");
     
     // 4. Set up CPU features
     kernel_write_line("4. Setting up CPU features...");

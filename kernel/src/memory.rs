@@ -43,9 +43,7 @@ impl PageTableEntry {
     }
     
     /// Get the physical address from the entry
-    pub fn physical_addr(&self) -> u64 {
-        self.0 & !PAGE_MASK
-    }
+    pub fn physical_addr(&self) -> u64 { self.0 & !PAGE_MASK }
     
     /// Check if the entry is present
     pub fn is_present(&self) -> bool {
@@ -58,13 +56,12 @@ impl PageTableEntry {
     }
     
     /// Get the flags
-    pub fn flags(&self) -> u64 {
-        self.0 & PAGE_MASK
-    }
+    pub fn flags(&self) -> u64 { self.0 & PAGE_MASK }
 }
 
 /// Page table (512 entries)
 #[repr(align(4096))]
+#[derive(Clone, Copy)]
 pub struct PageTable {
     pub entries: [PageTableEntry; 512],
 }
@@ -86,103 +83,151 @@ impl PageTable {
 /// Memory manager
 pub struct MemoryManager {
     pub pml4: &'static mut PageTable,
+    pml4_phys: u64,
     pub kernel_heap_start: u64,
     pub kernel_heap_end: u64,
 }
+// Simple global virt<->phys offset model for early paging
+static mut VIRT_PHYS_OFFSET: i64 = 0;
+
+fn virt_to_phys(va: u64) -> u64 {
+    unsafe { (va as i64 + VIRT_PHYS_OFFSET) as u64 }
+}
+
+fn phys_to_virt(pa: u64) -> u64 {
+    unsafe { (pa as i64 - VIRT_PHYS_OFFSET) as u64 }
+}
+
+fn set_virt_phys_offset(offset: i64) {
+    unsafe { VIRT_PHYS_OFFSET = offset; }
+}
+
 
 impl MemoryManager {
     /// Create a new memory manager
     pub unsafe fn new(handoff: &theseus_shared::handoff::Handoff) -> Self {
-        // Allocate PML4 table
-        let pml4 = allocate_page_table();
-        
-        // Set up identity mapping for low memory (first 2MB)
-        identity_map_low_memory(pml4);
-        
-        // Map kernel sections to high memory
-        map_kernel_sections(pml4, handoff);
-        
-        // Set up kernel heap
+        // trace enter
+        core::arch::asm!("mov al, 'M'", "out dx, al",
+            in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
+            options(nomem, nostack, preserves_flags));
+
+        // Establish virt->phys offset for kernel image tables
+        set_virt_phys_offset(handoff.kernel_physical_base as i64 - KERNEL_VIRTUAL_BASE as i64);
+        core::arch::asm!("mov al, 'S'", "out dx, al",
+            in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
+            options(nomem, nostack, preserves_flags));
+
+        // Allocate PML4 from a static pool and get its physical address
+        core::arch::asm!("mov al, 'A'", "out dx, al",
+            in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
+            options(nomem, nostack, preserves_flags));
+        let (pml4, pml4_phys) = alloc_table_from_pool();
+        core::arch::asm!("mov al, 'T'", "out dx, al",
+            in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
+            options(nomem, nostack, preserves_flags));
+        // Use kernel VA for table writes; bootloader already mapped high-half
+        core::arch::asm!("mov al, 'U'", "out dx, al",
+            in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
+            options(nomem, nostack, preserves_flags));
+
+        // Identity map first 1 GiB using 2MiB pages to cover kernel physical area
+        identity_map_first_1gb_2mb(pml4);
+        core::arch::asm!("mov al, 'I'", "out dx, al",
+            in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
+            options(nomem, nostack, preserves_flags));
+
+        // Map kernel at high-half virtual base using a 2MiB page
+        map_kernel_high_2mb(pml4, handoff);
+        core::arch::asm!("mov al, 'K'", "out dx, al",
+            in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
+            options(nomem, nostack, preserves_flags));
+
+        // Map framebuffer and temp heap if available (4KiB pages are fine here)
+        if handoff.gop_fb_base != 0 {
+            map_framebuffer(pml4, handoff);
+        }
+        if handoff.temp_heap_base != 0 {
+            map_temporary_heap(pml4, handoff);
+        }
+
         let kernel_heap_start = KERNEL_HEAP_BASE;
         let kernel_heap_end = kernel_heap_start + KERNEL_HEAP_SIZE as u64;
-        
-        Self {
-            pml4,
-            kernel_heap_start,
-            kernel_heap_end,
+
+        // Quick integrity checks: PML4[0] and PDPT[0]
+        if pml4.entries[0].is_present() {
+            core::arch::asm!("mov al, 'L'", "out dx, al",
+                in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
+                options(nomem, nostack, preserves_flags));
+            let pdpt_pa = pml4.entries[0].physical_addr();
+            let pdpt = &mut *(pdpt_pa as *mut PageTable);
+            if pdpt.entries[0].is_present() {
+                core::arch::asm!("mov al, 'D'", "out dx, al",
+                    in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
+                    options(nomem, nostack, preserves_flags));
+            } else {
+                core::arch::asm!("mov al, 'Y'", "out dx, al",
+                    in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
+                    options(nomem, nostack, preserves_flags));
+            }
+        } else {
+            core::arch::asm!("mov al, 'X'", "out dx, al",
+                in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
+                options(nomem, nostack, preserves_flags));
         }
+
+        // Done
+        Self { pml4, pml4_phys, kernel_heap_start, kernel_heap_end }
     }
     
     /// Get the page table root (CR3 value)
-    pub fn page_table_root(&self) -> u64 {
-        self.pml4 as *const PageTable as u64
-    }
+    pub fn page_table_root(&self) -> u64 { self.pml4_phys }
 }
 
 /// Allocate a page table using the temporary heap
-unsafe fn allocate_page_table() -> &'static mut PageTable {
-    // For now, use a simple static allocation
-    // In a real implementation, this would use the temporary heap
-    static mut PAGE_TABLE_STORAGE: [PageTable; 8] = [
-        PageTable::new(),
-        PageTable::new(),
-        PageTable::new(),
-        PageTable::new(),
-        PageTable::new(),
-        PageTable::new(),
-        PageTable::new(),
-        PageTable::new(),
-    ];
-    
-    static mut ALLOCATION_INDEX: usize = 0;
-    
-    if ALLOCATION_INDEX >= PAGE_TABLE_STORAGE.len() {
-        panic!("Out of page table storage");
-    }
-    
-    let table = &mut PAGE_TABLE_STORAGE[ALLOCATION_INDEX];
-    ALLOCATION_INDEX += 1;
-    
-    table
+// Static pool of page tables linked into the kernel image
+#[repr(align(4096))]
+#[derive(Copy, Clone)]
+struct RawPage([u8; PAGE_SIZE]);
+
+static mut PAGE_POOL: [RawPage; 64] = [const { RawPage([0; PAGE_SIZE]) }; 64];
+static mut PAGE_POOL_NEXT: usize = 0;
+
+unsafe fn alloc_table_from_pool() -> (&'static mut PageTable, u64) {
+    if PAGE_POOL_NEXT >= PAGE_POOL.len() { panic!("Out of static page pool"); }
+    let ptr = PAGE_POOL[PAGE_POOL_NEXT].0.as_mut_ptr();
+    PAGE_POOL_NEXT += 1;
+    // Zero via current VA; we're identity-mapped pre-CR3
+    core::ptr::write_bytes(ptr, 0, PAGE_SIZE);
+    let pa = ptr as u64;
+    let table = &mut *(ptr as *mut PageTable);
+    (table, pa)
 }
 
-/// Set up identity mapping for low memory
-unsafe fn identity_map_low_memory(pml4: &mut PageTable) {
-    // Map first 2MB (512 pages) with identity mapping
-    // This allows safe transition from physical to virtual addressing
-    
-    for page in 0..512 {
-        let physical_addr = (page * PAGE_SIZE) as u64;
-        let virtual_addr = physical_addr; // Identity mapping
-        
-        map_page(pml4, virtual_addr, physical_addr, 
-                PTE_PRESENT | PTE_WRITABLE | PTE_NO_EXEC);
+/// Set up identity mapping for first 1 GiB using 2 MiB pages
+unsafe fn identity_map_first_1gb_2mb(pml4: &mut PageTable) {
+    // Identity map using 2MiB pages with NX cleared (executable)
+    let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_PS;
+    let gigabyte: u64 = 1 << 30;
+    let two_mb: u64 = 2 * 1024 * 1024;
+    let mut addr: u64 = 0;
+    while addr < gigabyte {
+        map_2mb_page(pml4, addr, addr, flags);
+        addr += two_mb;
     }
 }
 
-/// Map kernel sections to high memory
-unsafe fn map_kernel_sections(pml4: &mut PageTable, handoff: &theseus_shared::handoff::Handoff) {
-    let kernel_physical_base = handoff.kernel_physical_base;
-    let kernel_virtual_base = KERNEL_VIRTUAL_BASE;
-    
-    // Map kernel code and data sections
-    // For simplicity, map 2MB of kernel space
-    for page in 0..512 {
-        let physical_addr = kernel_physical_base + (page * PAGE_SIZE) as u64;
-        let virtual_addr = kernel_virtual_base + (page * PAGE_SIZE) as u64;
-        
-        map_page(pml4, virtual_addr, physical_addr,
-                PTE_PRESENT | PTE_WRITABLE | PTE_NO_EXEC);
-    }
-    
-    // Map framebuffer if available
-    if handoff.gop_fb_base != 0 {
-        map_framebuffer(pml4, handoff);
-    }
-    
-    // Map temporary heap if available
-    if handoff.temp_heap_base != 0 {
-        map_temporary_heap(pml4, handoff);
+/// Map kernel to high-half using a single 2 MiB page
+unsafe fn map_kernel_high_2mb(pml4: &mut PageTable, handoff: &theseus_shared::handoff::Handoff) {
+    // Map only the actual kernel span: [phys_base, phys_base + span)
+    let phys_base = handoff.kernel_physical_base & !0xFFFu64;
+    let virt_base = KERNEL_VIRTUAL_BASE & !0xFFFu64;
+    let span_bytes: u64 = 4 * 1024 * 1024; // 4MiB safety span for kernel image
+    let pages = (span_bytes / PAGE_SIZE as u64) as u64;
+    let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL; // executable for kernel text/data
+    for i in 0..pages {
+        let pa = phys_base + i * PAGE_SIZE as u64;
+        let va = virt_base + i * PAGE_SIZE as u64;
+        map_page(pml4, va, pa, flags);
     }
 }
 
@@ -239,27 +284,65 @@ unsafe fn map_page(pml4: &mut PageTable, virtual_addr: u64, physical_addr: u64, 
     *pt.get_entry(pt_index) = PageTableEntry::new(physical_addr, flags);
 }
 
+/// Map a single 2 MiB page by setting a PD entry with PS
+unsafe fn map_2mb_page(pml4: &mut PageTable, virtual_addr: u64, physical_addr: u64, flags: u64) {
+    let pml4_index = ((virtual_addr >> 39) & 0x1FF) as usize;
+    let pdpt_index = ((virtual_addr >> 30) & 0x1FF) as usize;
+    let pd_index = ((virtual_addr >> 21) & 0x1FF) as usize;
+
+    // Ensure next-level tables exist up to PD
+    let pdpt = get_or_create_page_table(pml4.get_entry(pml4_index));
+    let pd = get_or_create_page_table(pdpt.get_entry(pdpt_index));
+
+    // Set PD entry with PS bit
+    *pd.get_entry(pd_index) = PageTableEntry::new(physical_addr, flags | PTE_PS);
+}
+
 /// Get or create a page table
 unsafe fn get_or_create_page_table(entry: &mut PageTableEntry) -> &mut PageTable {
     if entry.is_present() {
-        // Return existing page table
+        // Access the existing next-level table via identity VA (pre-CR3)
         (entry.physical_addr() as *mut PageTable).as_mut().unwrap()
     } else {
-        // Create new page table
-        let new_table = allocate_page_table();
-        *entry = PageTableEntry::new(new_table as *const PageTable as u64, 
-                                   PTE_PRESENT | PTE_WRITABLE | PTE_USER);
-        new_table
+        // Allocate a new table; write through identity VA
+        let (_table, phys) = alloc_table_from_pool();
+        *entry = PageTableEntry::new(phys, PTE_PRESENT | PTE_WRITABLE);
+        (phys as *mut PageTable).as_mut().unwrap()
     }
 }
 
 /// Activate virtual memory
 pub unsafe fn activate_virtual_memory(page_table_root: u64) {
     // Load page table root into CR3
+    // trace before CR3
+    core::arch::asm!(
+        "mov al, 'P'",
+        "out dx, al",
+        in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
+        options(nomem, nostack, preserves_flags)
+    );
+
     core::arch::asm!(
         "mov cr3, {}",
         in(reg) page_table_root,
         options(nomem, nostack, preserves_flags)
+    );
+
+    // trace after CR3 and test instruction fetch and stack access
+    core::arch::asm!(
+        // post-CR3 marker
+        "mov al, 'Q'",
+        "out dx, al",
+        // simple fetch/exec test at identity mapping
+        "lea rax, [rip + 2f]",
+        "jmp rax",
+        "2:",
+        // report success
+        "mov al, 'R'",
+        "out dx, al",
+        in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
+        lateout("rax") _,
+        options(nomem, preserves_flags)
     );
     
     // Paging is already enabled in CR0, so we're done

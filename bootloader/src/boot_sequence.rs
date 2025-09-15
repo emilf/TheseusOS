@@ -349,6 +349,18 @@ pub fn finalize_handoff_structure() {
 /// - Performs operations that cannot be undone
 /// - Accesses memory after exit_boot_services
 pub unsafe fn jump_to_kernel_with_handoff(physical_entry_point: u64, handoff_ptr: *const Handoff) {
+    // Copy handoff into a persistent LOADER_DATA buffer and pass its physical address
+    let handoff_size = core::mem::size_of::<Handoff>() as u64;
+    let handoff_region = match crate::memory::allocate_memory(handoff_size, MemoryType::LOADER_DATA) {
+        Ok(r) => r,
+        Err(e) => {
+            write_line(&format!("✗ Failed to allocate handoff buffer: {:?}", e));
+            return;
+        }
+    };
+    let handoff_phys = handoff_region.physical_address;
+    core::ptr::copy_nonoverlapping(handoff_ptr as *const u8, handoff_phys as *mut u8, handoff_size as usize);
+
     write_line("Exiting boot services before kernel handoff...");
     
     // Exit boot services using uefi-rs
@@ -364,7 +376,7 @@ pub unsafe fn jump_to_kernel_with_handoff(physical_entry_point: u64, handoff_ptr
     
     // Jump to the kernel with the handoff structure address
     // Note: This will never return as the kernel entry point is marked as `-> !`
-    kernel_entry(handoff_ptr as u64);
+    kernel_entry(handoff_phys as u64);
 }
 
 

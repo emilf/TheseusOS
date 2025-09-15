@@ -37,8 +37,10 @@ pub struct KernelSection {
 pub struct KernelInfo {
     /// Entry point virtual address
     pub entry_point: u64,
-    /// Total memory size required for all sections
-    pub total_memory_size: u64,
+    /// Minimum virtual address of all LOAD segments (virtual base)
+    pub virtual_base: u64,
+    /// Total virtual span covered by all LOAD segments (max_end - virtual_base)
+    pub total_span_size: u64,
     /// List of kernel sections
     pub sections: Vec<KernelSection>,
 }
@@ -213,7 +215,8 @@ pub fn analyze_kernel_binary(kernel_data: &[u8], ) -> Result<KernelInfo, Status>
     
     // Parse program headers to find loadable segments
     let mut sections = Vec::new();
-    let mut total_memory_size = 0u64;
+    let mut min_virtual_address: u64 = u64::MAX;
+    let mut max_virtual_end: u64 = 0u64;
     
     for i in 0..ph_num {
         let ph_start = (ph_offset as usize) + (i * 56); // 56 bytes per program header
@@ -286,22 +289,31 @@ pub fn analyze_kernel_binary(kernel_data: &[u8], ) -> Result<KernelInfo, Status>
                 flags: flags,
             });
             
-            total_memory_size += mem_size;
+            // Track overall virtual address span
+            if virt_addr < min_virtual_address { min_virtual_address = virt_addr; }
+            let end = virt_addr.saturating_add(mem_size);
+            if end > max_virtual_end { max_virtual_end = end; }
             
             write_line(&format!("    {}: 0x{:016X} ({} bytes, flags: 0x{:X})",
                 section_name, virt_addr, mem_size, flags));
         }
     }
     
+    // Compute span size and sanity-check
+    if min_virtual_address == u64::MAX { return Err(Status::INVALID_PARAMETER); }
+    let total_span_size = max_virtual_end.saturating_sub(min_virtual_address);
+
     write_line("✓ Kernel analysis complete");
     write_line(&format!("  Entry point: 0x{:016X}", entry_point));
-    write_line(&format!("  Total memory required: {} bytes ({:.2} MB)", 
-        total_memory_size, total_memory_size as f64 / theseus_shared::constants::memory::BYTES_PER_MB));
+    write_line(&format!("  Virtual base: 0x{:016X}", min_virtual_address));
+    write_line(&format!("  Virtual span size: {} bytes ({:.2} MB)", 
+        total_span_size, total_span_size as f64 / theseus_shared::constants::memory::BYTES_PER_MB));
     write_line(&format!("  Loadable segments: {}", sections.len()));
     
     Ok(KernelInfo {
         entry_point,
-        total_memory_size,
+        virtual_base: min_virtual_address,
+        total_span_size,
         sections,
     })
 }
@@ -324,10 +336,8 @@ pub fn load_kernel_sections(kernel_info: &mut KernelInfo, kernel_data: &[u8], ph
     write_line("Loading kernel sections into memory...");
     write_line(&format!("Loading kernel at physical address: 0x{:016X}", physical_base));
     
-    // Calculate the offset between virtual and physical addresses
-    // Virtual base is 0xffffffff80000000, physical base is the allocated address
-    // Use u64 arithmetic to avoid overflow, then convert to i64 for the offset calculation
-    let virtual_base = 0xffffffff80000000u64;
+    // Calculate the offset between virtual and physical addresses using analyzed virtual base
+    let virtual_base = kernel_info.virtual_base;
     let virtual_to_physical_offset = physical_base as i64 - virtual_base as i64;
     
     let mut physical_entry = 0;
@@ -337,7 +347,7 @@ pub fn load_kernel_sections(kernel_info: &mut KernelInfo, kernel_data: &[u8], ph
         section.physical_address = (section.virtual_address as i64 + virtual_to_physical_offset) as u64;
         
         // Find the physical entry point (text section with entry point virtual address)
-        if section.name == ".text" && section.virtual_address == 0xffffffff80000000 {
+        if section.name == ".text" && section.virtual_address == virtual_base {
             // Calculate physical entry point by adding the offset to the virtual entry point
             physical_entry = (kernel_info.entry_point as i64 + virtual_to_physical_offset) as u64;
         }
@@ -443,7 +453,8 @@ pub fn load_kernel_binary(_memory_map: &uefi::mem::memory_map::MemoryMapOwned, )
     let mut kernel_info = analyze_kernel_binary(&kernel_data)?;
     
     // Allocate memory using UEFI Boot Services
-    let memory_region = crate::memory::allocate_memory(kernel_info.total_memory_size, uefi::mem::memory_map::MemoryType::LOADER_DATA)?;
+    let alloc_size = (kernel_info.total_span_size + 0xFFF) & !0xFFF;
+    let memory_region = crate::memory::allocate_memory(alloc_size, uefi::mem::memory_map::MemoryType::LOADER_DATA)?;
     let physical_base = memory_region.physical_address;
     
     write_line("✓ Memory allocated using UEFI Boot Services");
