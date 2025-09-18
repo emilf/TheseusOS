@@ -1,0 +1,6 @@
+---
+description: Make sure to never search web for uefi-rs questions
+globs: uefi
+alwaysApply: true
+---
+When looking up information on uefi-rs, use the docs or the crate source code for information. DO NOT SEARCH THE WEB. Almost all information on the web is using the very incompatible 0.28 version.

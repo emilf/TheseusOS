@@ -6,6 +6,8 @@
 use acpi::AcpiTables;
 use crate::acpi::UefiAcpiHandler;
 use crate::drivers::manager::write_line;
+use uefi::table;
+use uefi::proto::loaded_image::LoadedImage;
 
 /// Find the device tree blob (DTB)
 /// 
@@ -22,6 +24,8 @@ use crate::drivers::manager::write_line;
 /// This is currently a placeholder implementation. Device tree support
 /// needs to be implemented based on the target architecture.
 pub fn find_device_tree() -> Option<(u64, u64)> {
+    // Device tree is generally not present on x86 UEFI systems; return None.
+    // If ARM support is added later, implement FDT lookup via the config table here.
     None
 }
 
@@ -40,7 +44,32 @@ pub fn find_device_tree() -> Option<(u64, u64)> {
 /// This is currently a placeholder implementation. Firmware information
 /// collection needs to be implemented using UEFI system table access.
 pub fn collect_firmware_info() -> Option<(u64, u32, u32)> {
-    None
+    let system_table = match table::system_table_raw() {
+        Some(st) => st,
+        None => return None,
+    };
+    let st = unsafe { system_table.as_ref() };
+
+    // Firmware vendor is a UCS-2 string pointer in system table
+    let vendor_ptr = st.firmware_vendor as u64;
+    let revision = st.firmware_revision;
+
+    // Best-effort length: walk until NUL (16-bit) with a reasonable cap
+    let mut len_chars: u32 = 0;
+    if !st.firmware_vendor.is_null() {
+        unsafe {
+            let mut p = st.firmware_vendor;
+            let mut count: u32 = 0;
+            while count < 256 {
+                if core::ptr::read(p) == 0 { break; }
+                p = p.add(1);
+                count += 1;
+            }
+            len_chars = count;
+        }
+    }
+
+    Some((vendor_ptr, len_chars, revision))
 }
 
 /// Collect boot time information
@@ -58,7 +87,42 @@ pub fn collect_firmware_info() -> Option<(u64, u32, u32)> {
 /// This is currently a placeholder implementation. Boot time information
 /// collection needs to be implemented using UEFI runtime services.
 pub fn collect_boot_time_info() -> Option<(u64, u32)> {
-    None
+    // Use UEFI runtime service get_time(). Convert to UNIX seconds if possible.
+    let system_table = match table::system_table_raw() {
+        Some(st) => st,
+        None => return None,
+    };
+    let st = unsafe { system_table.as_ref() };
+    if st.runtime_services.is_null() { return None; }
+
+    // Safe wrapper provided by crate: uefi::runtime::get_time()
+    let tm = match uefi::runtime::get_time() {
+        Ok(t) => t,
+        Err(_) => return None,
+    };
+
+    // Convert UEFI time (year, month, day, hour, minute, second) to UNIX seconds.
+    // Implement minimal days-since-epoch calculation (UTC; leap years considered).
+    let y = tm.year() as i32;
+    let m = tm.month() as i32; // 1..=12
+    let d = tm.day() as i32;   // 1..=31
+    let hour = tm.hour() as i64;
+    let min = tm.minute() as i64;
+    let sec = tm.second() as i64;
+
+    // Days from 1970-01-01 to current date
+    fn is_leap(y: i32) -> bool { (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0) }
+    const MDAYS: [i32; 12] = [31,28,31,30,31,30,31,31,30,31,30,31];
+    let mut days: i64 = 0;
+    let mut yy = 1970;
+    while yy < y { days += if is_leap(yy) { 366 } else { 365 } as i64; yy += 1; }
+    let mut mm = 1;
+    while mm < m { days += (if mm == 2 && is_leap(y) { 29 } else { MDAYS[(mm-1) as usize] }) as i64; mm += 1; }
+    days += (d as i64) - 1;
+
+    let seconds = days * 86400 + hour * 3600 + min * 60 + sec;
+    let nanos = (tm.nanosecond() as u32).min(999_999_999);
+    Some((seconds as u64, nanos))
 }
 
 /// Collect boot device path information
@@ -76,7 +140,19 @@ pub fn collect_boot_time_info() -> Option<(u64, u32)> {
 /// This is currently a placeholder implementation. Boot device path
 /// collection needs to be implemented using the LoadedImage protocol.
 pub fn collect_boot_device_path() -> Option<(u64, u32)> {
-    None
+    // Prefer using our existing helper in hardware.rs, but implement a local fallback.
+    // Try to open LoadedImage and extract file_path pointer.
+    let image_handle = uefi::boot::image_handle();
+    let loaded_image = match uefi::boot::open_protocol_exclusive::<LoadedImage>(image_handle) {
+        Ok(img) => img,
+        Err(_) => return None,
+    };
+    if let Some(dp) = loaded_image.file_path() {
+        let ptr = core::ptr::addr_of!(*dp) as *const u8 as usize as u64;
+        Some((ptr, 0))
+    } else {
+        None
+    }
 }
 
 /// Collect CPU information using ACPI tables (MADT)
