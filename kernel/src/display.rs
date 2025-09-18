@@ -45,10 +45,8 @@ pub fn dump_handoff(h: &Handoff, dump_bytes: bool) {
     print_kv_u32("memory_map_entries", h.memory_map_entries);
     print_kv_u32("memory_map_size", h.memory_map_size);
 
-    kernel_write_line("│ ACPI / DT");
+    kernel_write_line("│ ACPI");
     print_kv_u64("acpi_rsdp", h.acpi_rsdp);
-    print_kv_u64("device_tree_ptr", h.device_tree_ptr);
-    print_kv_u64("device_tree_size", h.device_tree_size);
 
     kernel_write_line("│ UEFI");
     print_kv_u64("uefi_system_table", h.uefi_system_table);

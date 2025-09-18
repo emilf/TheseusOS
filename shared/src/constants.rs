@@ -91,9 +91,6 @@ pub mod uefi {
     #[allow(dead_code)]
     pub const ACPI_RSDP_SIGNATURE: &[u8; 8] = b"RSD PTR ";
     
-    /// Device Tree signature
-    #[allow(dead_code)]
-    pub const DTB_SIGNATURE: u32 = 0xd00dfeed;
 }
 
 /// Exit Codes

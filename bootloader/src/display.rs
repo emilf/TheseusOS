@@ -110,27 +110,7 @@ pub fn display_acpi_info(rsdp_address: u64) {
     write_line("");
 }
 
-/// Helper function to display device tree information
-pub fn display_device_tree_info(dtb_ptr: u64, dtb_size: u64) {
-    write_line("");
-    write_line("┌─────────────────────────────────────────────────────────┐");
-    write_line("│                  Device Tree Information                │");
-    write_line("├─────────────────────────────────────────────────────────┤");
-    
-    if dtb_ptr != 0 {
-        write_line(&format!("│ DTB Address: 0x{:016x}                           │", dtb_ptr));
-        write_line(&format!("│ DTB Size: {} bytes ({:.2} KB)                   │", dtb_size, dtb_size as f64 / 1024.0));
-        write_line("│ Status: ✓ Device tree blob found                    │");
-    } else {
-        write_line("│ DTB Address: Not found (0x0000000000000000)          │");
-        write_line("│ DTB Size: 0 bytes                                   │");
-        write_line("│ Status: ✗ Device tree blob not found               │");
-        write_line("│ Note: Device tree is typically used on ARM systems │");
-    }
-    
-    write_line("└─────────────────────────────────────────────────────────┘");
-    write_line("");
-}
+// Device tree display removed (x86-only)
 
 /// Helper function to display firmware information
 pub fn display_firmware_info(vendor_ptr: u64, vendor_len: u32, revision: u32) {

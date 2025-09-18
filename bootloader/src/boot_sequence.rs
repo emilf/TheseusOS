@@ -144,25 +144,8 @@ pub fn collect_acpi_info() -> bool {
     }
 }
 
-/// Collect system information (device tree, firmware, boot time, etc.)
+/// Collect system information (firmware, boot time, etc.)
 pub fn collect_system_info() {
-    // Device Tree Information
-    write_line("Collecting device tree information...");
-    match find_device_tree() {
-        Some((dtb_ptr, dtb_size)) => {
-            unsafe {
-                HANDOFF.device_tree_ptr = dtb_ptr;
-                HANDOFF.device_tree_size = dtb_size;
-            }
-            write_line("✓ Device tree information collected");
-            display_device_tree_info(dtb_ptr, dtb_size);
-        }
-        None => {
-            write_line("✗ Device tree information not available");
-            display_device_tree_info(0, 0);
-        }
-    }
-
     // UEFI System Table and Image Handle
     write_line("Collecting UEFI system table and image handle...");
     match uefi::table::system_table_raw() {

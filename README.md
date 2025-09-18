@@ -115,7 +115,6 @@ telnet 127.0.0.1 55555
 - **Graphics**: GOP framebuffer base/size, resolution, stride, pixel format
 - **Memory Map**: Complete memory layout with descriptor metadata and key
 - **ACPI**: RSDP physical address (when available)
-- **Device Tree**: DTB pointer and size (ARM systems)
 - **Firmware**: UEFI vendor info and revision
 - **Boot Context**: Boot time and device path information
 - **CPU**: Processor count, features, and microcode revision

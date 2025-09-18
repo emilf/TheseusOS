@@ -3,7 +3,7 @@
 This project provides a comprehensive Rust UEFI bootloader that:
 1. Initializes UEFI services and logging
 2. Prints to screen and serial with beautiful formatting
-3. Collects comprehensive environment information (GOP, memory map, ACPI, device tree, firmware, boot info, CPU)
+3. Collects comprehensive environment information (GOP, memory map, ACPI, firmware, boot info, CPU)
 4. Retrieves and preserves the UEFI memory map with proper key management
 5. Prepares for kernel handoff with complete system information
 6. Passes a comprehensive `Handoff` struct pointer in RDI for the kernel
@@ -16,7 +16,7 @@ This project provides a comprehensive Rust UEFI bootloader that:
 - We collect Graphics Output Protocol (GOP) framebuffer information.
 - We retrieve the complete UEFI memory map and preserve it for kernel access.
 - We attempt to locate ACPI RSDP table (placeholder for UEFI-RS 0.35 API).
-- We collect device tree, firmware, boot time, device path, and CPU information.
+- We collect firmware, boot time, device path, and CPU information.
 - We finalize the comprehensive `Handoff` structure with all collected data.
 - We prepare the memory map for kernel handoff (with memory map key).
 - We halt the CPU (ready for kernel chaining).
@@ -48,9 +48,6 @@ struct Handoff {
   // ACPI Information
   acpi_rsdp: u64,              // ACPI RSDP table address (0 if not found)
   
-  // Device Tree Information
-  device_tree_ptr: u64,        // Device tree blob address (0 if not found)
-  device_tree_size: u64,       // Device tree size in bytes
   
   // Firmware Information
   firmware_vendor_ptr: u64,    // Firmware vendor string pointer (0 if not available)
@@ -81,7 +78,6 @@ struct Handoff {
 - **Graphics**: `gop_*` describe the framebuffer configuration
 - **Memory Map**: `memory_map_*` provides complete memory layout information
 - **ACPI**: `acpi_rsdp` provides ACPI table access (when available)
-- **Device Tree**: `device_tree_*` provides hardware description (ARM systems)
 - **Firmware**: `firmware_*` provides UEFI firmware information
 - **Boot Info**: `boot_time_*` and `boot_device_path_*` provide boot context
 - **CPU**: `cpu_*` provides processor information and capabilities

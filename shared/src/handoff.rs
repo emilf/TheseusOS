@@ -37,12 +37,6 @@ pub struct Handoff {
     /// ACPI RSDP table address (0 if not found)
     pub acpi_rsdp: u64,
     
-    // Device Tree Information
-    /// Device tree blob address (0 if not found)
-    pub device_tree_ptr: u64,
-    /// Device tree size in bytes
-    pub device_tree_size: u64,
-    
     // UEFI System Information
     /// UEFI System Table pointer (for exit_boot_services)
     pub uefi_system_table: u64,
@@ -148,10 +142,6 @@ pub static mut HANDOFF: Handoff = Handoff {
     
     // ACPI fields
     acpi_rsdp: 0,
-    
-    // Device tree fields
-    device_tree_ptr: 0,
-    device_tree_size: 0,
     
     // UEFI System Table
     uefi_system_table: 0,

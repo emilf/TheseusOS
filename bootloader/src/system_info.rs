@@ -1,7 +1,7 @@
 //! System information collection module
 //! 
 //! This module provides functions to collect various system information
-//! during UEFI boot, including device tree, firmware, boot time, and CPU information.
+//! during UEFI boot, including firmware, boot time, and CPU information.
 
 use acpi::AcpiTables;
 use crate::acpi::UefiAcpiHandler;
@@ -9,25 +9,7 @@ use crate::drivers::manager::write_line;
 use uefi::table;
 use uefi::proto::loaded_image::LoadedImage;
 
-/// Find the device tree blob (DTB)
-/// 
-/// This function searches for a device tree blob, which is typically used
-/// on ARM/ARM64 systems for hardware description.
-/// 
-/// # Returns
-/// 
-/// * `Some((u64, u64))` - Tuple of (DTB pointer, DTB size) if found
-/// * `None` - If no device tree is available
-/// 
-/// # Note
-/// 
-/// This is currently a placeholder implementation. Device tree support
-/// needs to be implemented based on the target architecture.
-pub fn find_device_tree() -> Option<(u64, u64)> {
-    // Device tree is generally not present on x86 UEFI systems; return None.
-    // If ARM support is added later, implement FDT lookup via the config table here.
-    None
-}
+// Device tree support removed (x86-only build)
 
 /// Collect firmware information
 /// 

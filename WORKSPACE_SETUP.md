@@ -157,7 +157,7 @@ make all
 1. **Implement `exit_boot_services()`**: Complete the UEFI-to-kernel transition
 2. **Kernel Memory Management**: Replace dummy allocator with proper implementation
 3. **ACPI Kernel Integration**: Use ACPI tables for hardware initialization
-4. **Device Tree Support**: Add DTB parsing for hardware description
+4. **Enhanced Hardware Support**: Add more comprehensive hardware detection
 
 ### **Future Enhancements**
 1. **Kernel Subsystems**: Process management, device drivers, filesystem
