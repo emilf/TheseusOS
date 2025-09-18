@@ -3,7 +3,7 @@
 //! Provides functions for exiting QEMU with proper debug output.
 //! This is separate from the driver system to ensure it works even during panics.
 
-use theseus_shared::constants::{io_ports, exit_codes};
+use theseus_shared::constants::exit_codes;
 
 /// Exit QEMU with a message and exit code
 /// 
@@ -21,32 +21,8 @@ use theseus_shared::constants::{io_ports, exit_codes};
 /// This function performs direct I/O port operations and should only be called
 /// when we're running under QEMU. It will cause the guest to exit immediately.
 pub unsafe fn exit_qemu_with_message(message: &str, exit_code: u8) {
-    // Write message directly to QEMU debug port (0xe9)
-    // This bypasses our driver system to ensure it works even during panics
-    for byte in message.bytes() {
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") io_ports::QEMU_DEBUG,
-            in("al") byte,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-    
-    // Write newline
-    core::arch::asm!(
-        "out dx, al",
-        in("dx") io_ports::QEMU_DEBUG,
-        in("al") b'\n',
-        options(nomem, nostack, preserves_flags)
-    );
-    
-    // Exit QEMU with the specified exit code
-    core::arch::asm!(
-        "out dx, al",
-        in("dx") io_ports::QEMU_EXIT,
-        in("al") exit_code,
-        options(nomem, nostack, preserves_flags)
-    );
+    theseus_shared::qemu_println!(message);
+    theseus_shared::qemu_exit!(exit_code);
 }
 
 

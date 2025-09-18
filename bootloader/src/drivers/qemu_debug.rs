@@ -2,9 +2,6 @@
 //! 
 //! Uses QEMU's debug output port (0xe9) for simple output. QEMU-specific driver.
 
-use core::arch::asm;
-use theseus_shared::constants::io_ports;
-
 /// QEMU Debug driver implementation
 pub struct QemuDebugDriver;
 
@@ -21,18 +18,10 @@ impl QemuDebugDriver {
     }
     
     /// Write a single character to QEMU debug port
-    fn write_char(&self, ch: u8) {
-        unsafe {
-            asm!("out dx, al", in("dx") io_ports::QEMU_DEBUG, in("al") ch, options(nomem, nostack, preserves_flags));
-        }
-    }
+    fn write_char(&self, ch: u8) { theseus_shared::qemu_print_bytes!(&[ch]); }
     
     /// Write a string to QEMU debug port
-    fn write_string(&self, s: &str) {
-        for &byte in s.as_bytes() {
-            self.write_char(byte);
-        }
-    }
+    fn write_string(&self, s: &str) { theseus_shared::qemu_print_bytes!(s.as_bytes()); }
 }
 
 impl crate::drivers::manager::Driver for QemuDebugDriver {

@@ -51,7 +51,6 @@ mod boot_sequence;
 mod qemu_exit;
 
 // Use shared library
-use theseus_shared::constants;
 
 // Include bootloader-specific modules
 mod drivers;
@@ -62,57 +61,26 @@ use boot_sequence::*;
 use uefi::Status;
 use drivers::manager::{OutputDriver, write_line};
 use alloc::format;
+// (no additional shared imports)
 
 /// Panic handler for bootloader
+#[cfg(not(test))]
 #[panic_handler]
 fn panic_handler(_panic_info: &core::panic::PanicInfo) -> ! {
     // Output panic information to QEMU debug port (avoiding allocator)
     const PANIC_PREFIX: &[u8] = b"BOOTLOADER PANIC: ";
     
     // Write panic prefix
-    for &byte in PANIC_PREFIX {
-        unsafe {
-            core::arch::asm!(
-                "out dx, al",
-                in("dx") constants::io_ports::QEMU_DEBUG,
-                in("al") byte,
-                options(nomem, nostack, preserves_flags)
-            );
-        }
-    }
+    theseus_shared::qemu_print_bytes!(PANIC_PREFIX);
     
     // Output a generic panic message (we can't easily format the actual message without allocator)
     const PANIC_MSG: &[u8] = b"Panic occurred";
-    for &byte in PANIC_MSG {
-        unsafe {
-            core::arch::asm!(
-                "out dx, al",
-                in("dx") constants::io_ports::QEMU_DEBUG,
-                in("al") byte,
-                options(nomem, nostack, preserves_flags)
-            );
-        }
-    }
+    theseus_shared::qemu_print_bytes!(PANIC_MSG);
     
-    // Write newline
-    unsafe {
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") constants::io_ports::QEMU_DEBUG,
-            in("al") b'\n',
-            options(nomem, nostack, preserves_flags)
-        );
-    }
+    theseus_shared::qemu_print_bytes!(b"\n");
     
     // Exit QEMU with error
-    unsafe {
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") constants::io_ports::QEMU_EXIT,
-            in("al") constants::exit_codes::QEMU_ERROR,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
+    theseus_shared::qemu_exit_error!();
     
     loop {}
 }

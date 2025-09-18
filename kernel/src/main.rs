@@ -27,8 +27,6 @@
 
 extern crate alloc;
 
-use theseus_shared::constants::{io_ports, exit_codes};
-
 // Include our modules
 mod gdt;
 mod interrupts;
@@ -39,6 +37,30 @@ use gdt::setup_gdt;
 use interrupts::{disable_all_interrupts, setup_idt};
 use cpu::{setup_control_registers, detect_cpu_features, setup_floating_point, setup_msrs};
 use memory::{MemoryManager, activate_virtual_memory};
+// Global access to bootloader handoff
+static mut HANDOFF_PHYS_PTR: u64 = 0;
+static mut HANDOFF_VIRT_PTR: u64 = 0;
+static mut HANDOFF_INITIALIZED: bool = false;
+
+fn set_handoff_pointers(handoff_phys: u64) {
+    let virt = memory::KERNEL_VIRTUAL_BASE.wrapping_add(handoff_phys);
+    unsafe {
+        HANDOFF_PHYS_PTR = handoff_phys;
+        HANDOFF_VIRT_PTR = virt;
+        HANDOFF_INITIALIZED = true;
+    }
+    kernel_write_line("[handoff] phys="); theseus_shared::print_hex_u64_0xe9!(handoff_phys);
+    kernel_write_line(" virt="); theseus_shared::print_hex_u64_0xe9!(virt); kernel_write_line("\n");
+}
+
+fn handoff_ref() -> &'static theseus_shared::handoff::Handoff {
+    // Choose phys or high-half pointer based on current RIP
+    let virt_base = memory::KERNEL_VIRTUAL_BASE;
+    let rip_now: u64; unsafe { core::arch::asm!("lea {}, [rip + 0]", out(reg) rip_now, options(nostack)); }
+    let ptr = unsafe { if rip_now >= virt_base { HANDOFF_VIRT_PTR } else { HANDOFF_PHYS_PTR } };
+    unsafe { &*(ptr as *const theseus_shared::handoff::Handoff) }
+}
+
 // use boot_services::exit_boot_services; // Not needed - bootloader handles this
 
 /// Temporary bump allocator for kernel setup phase
@@ -233,13 +255,13 @@ fn setup_kernel_environment(_handoff: &theseus_shared::handoff::Handoff) {
         } else {
             let target: u64 = virt_base.wrapping_add(rip_now);
             // Dump debug info and compare 8 bytes at low_rip vs target
-            kernel_write_line("  hh dbg: low_rip="); print_hex_u64_0xe9(rip_now);
-            kernel_write_line(" virt_base="); print_hex_u64_0xe9(virt_base);
-            kernel_write_line(" target="); print_hex_u64_0xe9(target); kernel_write_line("\n");
+            kernel_write_line("  hh dbg: low_rip="); theseus_shared::print_hex_u64_0xe9!(rip_now);
+            kernel_write_line(" virt_base="); theseus_shared::print_hex_u64_0xe9!(virt_base);
+            kernel_write_line(" target="); theseus_shared::print_hex_u64_0xe9!(target); kernel_write_line("\n");
             let low_q: u64 = unsafe { core::ptr::read_volatile(rip_now as *const u64) };
             let hi_q: u64  = unsafe { core::ptr::read_volatile(target as *const u64) };
-            kernel_write_line("  hh dbg: low_q="); print_hex_u64_0xe9(low_q);
-            kernel_write_line(" hi_q="); print_hex_u64_0xe9(hi_q);
+            kernel_write_line("  hh dbg: low_q="); theseus_shared::print_hex_u64_0xe9!(low_q);
+            kernel_write_line(" hi_q="); theseus_shared::print_hex_u64_0xe9!(hi_q);
             kernel_write_line(if low_q == hi_q { " equal\n" } else { " DIFF\n" });
             if low_q == hi_q {
                 unsafe { core::arch::asm!("jmp rax", in("rax") target, options(noreturn)); }
@@ -311,48 +333,9 @@ fn setup_kernel_environment(_handoff: &theseus_shared::handoff::Handoff) {
 
 
 /// Simple kernel output function that writes directly to QEMU debug port
-fn kernel_write_line(message: &str) {
-    // Write message directly to QEMU debug port (0xe9)
-    for byte in message.bytes() {
-        unsafe {
-            core::arch::asm!(
-                "out dx, al",
-                in("dx") io_ports::QEMU_DEBUG,
-                in("al") byte,
-                options(nomem, nostack, preserves_flags)
-            );
-        }
-    }
-    
-    // Write newline
-    unsafe {
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") io_ports::QEMU_DEBUG,
-            in("al") b'\n',
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-}
+fn kernel_write_line(message: &str) { theseus_shared::qemu_println!(message); }
 
-#[inline(always)]
-unsafe fn out_char_0xe9(byte: u8) {
-    core::arch::asm!(
-        "out dx, al",
-        in("dx") io_ports::QEMU_DEBUG,
-        in("al") byte,
-        options(nomem, nostack, preserves_flags)
-    );
-}
-
-fn print_hex_u64_0xe9(mut v: u64) {
-    unsafe { out_char_0xe9(b'0'); out_char_0xe9(b'x'); }
-    for i in (0..16).rev() {
-        let nib = ((v >> (i * 4)) & 0xF) as u8;
-        let ch = if nib < 10 { b'0' + nib } else { b'A' + (nib - 10) };
-        unsafe { out_char_0xe9(ch); }
-    }
-}
+// replaced by shared macros: out_char_0xe9! and print_hex_u64_0xe9!
 
 /// Kernel entry point
 /// 
@@ -373,6 +356,7 @@ pub extern "C" fn kernel_main(handoff_addr: u64) -> ! {
     // Initialize heap from memory map
     kernel_write_line("Initializing heap from memory map...");
     initialize_heap_from_handoff(handoff_addr);
+    set_handoff_pointers(handoff_addr);
     
     kernel_write_line("Handoff structure address received");
     
@@ -403,13 +387,7 @@ pub extern "C" fn kernel_main(handoff_addr: u64) -> ! {
     kernel_write_line("Kernel initialization complete");
     kernel_write_line("Exiting QEMU...");
     
-    unsafe {
-        core::arch::asm!("out dx, al", 
-            in("dx") io_ports::QEMU_EXIT, 
-            in("al") exit_codes::QEMU_SUCCESS, 
-            options(nomem, nostack, preserves_flags)
-        );
-    }
+    theseus_shared::qemu_exit_ok!();
     
     loop {}
 }
@@ -455,6 +433,7 @@ fn display_handoff_info(handoff: &theseus_shared::handoff::Handoff) {
 
 
 /// Panic handler for kernel
+#[cfg(not(test))]
 #[panic_handler]
 fn panic_handler(_panic_info: &core::panic::PanicInfo) -> ! {
     // Try to output panic information
@@ -462,37 +441,8 @@ fn panic_handler(_panic_info: &core::panic::PanicInfo) -> ! {
 
     let message = "KERNEL PANIC: Panic occurred";
     
-    // Write directly to QEMU debug port
-    for byte in message.bytes() {
-        unsafe {
-            core::arch::asm!(
-                "out dx, al",
-                in("dx") io_ports::QEMU_DEBUG,
-                in("al") byte,
-                options(nomem, nostack, preserves_flags)
-            );
-        }
-    }
-    
-    // Write newline
-    unsafe {
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") io_ports::QEMU_DEBUG,
-            in("al") b'\n',
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-    
-    // Exit QEMU with error
-    unsafe {
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") io_ports::QEMU_EXIT,
-            in("al") exit_codes::QEMU_ERROR,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
+    theseus_shared::qemu_println!(message);
+    theseus_shared::qemu_exit_error!();
     
     loop {}
 }
