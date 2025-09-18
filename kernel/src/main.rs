@@ -219,9 +219,38 @@ fn setup_kernel_environment(_handoff: &theseus_shared::handoff::Handoff) {
     }
     kernel_write_line("  ✓ Paging enabled (identity + high-half kernel)");
     
-    // 4. Install IDT and set up CPU features
+    // 4. Install low-half IDT, then jump to high-half, then reinstall IDT and continue
     kernel_write_line("4. Setting up CPU features...");
-    unsafe { setup_idt(); }
+    unsafe {
+        setup_idt();
+        kernel_write_line("  IDT (low-half) installed");
+        kernel_write_line("  [hh] preparing jump to high-half...");
+        // Compute addresses and verify bytes before jumping to high-half
+        let virt_base: u64 = memory::KERNEL_VIRTUAL_BASE;
+        let rip_now: u64; unsafe { core::arch::asm!("lea {}, [rip + 0]", out(reg) rip_now, options(nostack)); }
+        if rip_now >= virt_base {
+            kernel_write_line("  [hh] already in high-half, skipping jump\n");
+        } else {
+            let target: u64 = virt_base.wrapping_add(rip_now);
+            // Dump debug info and compare 8 bytes at low_rip vs target
+            kernel_write_line("  hh dbg: low_rip="); print_hex_u64_0xe9(rip_now);
+            kernel_write_line(" virt_base="); print_hex_u64_0xe9(virt_base);
+            kernel_write_line(" target="); print_hex_u64_0xe9(target); kernel_write_line("\n");
+            let low_q: u64 = unsafe { core::ptr::read_volatile(rip_now as *const u64) };
+            let hi_q: u64  = unsafe { core::ptr::read_volatile(target as *const u64) };
+            kernel_write_line("  hh dbg: low_q="); print_hex_u64_0xe9(low_q);
+            kernel_write_line(" hi_q="); print_hex_u64_0xe9(hi_q);
+            kernel_write_line(if low_q == hi_q { " equal\n" } else { " DIFF\n" });
+            if low_q == hi_q {
+                unsafe { core::arch::asm!("jmp rax", in("rax") target, options(noreturn)); }
+            } else {
+                kernel_write_line("  hh dbg: ABORT high-half jump due to mismatch\n");
+            }
+        }
+        // Sanity check: compare a known byte at RIP and its high-half counterpart
+        // Skip RIP byte-compare until high-half jump succeeds
+        setup_idt();
+    }
     kernel_write_line("  IDT installed");
     kernel_write_line("  Detecting CPU features...");
     unsafe {
@@ -303,6 +332,25 @@ fn kernel_write_line(message: &str) {
             in("al") b'\n',
             options(nomem, nostack, preserves_flags)
         );
+    }
+}
+
+#[inline(always)]
+unsafe fn out_char_0xe9(byte: u8) {
+    core::arch::asm!(
+        "out dx, al",
+        in("dx") io_ports::QEMU_DEBUG,
+        in("al") byte,
+        options(nomem, nostack, preserves_flags)
+    );
+}
+
+fn print_hex_u64_0xe9(mut v: u64) {
+    unsafe { out_char_0xe9(b'0'); out_char_0xe9(b'x'); }
+    for i in (0..16).rev() {
+        let nib = ((v >> (i * 4)) & 0xF) as u8;
+        let ch = if nib < 10 { b'0' + nib } else { b'A' + (nib - 10) };
+        unsafe { out_char_0xe9(ch); }
     }
 }
 

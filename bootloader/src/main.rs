@@ -221,11 +221,11 @@ fn efi_main() -> Status {
     if let Some(mmap) = &memory_map {
         write_line("About to call load_kernel_binary...");
         match crate::kernel_loader::load_kernel_binary(mmap) {
-            Ok((kernel_physical_base, kernel_entry_point)) => {
+            Ok((kernel_physical_base, kernel_physical_entry, kernel_virtual_entry)) => {
                 // Update the handoff structure with the actual kernel information
                 unsafe {
                     HANDOFF.kernel_physical_base = kernel_physical_base;
-                    HANDOFF.kernel_virtual_entry = kernel_entry_point;
+                    HANDOFF.kernel_virtual_entry = kernel_virtual_entry;
                     HANDOFF.kernel_virtual_base = 0xffffffff80000000; // Virtual base
                     HANDOFF.page_table_root = 0; // No paging yet
                     HANDOFF.virtual_memory_enabled = 0; // Identity mapped
@@ -238,9 +238,7 @@ fn efi_main() -> Status {
                 write_line("✓ All system information collected, jumping to kernel...");
                 
                 // Jump to kernel with handoff structure address
-                unsafe {
-                    crate::boot_sequence::jump_to_kernel_with_handoff(kernel_physical_base, &raw const HANDOFF as *const Handoff);
-                }
+                unsafe { crate::boot_sequence::jump_to_kernel_with_handoff(kernel_physical_entry, &raw const HANDOFF as *const Handoff); }
             }
             Err(status) => {
                 write_line(&format!("✗ Failed to load kernel: {:?}", status));

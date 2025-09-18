@@ -102,6 +102,12 @@ fn set_virt_phys_offset(offset: i64) {
     unsafe { VIRT_PHYS_OFFSET = offset; }
 }
 
+/// Expose current virt->phys offset (phys - virt)
+pub fn virt_phys_offset() -> i64 { unsafe { VIRT_PHYS_OFFSET } }
+
+/// Compute phys->virt offset (virt - phys)
+pub fn virt_offset() -> i64 { unsafe { -VIRT_PHYS_OFFSET } }
+
 
 impl MemoryManager {
     /// Create a new memory manager
@@ -115,8 +121,8 @@ impl MemoryManager {
         // Identity map first 1 GiB using 2MiB pages to cover kernel physical area
         identity_map_first_1gb_2mb(pml4);
 
-        // Map kernel at high-half virtual base using a 2MiB page
-        map_kernel_high_2mb(pml4, handoff);
+        // Map entire first 1 GiB of physical memory into the high-half window using 2MiB pages
+        map_high_half_1gb_2mb(pml4);
 
         // Map framebuffer and temp heap if available (4KiB pages are fine here)
         if handoff.gop_fb_base != 0 {
@@ -174,17 +180,18 @@ unsafe fn identity_map_first_1gb_2mb(pml4: &mut PageTable) {
 }
 
 /// Map kernel to high-half using a single 2 MiB page
-unsafe fn map_kernel_high_2mb(pml4: &mut PageTable, handoff: &theseus_shared::handoff::Handoff) {
-    // Map only the actual kernel span: [phys_base, phys_base + span)
-    let phys_base = handoff.kernel_physical_base & !0xFFFu64;
-    let virt_base = KERNEL_VIRTUAL_BASE & !0xFFFu64;
-    let span_bytes: u64 = 4 * 1024 * 1024; // 4MiB safety span for kernel image
-    let pages = (span_bytes / PAGE_SIZE as u64) as u64;
-    let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL; // executable for kernel text/data
-    for i in 0..pages {
-        let pa = phys_base + i * PAGE_SIZE as u64;
-        let va = virt_base + i * PAGE_SIZE as u64;
-        map_page(pml4, va, pa, flags);
+unsafe fn map_high_half_1gb_2mb(pml4: &mut PageTable) {
+    // Map [0 .. 1GiB) physical -> [KERNEL_VIRTUAL_BASE .. +1GiB) virtual using 2MiB pages
+    let two_mb: u64 = 2 * 1024 * 1024;
+    let one_gb: u64 = 1024 * 1024 * 1024;
+    let virt_base = KERNEL_VIRTUAL_BASE & !(two_mb - 1);
+    let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL;
+    let mut offset: u64 = 0;
+    while offset < one_gb {
+        let pa = offset;
+        let va = virt_base + offset;
+        map_2mb_page(pml4, va, pa, flags);
+        offset += two_mb;
     }
 }
 
