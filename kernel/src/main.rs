@@ -238,18 +238,45 @@ fn setup_kernel_environment(_handoff: &theseus_shared::handoff::Handoff) {
     
     kernel_write_line("=== Kernel environment setup complete ===");
     kernel_write_line("Kernel environment test completed successfully");
-    kernel_write_line("Exiting QEMU...");
     
-    // Trigger tests sequentially: #DE, #GP, #PF
-    #[allow(unreachable_code)]
-    unsafe {
-        // #DE: divide-by-zero
-        core::arch::asm!(
-            "xor rax, rax",
-            "mov rdx, 1",
-            "div rax",
-            options(noreturn)
-        );
+    // For testing interrupts: trigger #DE, then #GP, then #PF in separate runs
+    #[allow(unreachable_code)] unsafe {
+        // Select which to trigger by changing this constant index (0=DE,1=GP,2=PF)
+        const WHICH: u8 = 3;
+        if WHICH == 0 { // #BP via int3
+            kernel_write_line("Triggering #BP test (int3)...");
+            core::arch::asm!(
+                "int3",
+                options(noreturn)
+            );
+        } else if WHICH == 1 { // #UD via ud2
+            kernel_write_line("Triggering #UD test (ud2)...");
+            core::arch::asm!(
+                "ud2",
+                options(noreturn)
+            );
+        } else if WHICH == 2 { // #GP: load invalid segment selector into DS
+            core::arch::asm!(
+                "mov ax, 0xFFFF",
+                "mov ds, ax",
+                options(noreturn)
+            );
+        } else if WHICH == 3 { // #DE: divide by zero
+            kernel_write_line("Triggering #DE test (divide by zero)...");
+            core::arch::asm!(
+                "xor rax, rax",
+                "mov rdx, 1",
+                "div rax",
+                options(noreturn)
+            );
+        } else { // #PF: access unmapped VA
+            kernel_write_line("Triggering #PF test (read from 0x50000000)...");
+            core::arch::asm!(
+                "mov rax, 0x50000000",
+                "mov rax, [rax]",
+                options(noreturn)
+            );
+        }
     }
 }
 

@@ -424,6 +424,287 @@ pub fn load_kernel_sections(kernel_info: &mut KernelInfo, kernel_data: &[u8], ph
     Ok(physical_entry)
 }
 
+/// Apply ELF relocations (SHT_RELA) to the loaded kernel image
+///
+/// Handles minimal x86_64 relocations required for absolute addresses:
+/// - R_X86_64_64: write symbol value + addend (virtual address)
+/// - R_X86_64_RELATIVE: write base (virtual) + addend
+fn apply_relocations(kernel_info: &KernelInfo, kernel_data: &[u8], physical_base: u64) -> Result<(), Status> {
+    write_line("Applying relocations...");
+
+    // ELF64 header fields we need
+    if kernel_data.len() < 0x40 + 8 {
+        write_line("✗ ELF too small for section headers");
+        return Err(Status::INVALID_PARAMETER);
+    }
+
+    let e_shoff = u64::from_le_bytes([
+        kernel_data[40], kernel_data[41], kernel_data[42], kernel_data[43],
+        kernel_data[44], kernel_data[45], kernel_data[46], kernel_data[47],
+    ]) as usize;
+    let e_shentsize = u16::from_le_bytes([kernel_data[58], kernel_data[59]]) as usize;
+    let e_shnum = u16::from_le_bytes([kernel_data[60], kernel_data[61]]) as usize;
+
+    if e_shoff == 0 || e_shnum == 0 || e_shentsize == 0 {
+        write_line("  No section headers present (skipping relocations)");
+        return Ok(());
+    }
+    if e_shoff + e_shnum * e_shentsize > kernel_data.len() {
+        write_line("✗ Section headers exceed file size");
+        return Err(Status::INVALID_PARAMETER);
+    }
+
+    // Helper closures to read fields from a section header at index i
+    let sh_at = |i: usize| -> usize { e_shoff + i * e_shentsize };
+    let read_u32 = |data: &[u8], off: usize| -> u32 {
+        u32::from_le_bytes([data[off], data[off+1], data[off+2], data[off+3]])
+    };
+    let read_u64 = |data: &[u8], off: usize| -> u64 {
+        u64::from_le_bytes([
+            data[off], data[off+1], data[off+2], data[off+3],
+            data[off+4], data[off+5], data[off+6], data[off+7],
+        ])
+    };
+
+    // Compute V->P offset used to locate relocation targets in memory
+    let virt_phys_off = physical_base as i64 - kernel_info.virtual_base as i64;
+
+    let mut rela_sections = 0usize;
+    let mut rela_entries = 0usize;
+
+    for i in 0..e_shnum {
+        let base = sh_at(i);
+        let sh_type = read_u32(kernel_data, base + 4);
+        // SHT_RELA == 4
+        if sh_type != 4 { continue; }
+
+        let sh_offset = read_u64(kernel_data, base + 0x18) as usize; // sh_offset
+        let sh_size   = read_u64(kernel_data, base + 0x20) as usize; // sh_size
+        let sh_link   = read_u32(kernel_data, base + 0x28) as usize; // sh_link -> symtab index
+        let sh_entsz  = read_u64(kernel_data, base + 0x38) as usize; // entry size (should be 24)
+
+        if sh_offset == 0 || sh_size == 0 || sh_entsz == 0 { continue; }
+        if sh_offset + sh_size > kernel_data.len() { write_line("✗ RELA section out of bounds"); return Err(Status::INVALID_PARAMETER); }
+
+        // Locate linked symbol table
+        if sh_link >= e_shnum { write_line("✗ RELA link index out of range"); return Err(Status::INVALID_PARAMETER); }
+        let symtab_base = sh_at(sh_link);
+        let symtab_type = read_u32(kernel_data, symtab_base + 4);
+        // SYMTAB=2 or DYNSYM=11
+        if symtab_type != 2 && symtab_type != 11 { write_line("✗ Linked symtab has unexpected type"); return Err(Status::INVALID_PARAMETER); }
+        let sym_off = read_u64(kernel_data, symtab_base + 0x18) as usize;
+        let sym_size = read_u64(kernel_data, symtab_base + 0x20) as usize;
+        let sym_entsize = read_u64(kernel_data, symtab_base + 0x38) as usize; // 24 bytes for Elf64_Sym
+        if sym_off == 0 || sym_size == 0 || sym_entsize == 0 || sym_off + sym_size > kernel_data.len() {
+            write_line("✗ Symbol table bounds invalid");
+            return Err(Status::INVALID_PARAMETER);
+        }
+
+        // Iterate RELA entries
+        let mut applied_here = 0usize;
+        let mut off = sh_offset;
+        while off + sh_entsz <= sh_offset + sh_size {
+            // Elf64_Rela: r_offset (8), r_info (8), r_addend (8)
+            let r_offset = read_u64(kernel_data, off) as u64;
+            let r_info   = read_u64(kernel_data, off + 8);
+            let r_addend = read_u64(kernel_data, off + 16) as i64;
+
+            let r_type = (r_info & 0xFFFFFFFF) as u32;
+            let r_sym  = (r_info >> 32) as u32 as usize;
+
+            // Compute target physical address to patch
+            let target_phys = (r_offset as i64 + virt_phys_off) as u64;
+            if target_phys == 0 { write_line("✗ Relocation target phys is 0"); return Err(Status::INVALID_PARAMETER); }
+
+            // Calculate value to write
+            let value: u64 = match r_type {
+                1 => { // R_X86_64_64: S + A
+                    if r_sym == 0 || sym_entsize == 0 { write_line("✗ R_X86_64_64 with no symbol"); return Err(Status::INVALID_PARAMETER); }
+                    let sym_entry_off = sym_off + r_sym * sym_entsize;
+                    if sym_entry_off + sym_entsize > sym_off + sym_size { write_line("✗ Symbol index out of range"); return Err(Status::INVALID_PARAMETER); }
+                    // Elf64_Sym: st_name(4) st_info(1) st_other(1) st_shndx(2) st_value(8) st_size(8)
+                    let st_value = read_u64(kernel_data, sym_entry_off + 8); // st_value at +8
+                    (st_value as i64 + r_addend) as u64
+                }
+                7 => { // R_X86_64_RELATIVE: B + A (B = image virtual base)
+                    (kernel_info.virtual_base as i64 + r_addend) as u64
+                }
+                _ => {
+                    // Unsupported relocation type; skip gracefully
+                    // Common types we expect are 1 and 7 in this kernel
+                    off += sh_entsz;
+                    continue;
+                }
+            };
+
+            // Apply the relocation write
+            unsafe { (target_phys as *mut u64).write_volatile(value); }
+            applied_here += 1;
+            off += sh_entsz;
+        }
+
+        rela_sections += 1;
+        rela_entries += applied_here;
+    }
+
+    // Also process PT_DYNAMIC-based RELA/REL (more reliable than sections in stripped binaries)
+    let mut dyn_rela_entries = 0usize;
+    let mut dyn_rel_entries = 0usize;
+    {
+        // ELF64 header program header info
+        if kernel_data.len() >= 0x40 + 8 {
+            let e_phoff = u64::from_le_bytes([
+                kernel_data[32], kernel_data[33], kernel_data[34], kernel_data[35],
+                kernel_data[36], kernel_data[37], kernel_data[38], kernel_data[39],
+            ]) as usize;
+            let e_phentsize = u16::from_le_bytes([kernel_data[54], kernel_data[55]]) as usize;
+            let e_phnum = u16::from_le_bytes([kernel_data[56], kernel_data[57]]) as usize;
+            if e_phoff != 0 && e_phentsize >= 56 && e_phoff + e_phnum * e_phentsize <= kernel_data.len() {
+                // Find PT_DYNAMIC (type=2)
+                let mut dyn_off = 0usize;
+                let mut dyn_vaddr = 0u64;
+                let mut dyn_size = 0u64;
+                for i in 0..e_phnum {
+                    let off = e_phoff + i * e_phentsize;
+                    let p_type = u32::from_le_bytes([
+                        kernel_data[off], kernel_data[off+1], kernel_data[off+2], kernel_data[off+3]
+                    ]);
+                    if p_type == 2 { // PT_DYNAMIC
+                        dyn_off = u64::from_le_bytes([
+                            kernel_data[off+8], kernel_data[off+9], kernel_data[off+10], kernel_data[off+11],
+                            kernel_data[off+12], kernel_data[off+13], kernel_data[off+14], kernel_data[off+15],
+                        ]) as usize; // p_offset
+                        dyn_vaddr = u64::from_le_bytes([
+                            kernel_data[off+16], kernel_data[off+17], kernel_data[off+18], kernel_data[off+19],
+                            kernel_data[off+20], kernel_data[off+21], kernel_data[off+22], kernel_data[off+23],
+                        ]);
+                        dyn_size = u64::from_le_bytes([
+                            kernel_data[off+32], kernel_data[off+33], kernel_data[off+34], kernel_data[off+35],
+                            kernel_data[off+36], kernel_data[off+37], kernel_data[off+38], kernel_data[off+39],
+                        ]);
+                        break;
+                    }
+                }
+                if dyn_off != 0 && dyn_size >= 16 && dyn_off + dyn_size as usize <= kernel_data.len() {
+                    // Parse dynamic tags
+                    let mut dt_rela: u64 = 0;
+                    let mut dt_relasz: u64 = 0;
+                    let mut dt_relaent: u64 = 24;
+                    let mut dt_rel: u64 = 0;
+                    let mut dt_relsz: u64 = 0;
+                    let mut dt_relent: u64 = 16;
+                    let mut dt_symtab: u64 = 0;
+                    let mut dt_syment: u64 = 24;
+                    let mut cursor = dyn_off;
+                    while cursor + 16 <= dyn_off + dyn_size as usize {
+                        let d_tag = i64::from_le_bytes([
+                            kernel_data[cursor], kernel_data[cursor+1], kernel_data[cursor+2], kernel_data[cursor+3],
+                            kernel_data[cursor+4], kernel_data[cursor+5], kernel_data[cursor+6], kernel_data[cursor+7],
+                        ]);
+                        let d_val = u64::from_le_bytes([
+                            kernel_data[cursor+8], kernel_data[cursor+9], kernel_data[cursor+10], kernel_data[cursor+11],
+                            kernel_data[cursor+12], kernel_data[cursor+13], kernel_data[cursor+14], kernel_data[cursor+15],
+                        ]);
+                        if d_tag == 0 { break; } // DT_NULL
+                        match d_tag {
+                            7 => dt_rela = d_val,          // DT_RELA
+                            8 => dt_relasz = d_val,        // DT_RELASZ
+                            9 => dt_relaent = d_val,       // DT_RELAENT
+                            17 => dt_rel = d_val,          // DT_REL
+                            18 => dt_relsz = d_val,        // DT_RELSZ
+                            19 => dt_relent = d_val,       // DT_RELENT
+                            6 => dt_symtab = d_val,        // DT_SYMTAB
+                            11 => dt_syment = d_val,       // DT_SYMENT
+                            _ => {}
+                        }
+                        cursor += 16;
+                    }
+
+                    // Helper to convert image virtual -> physical
+                    let v2p = |va: u64| -> u64 { (va as i64 + (physical_base as i64 - kernel_info.virtual_base as i64)) as u64 };
+
+                    // Access .dynsym table if present
+                    let (symtab_ptr, symtab_size, symtab_entsz) = if dt_symtab != 0 && dt_syment != 0 {
+                        (v2p(dt_symtab), 0usize, dt_syment as usize)
+                    } else { (0u64, 0usize, 0usize) };
+
+                    // Process RELA
+                    if dt_rela != 0 && dt_relasz != 0 {
+                        let rela_ptr = v2p(dt_rela);
+                        let rela_cnt = (dt_relasz / dt_relaent) as usize;
+                        let mut rptr = rela_ptr as usize;
+                        for _ in 0..rela_cnt {
+                            // read from memory we just loaded (physical)
+                            let r_offset = unsafe { core::ptr::read_unaligned(rptr as *const u64) };
+                            let r_info   = unsafe { core::ptr::read_unaligned((rptr + 8) as *const u64) };
+                            let r_addend = unsafe { core::ptr::read_unaligned((rptr + 16) as *const i64) };
+                            let r_type = (r_info & 0xFFFFFFFF) as u32;
+                            let r_sym  = (r_info >> 32) as u32 as usize;
+                            let target_phys = v2p(r_offset);
+                            let value: Option<u64> = match r_type {
+                                1 => { // R_X86_64_64
+                                    if symtab_ptr != 0 && symtab_entsz >= 24 && r_sym != 0 {
+                                        let sym_off = symtab_ptr as usize + r_sym * symtab_entsz;
+                                        // st_value at +8
+                                        let st_value = unsafe { core::ptr::read_unaligned((sym_off + 8) as *const u64) };
+                                        Some((st_value as i64 + r_addend) as u64)
+                                    } else { None }
+                                }
+                                7 => { // R_X86_64_RELATIVE
+                                    Some((kernel_info.virtual_base as i64 + r_addend) as u64)
+                                }
+                                _ => None,
+                            };
+                            if let Some(val) = value {
+                                unsafe { (target_phys as *mut u64).write_volatile(val); }
+                                dyn_rela_entries += 1;
+                            }
+                            rptr += dt_relaent as usize;
+                        }
+                    }
+
+                    // Process REL (rare on x86_64, but handle if present)
+                    if dt_rel != 0 && dt_relsz != 0 {
+                        let rel_ptr = v2p(dt_rel);
+                        let rel_cnt = (dt_relsz / dt_relent) as usize;
+                        let mut rptr = rel_ptr as usize;
+                        for _ in 0..rel_cnt {
+                            // Elf64_Rel: r_offset(8), r_info(8)
+                            let r_offset = unsafe { core::ptr::read_unaligned(rptr as *const u64) };
+                            let r_info   = unsafe { core::ptr::read_unaligned((rptr + 8) as *const u64) };
+                            let r_type = (r_info & 0xFFFFFFFF) as u32;
+                            let r_sym  = (r_info >> 32) as u32 as usize;
+                            let target_phys = v2p(r_offset);
+                            // No addend field; assume 0
+                            let value: Option<u64> = match r_type {
+                                1 => { // R_X86_64_64
+                                    if symtab_ptr != 0 && symtab_entsz >= 24 && r_sym != 0 {
+                                        let sym_off = symtab_ptr as usize + r_sym * symtab_entsz;
+                                        let st_value = unsafe { core::ptr::read_unaligned((sym_off + 8) as *const u64) };
+                                        Some(st_value)
+                                    } else { None }
+                                }
+                                7 => { // R_X86_64_RELATIVE
+                                    Some(kernel_info.virtual_base)
+                                }
+                                _ => None,
+                            };
+                            if let Some(val) = value {
+                                unsafe { (target_phys as *mut u64).write_volatile(val); }
+                                dyn_rel_entries += 1;
+                            }
+                            rptr += dt_relent as usize;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    write_line(&format!("✓ Relocations applied: sections={}, entries={}, dyn_rela={}, dyn_rel={}", rela_sections, rela_entries, dyn_rela_entries, dyn_rel_entries));
+    Ok(())
+}
+
 /// Main kernel loading function
 /// 
 /// # Arguments
@@ -461,6 +742,9 @@ pub fn load_kernel_binary(_memory_map: &uefi::mem::memory_map::MemoryMapOwned, )
     
     // Load kernel sections
     let physical_entry = load_kernel_sections(&mut kernel_info, &kernel_data, physical_base)?;
+
+    // Apply relocations now that image is loaded at physical_base
+    apply_relocations(&kernel_info, &kernel_data, physical_base)?;
     
     write_line("✓ Kernel binary loaded successfully");
     write_line(&format!("  Physical base: 0x{:016X}", physical_base));

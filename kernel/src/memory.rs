@@ -271,35 +271,10 @@ unsafe fn get_or_create_page_table(entry: &mut PageTableEntry) -> &mut PageTable
 /// Activate virtual memory
 pub unsafe fn activate_virtual_memory(page_table_root: u64) {
     // Load page table root into CR3
-    // trace before CR3
-    core::arch::asm!(
-        "mov al, 'P'",
-        "out dx, al",
-        in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
-        options(nomem, nostack, preserves_flags)
-    );
-
     core::arch::asm!(
         "mov cr3, {}",
         in(reg) page_table_root,
         options(nomem, nostack, preserves_flags)
-    );
-
-    // trace after CR3 and test instruction fetch and stack access
-    core::arch::asm!(
-        // post-CR3 marker
-        "mov al, 'Q'",
-        "out dx, al",
-        // simple fetch/exec test at identity mapping
-        "lea rax, [rip + 2f]",
-        "jmp rax",
-        "2:",
-        // report success
-        "mov al, 'R'",
-        "out dx, al",
-        in("dx") theseus_shared::constants::io_ports::QEMU_DEBUG,
-        lateout("rax") _,
-        options(nomem, preserves_flags)
     );
     
     // Paging is already enabled in CR0, so we're done
