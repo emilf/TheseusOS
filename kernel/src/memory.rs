@@ -92,6 +92,8 @@ pub struct MemoryManager {
     pml4_phys: u64,
     pub kernel_heap_start: u64,
     pub kernel_heap_end: u64,
+    #[cfg(feature = "new_arch")]
+    pub frame_allocator: BootFrameAllocator,
 }
 // Simple global virt<->phys offset model for early paging
 static mut VIRT_PHYS_OFFSET: i64 = 0;
@@ -118,24 +120,48 @@ pub fn virt_offset() -> i64 { unsafe { -VIRT_PHYS_OFFSET } }
 impl MemoryManager {
     /// Create a new memory manager
     pub unsafe fn new(handoff: &theseus_shared::handoff::Handoff) -> Self {
+        #[cfg(feature = "new_arch")]
+        crate::display::kernel_write_line("  [vm/new] start");
         // Establish virt->phys offset for kernel image tables
         set_virt_phys_offset(handoff.kernel_physical_base as i64 - KERNEL_VIRTUAL_BASE as i64);
         // Allocate PML4 from a static pool and get its physical address
         let (pml4, pml4_phys) = alloc_table_from_pool();
+        #[cfg(feature = "new_arch")]
+        crate::display::kernel_write_line("  [vm/new] got pml4");
         // Use kernel VA for table writes; bootloader already mapped high-half
 
-        // Identity map first 1 GiB using 2MiB pages to cover kernel physical area
-        identity_map_first_1gb_2mb(pml4);
+        // Identity map first 1 GiB
+        #[cfg(feature = "new_arch")]
+        {
+            // Bootstrap with legacy identity map so the x86_64 mapper can access page tables
+            identity_map_first_1gb_2mb(pml4);
+        }
+        #[cfg(not(feature = "new_arch"))]
+        {
+            // Identity map first 1 GiB using 2MiB pages to cover kernel physical area
+            identity_map_first_1gb_2mb(pml4);
+        }
 
-        // Map the kernel image physical range into the high-half at KERNEL_VIRTUAL_BASE using 4KiB pages
-        map_kernel_high_half_4k(pml4, handoff);
+        // Map the kernel image high-half
+        #[cfg(feature = "new_arch")]
+        {
+            // defer to x86_64 mapper below
+        }
+        #[cfg(not(feature = "new_arch"))]
+        {
+            // Map the kernel image physical range into the high-half at KERNEL_VIRTUAL_BASE using 4KiB pages
+            map_kernel_high_half_4k(pml4, handoff);
+        }
 
         // Map framebuffer and temp heap if available (4KiB pages are fine here)
-        if handoff.gop_fb_base != 0 {
-            map_framebuffer(pml4, handoff);
+        #[cfg(feature = "new_arch")]
+        {
+            // Post-CR3, mappings are handled via x86_64 mapper (see environment setup)
         }
-        if handoff.temp_heap_base != 0 {
-            map_temporary_heap(pml4, handoff);
+        #[cfg(not(feature = "new_arch"))]
+        {
+            if handoff.gop_fb_base != 0 { map_framebuffer(pml4, handoff); }
+            if handoff.temp_heap_base != 0 { map_temporary_heap(pml4, handoff); }
         }
 
         let kernel_heap_start = KERNEL_HEAP_BASE;
@@ -145,9 +171,17 @@ impl MemoryManager {
         if !pml4.entries[0].is_present() { panic!("PML4[0] not present"); }
 
         // Done
-        Self { pml4, pml4_phys, kernel_heap_start, kernel_heap_end }
+        let s = Self {
+            pml4,
+            pml4_phys,
+            kernel_heap_start,
+            kernel_heap_end,
+            #[cfg(feature = "new_arch")]
+            frame_allocator: BootFrameAllocator { regions: Vec::new(), region_index: 0 },
+        };
+        s
     }
-    
+
     /// Get the page table root (CR3 value)
     pub fn page_table_root(&self) -> u64 { self.pml4_phys }
 }
@@ -323,12 +357,177 @@ unsafe fn get_or_create_page_table(entry: &mut PageTableEntry) -> &mut PageTable
 
 /// Activate virtual memory
 pub unsafe fn activate_virtual_memory(page_table_root: u64) {
-    // Load page table root into CR3
+    #[cfg(feature = "new_arch")]
+    {
+        use x86_64::registers::control::Cr3;
+        use x86_64::{PhysAddr, structures::paging::PhysFrame};
+        Cr3::write(PhysFrame::containing_address(PhysAddr::new(page_table_root)), x86_64::registers::control::Cr3Flags::empty());
+        return;
+    }
+    // Legacy path
     core::arch::asm!(
         "mov cr3, {}",
         in(reg) page_table_root,
         options(nomem, nostack, preserves_flags)
     );
-    
-    // Paging is already enabled in CR0, so we're done
+}
+
+// ===================== x86_64 paging integration (gated) =====================
+#[cfg(feature = "new_arch")]
+use alloc::vec::Vec;
+
+#[cfg(feature = "new_arch")]
+use x86_64::{PhysAddr, VirtAddr, structures::paging::{FrameAllocator, Mapper, Page, PageSize, PageTableFlags, PhysFrame, Size4KiB, OffsetPageTable}};
+
+#[cfg(feature = "new_arch")]
+const UEFI_CONVENTIONAL_MEMORY: u32 = 7; // UEFI spec: conventional memory type
+
+#[cfg(feature = "new_arch")]
+struct MemoryRegion {
+    next_addr: u64,
+    remaining_pages: u64,
+}
+
+#[cfg(feature = "new_arch")]
+pub struct BootFrameAllocator {
+    regions: Vec<MemoryRegion>,
+    region_index: usize,
+}
+
+#[cfg(feature = "new_arch")]
+impl BootFrameAllocator {
+    pub fn empty() -> Self {
+        Self { regions: Vec::new(), region_index: 0 }
+    }
+
+    pub unsafe fn from_handoff(h: &theseus_shared::handoff::Handoff) -> Self {
+        let mut regions: Vec<MemoryRegion> = Vec::new();
+        let base_ptr = h.memory_map_buffer_ptr as *const u8;
+        let desc_size = h.memory_map_descriptor_size as usize;
+        let count = h.memory_map_entries as usize;
+        for i in 0..count {
+            let p = base_ptr.add(i * desc_size);
+            let typ = read_u32(p, 0);
+            if typ == UEFI_CONVENTIONAL_MEMORY {
+                let phys_start = read_u64(p, 8);
+                let num_pages = read_u64(p, 24);
+                if num_pages == 0 { continue; }
+                // Align start to 4KiB just in case
+                let aligned_start = phys_start & !((PAGE_SIZE as u64) - 1);
+                let adj_pages = if aligned_start > phys_start {
+                    num_pages.saturating_sub(1)
+                } else { num_pages };
+                if adj_pages == 0 { continue; }
+                regions.push(MemoryRegion { next_addr: aligned_start, remaining_pages: adj_pages });
+            }
+        }
+        Self { regions, region_index: 0 }
+    }
+}
+
+#[cfg(feature = "new_arch")]
+unsafe impl FrameAllocator<Size4KiB> for BootFrameAllocator {
+    fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        while self.region_index < self.regions.len() {
+            let region = &mut self.regions[self.region_index];
+            if region.remaining_pages == 0 {
+                self.region_index += 1;
+                continue;
+            }
+            let addr = region.next_addr;
+            region.next_addr = region.next_addr.saturating_add(PAGE_SIZE as u64);
+            region.remaining_pages = region.remaining_pages.saturating_sub(1);
+            return Some(PhysFrame::containing_address(PhysAddr::new(addr)));
+        }
+        None
+    }
+}
+
+#[cfg(feature = "new_arch")]
+#[inline(always)]
+unsafe fn read_u32(ptr: *const u8, offset: usize) -> u32 {
+    core::ptr::read_unaligned(ptr.add(offset) as *const u32)
+}
+
+#[cfg(feature = "new_arch")]
+#[inline(always)]
+unsafe fn read_u64(ptr: *const u8, offset: usize) -> u64 {
+    core::ptr::read_unaligned(ptr.add(offset) as *const u64)
+}
+
+/// Map the kernel's physical image range into the high-half window using 4KiB pages (x86_64 API)
+#[cfg(feature = "new_arch")]
+fn map_kernel_high_half_x86<M>(mapper: &mut M, frame_alloc: &mut BootFrameAllocator, handoff: &theseus_shared::handoff::Handoff)
+where
+    M: Mapper<Size4KiB>,
+{
+    let phys_base = handoff.kernel_physical_base;
+    let phys_size = handoff.kernel_image_size;
+    if phys_base == 0 || phys_size == 0 { return; }
+
+    let pages = ((phys_size + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) as u64;
+    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE; // executable by default
+    for i in 0..pages {
+        let pa = PhysAddr::new(phys_base + i * PAGE_SIZE as u64);
+        let frame = PhysFrame::<Size4KiB>::containing_address(pa);
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(KERNEL_VIRTUAL_BASE + i * PAGE_SIZE as u64));
+        let _ = unsafe { mapper.map_to(page, frame, flags, frame_alloc) } .map(|flush| flush.flush());
+    }
+}
+
+/// Map framebuffer using x86_64 paging API (4KiB pages)
+#[cfg(feature = "new_arch")]
+fn map_framebuffer_x86<M>(mapper: &mut M, frame_alloc: &mut BootFrameAllocator, handoff: &theseus_shared::handoff::Handoff)
+where
+    M: Mapper<Size4KiB>,
+{
+    let fb_physical = handoff.gop_fb_base;
+    let fb_virtual = 0xFFFFFFFF90000000u64;
+    let fb_size = handoff.gop_fb_size;
+    let pages = ((fb_size + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) as u64;
+    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+    for i in 0..pages {
+        let pa = PhysAddr::new(fb_physical + i * PAGE_SIZE as u64);
+        let frame = PhysFrame::<Size4KiB>::containing_address(pa);
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(fb_virtual + i * PAGE_SIZE as u64));
+        // Ignore AlreadyMapped errors by simply continuing
+        let _ = unsafe { mapper.map_to(page, frame, flags, frame_alloc) } .map(|flush| flush.flush());
+    }
+}
+
+/// Map temporary heap using x86_64 paging API (4KiB pages)
+#[cfg(feature = "new_arch")]
+fn map_temporary_heap_x86<M>(mapper: &mut M, frame_alloc: &mut BootFrameAllocator, handoff: &theseus_shared::handoff::Handoff)
+where
+    M: Mapper<Size4KiB>,
+{
+    let heap_physical = handoff.temp_heap_base;
+    let heap_virtual = 0xFFFFFFFFA0000000u64;
+    let heap_size = handoff.temp_heap_size;
+    let pages = ((heap_size + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) as u64;
+    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+    for i in 0..pages {
+        let pa = PhysAddr::new(heap_physical + i * PAGE_SIZE as u64);
+        let frame = PhysFrame::<Size4KiB>::containing_address(pa);
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(heap_virtual + i * PAGE_SIZE as u64));
+        let _ = unsafe { mapper.map_to(page, frame, flags, frame_alloc) } .map(|flush| flush.flush());
+    }
+}
+
+/// Identity map first 1 GiB using 2 MiB pages with x86_64 API
+#[cfg(feature = "new_arch")]
+fn identity_map_first_1gb_x86(mapper: &mut OffsetPageTable<'static>, frame_alloc: &mut BootFrameAllocator) {
+    use x86_64::structures::paging::{PageTableFlags as F, Size2MiB, Mapper};
+    let flags = F::PRESENT | F::WRITABLE | F::GLOBAL;
+    let two_mb: u64 = 2 * 1024 * 1024;
+    let one_gb: u64 = 1024 * 1024 * 1024;
+    let mut addr: u64 = 0;
+    while addr < one_gb {
+        let page = Page::<Size2MiB>::containing_address(VirtAddr::new(addr));
+        let frame = PhysFrame::<Size2MiB>::containing_address(PhysAddr::new(addr));
+        // Safe under our invariants: we identity map known RAM, providing existing frame
+        let _ = unsafe { mapper.map_to(page, frame, flags, frame_alloc) }
+            .map(|flush| flush.flush());
+        addr += two_mb;
+    }
 }

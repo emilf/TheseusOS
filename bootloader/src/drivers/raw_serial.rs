@@ -2,7 +2,10 @@
 //! 
 //! Direct hardware access to serial ports. Fallback option when other drivers fail.
 
+#[cfg(not(feature = "new_arch"))]
 use core::arch::asm;
+#[cfg(feature = "new_arch")]
+use x86_64::instructions::port::Port;
 use theseus_shared::constants::{io_ports::com1, hardware};
 
 /// Raw Serial driver implementation
@@ -16,6 +19,21 @@ impl RawSerialDriver {
     
     /// Initialize the serial port
     pub fn init(&self) -> bool {
+        #[cfg(feature = "new_arch")]
+        unsafe {
+            // Configure COM1 using Port IO abstraction
+            let mut line_ctrl: Port<u8> = Port::new(com1::LINE_CTRL);
+            let mut int_enable: Port<u8> = Port::new(com1::INT_ENABLE);
+            let mut data: Port<u8> = Port::new(com1::DATA);
+            let mut modem_ctrl: Port<u8> = Port::new(com1::MODEM_CTRL);
+
+            line_ctrl.write(0x03u8); // 8-N-1
+            int_enable.write(0x00u8); // disable interrupts
+            data.write(hardware::COM1_BAUD_DIVISOR as u8); // baud divisor low
+            int_enable.write(0x00u8); // keep disabled
+            modem_ctrl.write(0x03u8); // DTR|RTS
+        }
+        #[cfg(not(feature = "new_arch"))]
         unsafe {
             // Configure COM1 port
             // Line Control Register: 8 data bits, no parity, 1 stop bit
@@ -42,6 +60,15 @@ impl RawSerialDriver {
     
     /// Write a single character to serial port
     fn write_char(&self, ch: u8) {
+        #[cfg(feature = "new_arch")]
+        unsafe {
+            let mut line_status: Port<u8> = Port::new(com1::LINE_STATUS);
+            let mut data: Port<u8> = Port::new(com1::DATA);
+            // Wait for THR empty
+            while (line_status.read() & 0x20) == 0 {}
+            data.write(ch);
+        }
+        #[cfg(not(feature = "new_arch"))]
         unsafe {
             // Wait for transmitter holding register to be empty
             loop {

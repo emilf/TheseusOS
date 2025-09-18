@@ -1,6 +1,8 @@
 
  * Validation function for handoff structure and panic if it smells fishy
 
+ We need to make sure to move the new linked list allocator to higher half:
+ ´Linked the global allocator to linked_list_allocator::LockedHeap under new_arch, initializing it from the bootloader’s temporary heap in initialize_heap_from_handoff. Legacy bump allocator remains active when the feature is off.´
  
  Chat about how to not use anything in lower half anymore:
  ´´´

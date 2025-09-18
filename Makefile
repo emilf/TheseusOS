@@ -16,16 +16,17 @@ OVMF_VARS_ORIG := $(OVMF_DIR)/OVMF_VARS.fd
 OVMF_VARS_RW := $(ESP_DIR)/OVMF_VARS.fd
 
 .PHONY: all clean clean-all run build-bootloader build-kernel build esp bios
+TIMEOUT ?= 20
 
 all: build esp bios
 
 build: build-bootloader build-kernel
 
 build-bootloader:
-	cargo build --package $(BOOTLOADER_PROJECT) --target $(BOOTLOADER_TARGET) --$(PROFILE)
+	cargo build --package $(BOOTLOADER_PROJECT) --target $(BOOTLOADER_TARGET) --$(PROFILE) $(if $(FEATURES),--features $(FEATURES),)
 
 build-kernel:
-	cargo build --package $(KERNEL_PROJECT) --target $(KERNEL_TARGET) --$(PROFILE)
+	cargo build --package $(KERNEL_PROJECT) --target $(KERNEL_TARGET) --$(PROFILE) $(if $(FEATURES),--features $(FEATURES),)
 
 esp: $(EFI_OUTPUT)
 
@@ -131,8 +132,8 @@ run-headed: all
 	./startQemu.sh headed
 
 run-test: all
-	@echo "Starting QEMU with 20s timeout for testing..."
-	./startQemu.sh headless 20
+	@echo "Starting QEMU with $(TIMEOUT)s timeout for testing..."
+	./startQemu.sh headless $(TIMEOUT)
 
 .PHONY: debug
 debug: all

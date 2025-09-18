@@ -74,38 +74,60 @@ impl CpuFeatures {
 /// Set up control registers for kernel mode
 pub unsafe fn setup_control_registers() {
     // Configure CR0
-    let mut cr0: u64;
-    core::arch::asm!("mov {}, cr0", out(reg) cr0);
-    
-    // Enable protected mode, paging, write protection, alignment check
-    cr0 |= CR0_PE | CR0_PG | CR0_WP | CR0_AM | CR0_NE;
-    
-    // Clear emulation bit (disable x87 emulation)
-    cr0 &= !CR0_EM;
-    
-    // Set monitor coprocessor bit
-    cr0 |= CR0_MP;
-    
-    core::arch::asm!("mov cr0, {}", in(reg) cr0);
-    
+    #[cfg(feature = "new_arch")]
+    {
+        use x86_64::registers::control::{Cr0, Cr0Flags};
+        let mut f0 = Cr0::read();
+        // Enable protected mode, paging, write protection, alignment check, numeric error
+        f0.insert(Cr0Flags::PROTECTED_MODE_ENABLE);
+        f0.insert(Cr0Flags::PAGING);
+        f0.insert(Cr0Flags::WRITE_PROTECT);
+        f0.insert(Cr0Flags::ALIGNMENT_MASK);
+        f0.insert(Cr0Flags::NUMERIC_ERROR);
+        // Clear emulation; set monitor coprocessor
+        f0.remove(Cr0Flags::EMULATE_COPROCESSOR);
+        f0.insert(Cr0Flags::MONITOR_COPROCESSOR);
+        Cr0::write(f0);
+    }
+    #[cfg(not(feature = "new_arch"))]
+    {
+        let mut cr0: u64;
+        core::arch::asm!("mov {}, cr0", out(reg) cr0);
+        // Enable protected mode, paging, write protection, alignment check
+        cr0 |= CR0_PE | CR0_PG | CR0_WP | CR0_AM | CR0_NE;
+        // Clear emulation bit (disable x87 emulation)
+        cr0 &= !CR0_EM;
+        // Set monitor coprocessor bit
+        cr0 |= CR0_MP;
+        core::arch::asm!("mov cr0, {}", in(reg) cr0);
+    }
+
     // Configure CR4
-    let mut cr4: u64;
-    core::arch::asm!("mov {}, cr4", out(reg) cr4);
-    
-    // Enable PAE, PGE, OSFXSR, OSXMMEXCPT, SMEP, SMAP
-    cr4 |= CR4_PAE | CR4_PGE | CR4_OSFXSR | CR4_OSXMMEXCPT | CR4_SMEP | CR4_SMAP;
-    
-    // Enable FSGSBASE if available
-    if has_fsgsbase() {
-        cr4 |= CR4_FSGSBASE;
+    #[cfg(feature = "new_arch")]
+    {
+        use x86_64::registers::control::{Cr4, Cr4Flags};
+        let mut f4 = Cr4::read();
+        // Enable PAE, PGE, OSFXSR, OSXMMEXCPT, SMEP, SMAP
+        f4.insert(Cr4Flags::PHYSICAL_ADDRESS_EXTENSION);
+        f4.insert(Cr4Flags::PAGE_GLOBAL);
+        f4.insert(Cr4Flags::OSFXSR);
+        f4.insert(Cr4Flags::OSXMMEXCPT_ENABLE);
+        f4.insert(Cr4Flags::SUPERVISOR_MODE_EXECUTION_PROTECTION);
+        f4.insert(Cr4Flags::SUPERVISOR_MODE_ACCESS_PREVENTION);
+        if has_fsgsbase() { f4.insert(Cr4Flags::FSGSBASE); }
+        if has_osxsave() { f4.insert(Cr4Flags::OSXSAVE); }
+        Cr4::write(f4);
     }
-    
-    // Enable OSXSAVE if available
-    if has_osxsave() {
-        cr4 |= CR4_OSXSAVE;
+    #[cfg(not(feature = "new_arch"))]
+    {
+        let mut cr4: u64;
+        core::arch::asm!("mov {}, cr4", out(reg) cr4);
+        // Enable PAE, PGE, OSFXSR, OSXMMEXCPT, SMEP, SMAP
+        cr4 |= CR4_PAE | CR4_PGE | CR4_OSFXSR | CR4_OSXMMEXCPT | CR4_SMEP | CR4_SMAP;
+        if has_fsgsbase() { cr4 |= CR4_FSGSBASE; }
+        if has_osxsave() { cr4 |= CR4_OSXSAVE; }
+        core::arch::asm!("mov cr4, {}", in(reg) cr4);
     }
-    
-    core::arch::asm!("mov cr4, {}", in(reg) cr4);
 }
 
 /// Detect CPU features using CPUID
@@ -154,47 +176,87 @@ pub unsafe fn setup_floating_point(features: &CpuFeatures) {
 /// Enable SSE
 unsafe fn enable_sse() {
     // Set CR0.EM = 0 and CR0.MP = 1
-    let mut cr0: u64;
-    core::arch::asm!("mov {}, cr0", out(reg) cr0);
-    cr0 &= !CR0_EM;
-    cr0 |= CR0_MP;
-    core::arch::asm!("mov cr0, {}", in(reg) cr0);
-    
+    #[cfg(feature = "new_arch")]
+    {
+        use x86_64::registers::control::{Cr0, Cr0Flags};
+        let mut v = Cr0::read();
+        v.remove(Cr0Flags::EMULATE_COPROCESSOR);
+        v.insert(Cr0Flags::MONITOR_COPROCESSOR);
+        Cr0::write(v);
+    }
+    #[cfg(not(feature = "new_arch"))]
+    {
+        let mut cr0: u64;
+        core::arch::asm!("mov {}, cr0", out(reg) cr0);
+        cr0 &= !CR0_EM;
+        cr0 |= CR0_MP;
+        core::arch::asm!("mov cr0, {}", in(reg) cr0);
+    }
+
     // Set CR4.OSFXSR = 1 and CR4.OSXMMEXCPT = 1
-    let mut cr4: u64;
-    core::arch::asm!("mov {}, cr4", out(reg) cr4);
-    cr4 |= CR4_OSFXSR | CR4_OSXMMEXCPT;
-    core::arch::asm!("mov cr4, {}", in(reg) cr4);
+    #[cfg(feature = "new_arch")]
+    {
+        use x86_64::registers::control::{Cr4, Cr4Flags};
+        let mut v = Cr4::read();
+        v.insert(Cr4Flags::OSFXSR);
+        v.insert(Cr4Flags::OSXMMEXCPT_ENABLE);
+        Cr4::write(v);
+    }
+    #[cfg(not(feature = "new_arch"))]
+    {
+        let mut cr4: u64;
+        core::arch::asm!("mov {}, cr4", out(reg) cr4);
+        cr4 |= CR4_OSFXSR | CR4_OSXMMEXCPT;
+        core::arch::asm!("mov cr4, {}", in(reg) cr4);
+    }
 }
 
 /// Enable AVX
 unsafe fn enable_avx() {
     // Set CR4.OSXSAVE = 1
-    let mut cr4: u64;
-    core::arch::asm!("mov {}, cr4", out(reg) cr4);
-    cr4 |= CR4_OSXSAVE;
-    core::arch::asm!("mov cr4, {}", in(reg) cr4);
-    
-    // Set XCR0 to enable AVX
-    let mut eax: u32;
-    let mut edx: u32;
-    
-    core::arch::asm!(
-        "xgetbv",
-        out("eax") eax,
-        out("edx") edx,
-        options(nomem, nostack, preserves_flags)
-    );
-    
-    // Enable X87, SSE, and AVX state
-    eax |= 0x7;
-    
-    core::arch::asm!(
-        "xsetbv",
-        in("eax") eax,
-        in("edx") edx,
-        options(nomem, nostack, preserves_flags)
-    );
+    #[cfg(feature = "new_arch")]
+    {
+        use x86_64::registers::control::{Cr4, Cr4Flags};
+        let mut v = Cr4::read();
+        v.insert(Cr4Flags::OSXSAVE);
+        Cr4::write(v);
+        // Set XCR0: enable x87, SSE, AVX
+        use x86_64::registers::xcontrol::{XCr0, XCr0Flags};
+        let mut x = XCr0::read();
+        x.insert(XCr0Flags::X87);
+        x.insert(XCr0Flags::SSE);
+        x.insert(XCr0Flags::AVX);
+        XCr0::write(x);
+    }
+    #[cfg(not(feature = "new_arch"))]
+    {
+        // Set CR4.OSXSAVE = 1
+        let mut cr4: u64;
+        core::arch::asm!("mov {}, cr4", out(reg) cr4);
+        cr4 |= CR4_OSXSAVE;
+        core::arch::asm!("mov cr4, {}", in(reg) cr4);
+        
+        // Set XCR0 to enable AVX
+        let mut eax: u32;
+        let mut edx: u32;
+        
+        core::arch::asm!(
+            "xgetbv",
+            out("eax") eax,
+            out("edx") edx,
+            options(nomem, nostack, preserves_flags)
+        );
+        
+        // Enable X87, SSE, and AVX state
+        eax |= 0x7;
+        
+        core::arch::asm!(
+            "xsetbv",
+            in("eax") eax,
+            in("edx") edx,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
 }
 
 /// Execute CPUID instruction
@@ -237,21 +299,31 @@ unsafe fn has_osxsave() -> bool {
 /// Set up Model Specific Registers (MSRs)
 pub unsafe fn setup_msrs() {
     // Set up EFER (Extended Feature Enable Register)
-    let mut efer: u64;
-    core::arch::asm!(
-        "rdmsr",
-        in("ecx") 0xC0000080u32,
-        out("eax") efer,
-        options(nomem, nostack, preserves_flags)
-    );
-    
-    // Enable SYSCALL/SYSRET (if not already enabled)
-    efer |= 0x1; // SCE (SYSCALL Enable)
-    
-    core::arch::asm!(
-        "wrmsr",
-        in("ecx") 0xC0000080u32,
-        in("eax") efer,
-        options(nomem, nostack, preserves_flags)
-    );
+    #[cfg(feature = "new_arch")]
+    {
+        use x86_64::registers::model_specific::{Efer, EferFlags};
+        let mut e = Efer::read();
+        e.insert(EferFlags::SYSTEM_CALL_EXTENSIONS);
+        unsafe { Efer::write(e); }
+    }
+    #[cfg(not(feature = "new_arch"))]
+    {
+        let mut efer: u64;
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") 0xC0000080u32,
+            out("eax") efer,
+            options(nomem, nostack, preserves_flags)
+        );
+        
+        // Enable SYSCALL/SYSRET (if not already enabled)
+        efer |= 0x1; // SCE (SYSCALL Enable)
+        
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") 0xC0000080u32,
+            in("eax") efer,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
 }

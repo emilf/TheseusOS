@@ -155,12 +155,21 @@ extern "C" {
 
 #[inline(always)]
 unsafe fn out_char_0xe9(byte: u8) {
-    core::arch::asm!(
-        "out dx, al",
-        in("dx") 0xE9u16,
-        in("al") byte,
-        options(nomem, nostack, preserves_flags)
-    );
+    #[cfg(feature = "new_arch")]
+    {
+        use x86_64::instructions::port::Port;
+        let mut port: Port<u8> = Port::new(0xE9);
+        unsafe { port.write(byte); }
+    }
+    #[cfg(not(feature = "new_arch"))]
+    {
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") 0xE9u16,
+            in("al") byte,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
 }
 
 unsafe fn print_str_0xe9(s: &str) {
@@ -221,6 +230,38 @@ pub unsafe fn validate_idt_basic() -> bool {
 
 /// Set up a basic IDT with exception handlers
 pub unsafe fn setup_idt() {
+    #[cfg(feature = "new_arch")]
+    {
+        use x86_64::{structures::idt::InterruptDescriptorTable, VirtAddr};
+
+        // Build a new IDT using existing stub handlers and load it.
+        let mut idt = alloc::boxed::Box::new(InterruptDescriptorTable::new());
+
+        // Safe because we provide valid handler addresses for our stubs.
+        unsafe {
+            idt.divide_error
+                .set_handler_addr(VirtAddr::new(isr_de_stub as usize as u64));
+            idt.breakpoint
+                .set_handler_addr(VirtAddr::new(isr_bp_stub as usize as u64));
+            idt.invalid_opcode
+                .set_handler_addr(VirtAddr::new(isr_ud_stub as usize as u64));
+            idt.double_fault
+                .set_handler_addr(VirtAddr::new(isr_de_stub as usize as u64)); // reuse DE stub for DF print+halt
+            idt.general_protection_fault
+                .set_handler_addr(VirtAddr::new(isr_gp_stub as usize as u64));
+            idt.page_fault
+                .set_handler_addr(VirtAddr::new(isr_pf_stub as usize as u64));
+        }
+
+        // Leak the IDT so it lives for 'static; required by CPU while active
+        let idt_ref: &'static InterruptDescriptorTable = alloc::boxed::Box::leak(idt);
+        idt_ref.load();
+
+        // Print and validate a few entries before testing exceptions (reuse existing helpers)
+        let _ = validate_idt_basic();
+        return;
+    }
+
     // Install handlers by computing addresses of inline labels at runtime (no relocations)
     let ent0 = &IDT[0] as *const IdtEntry as u64 as *mut u8;
     let ent3 = &IDT[3] as *const IdtEntry as u64 as *mut u8;
@@ -554,7 +595,14 @@ pub unsafe fn setup_idt() {
 /// Disable all interrupts including NMI
 pub unsafe fn disable_all_interrupts() {
     // Disable regular interrupts (CLI)
-    core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+    #[cfg(feature = "new_arch")]
+    {
+        x86_64::instructions::interrupts::disable();
+    }
+    #[cfg(not(feature = "new_arch"))]
+    {
+        core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+    }
     
     // Disable NMI
     disable_nmi();
@@ -568,13 +616,22 @@ pub unsafe fn disable_all_interrupts() {
 
 /// Disable Non-Maskable Interrupts (NMI)
 unsafe fn disable_nmi() {
-    // Read from CMOS register to disable NMI
-    core::arch::asm!(
-        "out dx, al",
-        in("dx") 0x70u16,
-        in("al") 0x80u8,
-        options(nomem, nostack, preserves_flags)
-    );
+    // Write to CMOS index port with NMI disable bit
+    #[cfg(feature = "new_arch")]
+    {
+        use x86_64::instructions::port::Port;
+        let mut port: Port<u8> = Port::new(0x70);
+        unsafe { port.write(0x80u8); }
+    }
+    #[cfg(not(feature = "new_arch"))]
+    {
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") 0x70u16,
+            in("al") 0x80u8,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
 }
 
 /// Disable local APIC interrupts
@@ -593,21 +650,34 @@ unsafe fn disable_local_apic() {
 
 /// Mask all PIC interrupts
 unsafe fn mask_pic_interrupts() {
-    // Mask all interrupts on master PIC
-    core::arch::asm!(
-        "out dx, al",
-        in("dx") 0x21u16,
-        in("al") 0xFFu8,
-        options(nomem, nostack, preserves_flags)
-    );
-    
-    // Mask all interrupts on slave PIC
-    core::arch::asm!(
-        "out dx, al",
-        in("dx") 0xA1u16,
-        in("al") 0xFFu8,
-        options(nomem, nostack, preserves_flags)
-    );
+    #[cfg(feature = "new_arch")]
+    {
+        use x86_64::instructions::port::Port;
+        let mut master: Port<u8> = Port::new(0x21);
+        let mut slave: Port<u8> = Port::new(0xA1);
+        unsafe {
+            master.write(0xFFu8);
+            slave.write(0xFFu8);
+        }
+    }
+    #[cfg(not(feature = "new_arch"))]
+    {
+        // Mask all interrupts on master PIC
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") 0x21u16,
+            in("al") 0xFFu8,
+            options(nomem, nostack, preserves_flags)
+        );
+        
+        // Mask all interrupts on slave PIC
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") 0xA1u16,
+            in("al") 0xFFu8,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
 }
 
 /// Check if APIC is available
@@ -660,7 +730,27 @@ unsafe fn write_apic_register(apic_base: u64, offset: u32, value: u32) {
 /// Enable interrupts (for future use)
 #[allow(dead_code)]
 pub unsafe fn enable_interrupts() {
-    core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+    #[cfg(feature = "new_arch")]
+    {
+        x86_64::instructions::interrupts::enable();
+    }
+    #[cfg(not(feature = "new_arch"))]
+    {
+        core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+    }
+}
+
+/// Trigger a breakpoint exception (#BP)
+#[inline(always)]
+pub fn trigger_breakpoint() {
+    #[cfg(feature = "new_arch")]
+    {
+        x86_64::instructions::interrupts::int3();
+    }
+    #[cfg(not(feature = "new_arch"))]
+    unsafe {
+        core::arch::asm!("int3", options(nomem, nostack, preserves_flags));
+    }
 }
 
 /// Check if interrupts are enabled

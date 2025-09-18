@@ -68,9 +68,84 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64) {
     unsafe {
         crate::display::kernel_write_line("  [vm] before new");
         let mm = MemoryManager::new(_handoff);
+        // Load CR3 earlier using the PML4 phys from the new manager
         crate::display::kernel_write_line("  [vm] after new; loading CR3");
         activate_virtual_memory(mm.page_table_root());
         crate::display::kernel_write_line("  [vm] after CR3");
+
+        #[cfg(feature = "new_arch")]
+        {
+            use x86_64::{VirtAddr, PhysAddr, structures::paging::{OffsetPageTable, PageTable as X86PageTable, Translate, Page, PhysFrame, Size4KiB, PageTableFlags, Mapper}};
+            use crate::memory::BootFrameAllocator;
+            // Initialize mapper after CR3 load using identity phys-mem offset (0)
+            let l4: &mut X86PageTable = &mut *(mm.pml4 as *mut _ as *mut X86PageTable);
+            let mapper = OffsetPageTable::new(l4, VirtAddr::new(0));
+            let _ = mapper.translate_addr(VirtAddr::new(KERNEL_VIRTUAL_BASE));
+
+            // Gradually migrate framebuffer mapping using the mapper (idempotent)
+            if _handoff.gop_fb_base != 0 && _handoff.gop_fb_size != 0 {
+                let mut mapper = OffsetPageTable::new(l4, VirtAddr::new(0));
+                let mut frame_alloc = BootFrameAllocator::from_handoff(_handoff);
+                let fb_pa = _handoff.gop_fb_base;
+                let fb_va = 0xFFFFFFFF90000000u64;
+                let pages = ((_handoff.gop_fb_size + 4095) / 4096) as u64;
+                let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+                let mut mapped_count: u64 = 0;
+                for i in 0..pages {
+                    let pa = PhysAddr::new(fb_pa + i * 4096);
+                    let frame = PhysFrame::<Size4KiB>::containing_address(pa);
+                    let page = Page::<Size4KiB>::containing_address(VirtAddr::new(fb_va + i * 4096));
+                    match mapper.map_to(page, frame, flags, &mut frame_alloc) {
+                        Ok(flush) => { flush.flush(); mapped_count += 1; },
+                        Err(_e) => { /* Already mapped or parent huge page; keep legacy mapping */ }
+                    }
+                }
+                let _ = mapped_count;
+            }
+
+            // Migrate temporary heap mapping via mapper (idempotent)
+            // Migrate kernel image mapping via mapper (idempotent)
+            {
+                let mut mapper = OffsetPageTable::new(l4, VirtAddr::new(0));
+                let mut frame_alloc = BootFrameAllocator::from_handoff(_handoff);
+                let phys_base = _handoff.kernel_physical_base;
+                let size = _handoff.kernel_image_size;
+                if phys_base != 0 && size != 0 {
+                    let pages = ((size + 4095) / 4096) as u64;
+                    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE; // executable
+                    let mut mapped_count: u64 = 0;
+                    for i in 0..pages {
+                        let pa = PhysAddr::new(phys_base + i * 4096);
+                        let frame = PhysFrame::<Size4KiB>::containing_address(pa);
+                        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(crate::memory::KERNEL_VIRTUAL_BASE + i * 4096));
+                        match mapper.map_to(page, frame, flags, &mut frame_alloc) {
+                            Ok(flush) => { flush.flush(); mapped_count += 1; },
+                            Err(_e) => { /* Already mapped; fine */ }
+                        }
+                    }
+                    let _ = mapped_count;
+                }
+            }
+            if _handoff.temp_heap_base != 0 && _handoff.temp_heap_size != 0 {
+                let mut mapper = OffsetPageTable::new(l4, VirtAddr::new(0));
+                let mut frame_alloc = BootFrameAllocator::from_handoff(_handoff);
+                let heap_pa = _handoff.temp_heap_base;
+                let heap_va = 0xFFFFFFFFA0000000u64;
+                let pages = ((_handoff.temp_heap_size + 4095) / 4096) as u64;
+                let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+                let mut mapped_count: u64 = 0;
+                for i in 0..pages {
+                    let pa = PhysAddr::new(heap_pa + i * 4096);
+                    let frame = PhysFrame::<Size4KiB>::containing_address(pa);
+                    let page = Page::<Size4KiB>::containing_address(VirtAddr::new(heap_va + i * 4096));
+                    match mapper.map_to(page, frame, flags, &mut frame_alloc) {
+                        Ok(flush) => { flush.flush(); mapped_count += 1; },
+                        Err(_e) => { /* Already mapped; fine */ }
+                    }
+                }
+                let _ = mapped_count;
+            }
+        }
     }
     crate::display::kernel_write_line("  ✓ Paging enabled (identity + high-half kernel)");
     

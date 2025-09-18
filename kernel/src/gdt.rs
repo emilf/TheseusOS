@@ -4,6 +4,8 @@
 //! It creates the necessary segment descriptors for kernel and user mode operation.
 
 use core::mem::size_of;
+#[cfg(feature = "new_arch")]
+use alloc::boxed::Box;
 
 /// GDT Entry structure
 #[repr(C, packed)]
@@ -100,7 +102,38 @@ const USER_DS: u16 = 0x20;   // Entry 4 (user data)
 
 /// Set up and load the GDT
 pub unsafe fn setup_gdt() {
-    // Create GDT pointer using raw pointer to avoid static_mut_refs warning
+    #[cfg(feature = "new_arch")]
+    {
+        use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable};
+        use x86_64::structures::tss::TaskStateSegment;
+        use x86_64::instructions::segmentation::{CS, DS, ES, FS, GS};
+        use x86_64::instructions::segmentation::Segment;
+        use x86_64::structures::gdt::SegmentSelector;
+
+        // Build a minimal GDT: kernel code + kernel data, optionally TSS later
+        let mut gdt = GlobalDescriptorTable::new();
+        let kernel_code: SegmentSelector = gdt.add_entry(Descriptor::kernel_code_segment());
+        let kernel_data: SegmentSelector = gdt.add_entry(Descriptor::kernel_data_segment());
+
+        // Leak to static so it lives while active
+        let gdt_ref: &'static GlobalDescriptorTable = alloc::boxed::Box::leak(alloc::boxed::Box::new(gdt));
+        gdt_ref.load();
+
+        // Reload segment registers
+        unsafe {
+            // Set data segments to null selector in long mode is allowed, but we set to kernel data for clarity
+            DS::set_reg(kernel_data);
+            ES::set_reg(kernel_data);
+            FS::set_reg(kernel_data);
+            GS::set_reg(kernel_data);
+            // Reload CS using far return via CS::set_reg
+            unsafe { CS::set_reg(kernel_code) };
+            // SS is typically left alone in long mode unless needed
+        }
+        return;
+    }
+
+    // Legacy path: Create GDT pointer using raw pointer to avoid static_mut_refs warning
     let gdt_ptr = core::ptr::addr_of!(GDT) as *const GdtEntry;
     let gdt_slice = core::slice::from_raw_parts(gdt_ptr, 6);
     let gdt_ptr = GdtPointer::new(gdt_slice);

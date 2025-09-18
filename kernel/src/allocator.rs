@@ -16,11 +16,20 @@ static mut HEAP_INITIALIZED: bool = false;
 /// This allocator uses memory pre-allocated by the bootloader and stored in the handoff structure.
 /// It's designed for use during kernel initialization before proper page tables and memory management
 /// are set up. The allocator provides a simple bump allocation strategy without deallocation support.
+#[cfg(not(feature = "new_arch"))]
 #[global_allocator]
 pub static ALLOCATOR: BumpAllocator = BumpAllocator;
 
+#[cfg(feature = "new_arch")]
+use linked_list_allocator::LockedHeap;
+
+#[cfg(feature = "new_arch")]
+#[global_allocator]
+static ALLOCATOR_LINKED: LockedHeap = LockedHeap::empty();
+
 pub struct BumpAllocator;
 
+#[cfg(not(feature = "new_arch"))]
 unsafe impl core::alloc::GlobalAlloc for BumpAllocator {
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
         // Initialize heap if not already done
@@ -65,6 +74,27 @@ unsafe impl core::alloc::GlobalAlloc for BumpAllocator {
 /// The bootloader allocates a chunk of safe memory and stores its address and size in the
 /// handoff structure. If no temporary heap is available, falls back to a fixed safe region.
 pub fn initialize_heap_from_handoff(handoff_addr: u64) {
+    #[cfg(feature = "new_arch")]
+    {
+        // Initialize linked list allocator using bootloader-provided temporary heap.
+        if handoff_addr == 0 {
+            crate::display::kernel_write_line("  No handoff structure provided for heap");
+            return;
+        }
+        unsafe {
+            let handoff_ptr = handoff_addr as *const Handoff;
+            let handoff = &*handoff_ptr;
+            if handoff.temp_heap_base != 0 && handoff.temp_heap_size != 0 {
+                crate::display::kernel_write_line("  Initializing linked heap from temp heap");
+                ALLOCATOR_LINKED.lock().init(handoff.temp_heap_base as *mut u8, handoff.temp_heap_size as usize);
+            } else {
+                crate::display::kernel_write_line("  No temp heap available for linked allocator; skipping init");
+            }
+        }
+        return;
+    }
+
+    #[cfg(not(feature = "new_arch"))]
     if handoff_addr == 0 {
         crate::display::kernel_write_line("  No handoff structure provided, using fallback heap");
         unsafe {
@@ -73,6 +103,7 @@ pub fn initialize_heap_from_handoff(handoff_addr: u64) {
         return;
     }
     
+    #[cfg(not(feature = "new_arch"))]
     unsafe {
         let handoff_ptr = handoff_addr as *const Handoff;
         let handoff = &*handoff_ptr;
@@ -96,6 +127,7 @@ pub fn initialize_heap_from_handoff(handoff_addr: u64) {
 }
 
 /// Initialize heap from memory map in handoff structure (called by allocator)
+#[cfg(not(feature = "new_arch"))]
 unsafe fn init_heap_from_memory_map() {
     // This is called by the allocator if heap is not initialized
     // We'll use a fallback approach
@@ -103,6 +135,7 @@ unsafe fn init_heap_from_memory_map() {
 }
 
 /// Fallback heap initialization using fixed safe memory region
+#[cfg(not(feature = "new_arch"))]
 unsafe fn init_heap_fallback() {
     // Use a safe memory region starting at 1MB
     // This is typically safe conventional memory
