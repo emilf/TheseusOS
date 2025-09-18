@@ -299,6 +299,7 @@ pub fn collect_loaded_image_path() -> bool {
 pub fn finalize_handoff_structure() {
     write_line("Finalizing handoff structure...");
     unsafe {
+        // No fallback defaults here; kernel relies on accurate values
         HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
     }
     write_line(&format!("✓ Handoff structure size: {} bytes", core::mem::size_of::<Handoff>()));
@@ -351,6 +352,7 @@ pub fn finalize_handoff_structure() {
 pub unsafe fn jump_to_kernel_with_handoff(physical_entry_point: u64, handoff_ptr: *const Handoff) {
     // Copy handoff into a persistent LOADER_DATA buffer and pass its physical address
     let handoff_size = core::mem::size_of::<Handoff>() as u64;
+    write_line(&format!("Allocating persistent handoff buffer, size {} (0x{:x})", handoff_size, handoff_size));
     let handoff_region = match crate::memory::allocate_memory(handoff_size, MemoryType::LOADER_DATA) {
         Ok(r) => r,
         Err(e) => {
@@ -359,26 +361,33 @@ pub unsafe fn jump_to_kernel_with_handoff(physical_entry_point: u64, handoff_ptr
         }
     };
     let handoff_phys = handoff_region.physical_address;
+    write_line(&format!("Allocated handoff buffer at phys 0x{:016x}", handoff_phys));
+
+    write_line(&format!("Copying handoff from src {:p} to phys 0x{:016x}", handoff_ptr, handoff_phys));
     core::ptr::copy_nonoverlapping(handoff_ptr as *const u8, handoff_phys as *mut u8, handoff_size as usize);
 
+    // Debug: read back size field from the freshly copied structure
+    let copied_size = unsafe { *(handoff_phys as *const u32) };
+    write_line(&format!("Copied HANDOFF.size readback: {} (0x{:08x})", copied_size, copied_size));
+
+    // Exit boot services before transferring control to the kernel
     write_line("Exiting boot services before kernel handoff...");
-    
-    // Exit boot services using uefi-rs
-    // The function takes an optional memory type and returns the memory map
     let _memory_map = unsafe { uefi::boot::exit_boot_services(None) };
-    // Reflect reality in handoff
-    unsafe { (* (handoff_phys as *mut Handoff)).boot_services_exited = 1; }
-    write_line("✓ Boot services exited successfully");
-    
-    write_line("Jumping to kernel...");
-    
-    // Cast the physical entry point to a function pointer that takes handoff address
-    // The kernel entry point should accept the handoff structure address as a parameter
-    let kernel_entry: extern "C" fn(handoff_addr: u64) -> ! = core::mem::transmute(physical_entry_point);
-    
-    // Jump to the kernel with the handoff structure address
-    // Note: This will never return as the kernel entry point is marked as `-> !`
-    kernel_entry(handoff_phys as u64);
+
+    // Mark boot services exited in the copied handoff
+    unsafe { (*(handoff_phys as *mut Handoff)).boot_services_exited = 1; }
+
+    // Do NOT log after ExitBootServices; firmware services are gone
+    // Jump to the kernel entry point using SysV ABI: first arg in RDI
+    unsafe {
+        core::arch::asm!(
+            "mov rdi, {handoff}",
+            "jmp {entry}",
+            handoff = in(reg) handoff_phys as u64,
+            entry = in(reg) physical_entry_point,
+            options(noreturn)
+        );
+    }
 }
 
 

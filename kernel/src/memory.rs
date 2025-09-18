@@ -127,8 +127,8 @@ impl MemoryManager {
         // Identity map first 1 GiB using 2MiB pages to cover kernel physical area
         identity_map_first_1gb_2mb(pml4);
 
-        // Map entire first 1 GiB of physical memory into the high-half window using 2MiB pages
-        map_high_half_1gb_2mb(pml4);
+        // Map the kernel image physical range into the high-half at KERNEL_VIRTUAL_BASE using 4KiB pages
+        map_kernel_high_half_4k(pml4, handoff);
 
         // Map framebuffer and temp heap if available (4KiB pages are fine here)
         if handoff.gop_fb_base != 0 {
@@ -198,6 +198,46 @@ unsafe fn map_high_half_1gb_2mb(pml4: &mut PageTable) {
         let va = virt_base + offset;
         map_2mb_page(pml4, va, pa, flags);
         offset += two_mb;
+    }
+}
+
+/// Map the kernel's physical image range into the high-half window using 2MiB pages
+unsafe fn map_kernel_high_half_2mb(pml4: &mut PageTable, handoff: &theseus_shared::handoff::Handoff) {
+    let two_mb: u64 = 2 * 1024 * 1024;
+    let phys_base = handoff.kernel_physical_base;
+    let phys_size = handoff.kernel_image_size;
+    if phys_base == 0 || phys_size == 0 { return; }
+
+    // Align physical range to 2MiB boundaries
+    let phys_start = phys_base & !(two_mb - 1);
+    let phys_end = (phys_base + phys_size + two_mb - 1) & !(two_mb - 1);
+
+    // Compute the corresponding virtual start so that phys_base maps to KERNEL_VIRTUAL_BASE
+    let va_start = KERNEL_VIRTUAL_BASE.wrapping_sub(phys_base.wrapping_sub(phys_start));
+
+    let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL; // executable (no NX)
+    let mut pa = phys_start;
+    let mut va = va_start;
+    while pa < phys_end {
+        map_2mb_page(pml4, va, pa, flags);
+        pa += two_mb;
+        va += two_mb;
+    }
+}
+
+/// Map the kernel's physical image range into the high-half window using 4KiB pages
+unsafe fn map_kernel_high_half_4k(pml4: &mut PageTable, handoff: &theseus_shared::handoff::Handoff) {
+    let phys_base = handoff.kernel_physical_base;
+    let phys_size = handoff.kernel_image_size;
+    if phys_base == 0 || phys_size == 0 { return; }
+
+    let pages: u64 = (phys_size + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64;
+    let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL; // executable
+
+    for i in 0..pages {
+        let pa = phys_base + i * PAGE_SIZE as u64;
+        let va = KERNEL_VIRTUAL_BASE + i * PAGE_SIZE as u64;
+        map_page(pml4, va, pa, flags);
     }
 }
 

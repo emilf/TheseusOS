@@ -48,7 +48,14 @@ pub fn handoff_ref() -> &'static Handoff {
 /// Returns Ok(()) if all checks pass, otherwise Err(message) describing the issue.
 pub fn validate_handoff(h: &Handoff) -> Result<(), &'static str> {
     // Expected struct size and version
-    if h.size != core::mem::size_of::<Handoff>() as u32 {
+    let expected_size = core::mem::size_of::<Handoff>() as u32;
+    crate::display::kernel_write_line("  Debug: handoff.size = "); 
+    theseus_shared::print_hex_u64_0xe9!(h.size as u64);
+    crate::display::kernel_write_line(" expected = "); 
+    theseus_shared::print_hex_u64_0xe9!(expected_size as u64);
+    crate::display::kernel_write_line("\n");
+    
+    if h.size != expected_size {
         return Err("handoff.size does not match Handoff struct size");
     }
     if h.handoff_version == 0 {

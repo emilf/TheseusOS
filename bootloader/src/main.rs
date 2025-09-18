@@ -195,12 +195,14 @@ fn efi_main() -> Status {
                     HANDOFF.kernel_physical_base = kernel_physical_base;
                     HANDOFF.kernel_virtual_entry = kernel_virtual_entry;
                     HANDOFF.kernel_virtual_base = 0xffffffff80000000; // Virtual base
-                    HANDOFF.kernel_image_size = kernel_image_size;
+                    let aligned_img_size = (kernel_image_size + 0xFFF) & !0xFFF;
+                    HANDOFF.kernel_image_size = aligned_img_size;
                     HANDOFF.boot_services_exited = 0; // set just before handoff
                     
                     // Ensure handoff structure is properly initialized
                     HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
                     write_line(&format!("Handoff structure size set to: {} bytes", core::mem::size_of::<Handoff>()));
+                    write_line(&format!("Kernel image span: {} -> aligned to {} bytes", kernel_image_size, aligned_img_size));
                 }
                 
                 write_line("✓ All system information collected, preparing to exit boot services...");

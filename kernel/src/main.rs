@@ -40,7 +40,7 @@ mod panic;
 
 use allocator::initialize_heap_from_handoff;
 use handoff::{set_handoff_pointers, validate_handoff};
-use display::{kernel_write_line, display_handoff_info};
+use display::{kernel_write_line};
 use environment::setup_kernel_environment;
 // use boot_services::exit_boot_services; // Not needed - bootloader handles this
 
@@ -79,6 +79,8 @@ pub extern "C" fn kernel_main(handoff_addr: u64) -> ! {
             
             if handoff.size > 0 {
                 kernel_write_line("Handoff structure found");
+                // Dump full handoff for debugging; set second arg to false to disable raw bytes
+                crate::display::dump_handoff(handoff, false);
                 // Sanity-check critical fields to fail-fast on malformed handoff
                 match validate_handoff(handoff) {
                     Ok(()) => kernel_write_line("Handoff validation passed"),
@@ -89,11 +91,11 @@ pub extern "C" fn kernel_main(handoff_addr: u64) -> ! {
                     }
                 }
                 
-                // Display system information from handoff
-                display_handoff_info(handoff);
+                // Display system information from handoff (kept optional)
+                // display_handoff_info(handoff);
                 
                 // Set up complete kernel environment (boot services have been exited)
-                setup_kernel_environment(handoff);
+                setup_kernel_environment(handoff, handoff.kernel_physical_base);
                 
             } else {
                 kernel_write_line("ERROR: Handoff structure has invalid size");

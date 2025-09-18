@@ -9,6 +9,29 @@ use crate::gdt::setup_gdt;
 use crate::cpu::{setup_control_registers, detect_cpu_features, setup_floating_point, setup_msrs};
 use crate::memory::{MemoryManager, activate_virtual_memory, KERNEL_VIRTUAL_BASE};
 
+unsafe extern "C" fn after_high_half_entry() -> ! {
+    // Reinstall IDT and continue setup now that we're in high-half
+    setup_idt();
+    crate::display::kernel_write_line("  IDT installed");
+    crate::display::kernel_write_line("  Detecting CPU features...");
+    let features = detect_cpu_features();
+    crate::display::kernel_write_line("  CPU features detected");
+    crate::display::kernel_write_line("  Setting up floating point...");
+    setup_floating_point(&features);
+    crate::display::kernel_write_line("  Floating point setup complete");
+    crate::display::kernel_write_line("  Setting up MSRs...");
+    setup_msrs();
+    crate::display::kernel_write_line("  MSR setup complete");
+    crate::display::kernel_write_line("  ✓ CPU features configured");
+    
+    crate::display::kernel_write_line("=== Kernel environment setup complete ===");
+    crate::display::kernel_write_line("Kernel environment test completed successfully");
+    
+    // Exit QEMU for now; replace with scheduler/idle loop later
+    theseus_shared::qemu_exit_ok!();
+    loop {}
+}
+
 /// Set up complete kernel environment (correct order)
 /// 
 /// This function performs the setup sequence in the correct order to establish kernel control:
@@ -18,7 +41,7 @@ use crate::memory::{MemoryManager, activate_virtual_memory, KERNEL_VIRTUAL_BASE}
 /// 4. Configure control registers
 /// 5. Set up CPU features
 /// 6. Test basic operations
-pub fn setup_kernel_environment(_handoff: &Handoff) {
+pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64) {
     crate::display::kernel_write_line("=== Setting up Kernel Environment ===");
     
     // 1. Disable all interrupts first (including NMI)
@@ -58,82 +81,45 @@ pub fn setup_kernel_environment(_handoff: &Handoff) {
     crate::display::kernel_write_line("  [hh] preparing jump to high-half...");
     // Compute addresses and verify bytes before jumping to high-half
     let virt_base: u64 = KERNEL_VIRTUAL_BASE;
+    let phys_base: u64 = kernel_physical_base;
     let rip_now: u64; unsafe { core::arch::asm!("lea {}, [rip + 0]", out(reg) rip_now, options(nostack)); }
     if rip_now >= virt_base {
         crate::display::kernel_write_line("  [hh] already in high-half, skipping jump\n");
     } else {
-        let target: u64 = virt_base.wrapping_add(rip_now);
-        // Dump debug info and compare 8 bytes at low_rip vs target
-        crate::display::kernel_write_line("  hh dbg: low_rip="); theseus_shared::print_hex_u64_0xe9!(rip_now);
+        // Prefer the established virt<->phys offset from memory module
+        let virt_off = crate::memory::virt_offset() as u64; // virt - phys
+        // Compute target as the high-half address of our dedicated continuation function
+        let cont_low: u64 = after_high_half_entry as usize as u64;
+        let target: u64 = cont_low.wrapping_add(virt_off);
+        let offset = rip_now.wrapping_sub(phys_base);
+        // Dump debug info and compare 8 bytes at low_rip vs target (use current rip for consistency)
+        crate::display::kernel_write_line("  hh dbg: phys_base="); theseus_shared::print_hex_u64_0xe9!(phys_base);
+        crate::display::kernel_write_line(" low_rip="); theseus_shared::print_hex_u64_0xe9!(rip_now);
+        crate::display::kernel_write_line(" offset="); theseus_shared::print_hex_u64_0xe9!(offset);
         crate::display::kernel_write_line(" virt_base="); theseus_shared::print_hex_u64_0xe9!(virt_base);
         crate::display::kernel_write_line(" target="); theseus_shared::print_hex_u64_0xe9!(target); crate::display::kernel_write_line("\n");
         let low_q: u64 = unsafe { core::ptr::read_volatile(rip_now as *const u64) };
-        let hi_q: u64  = unsafe { core::ptr::read_volatile(target as *const u64) };
+        let hi_q: u64  = unsafe { core::ptr::read_volatile((rip_now.wrapping_add(virt_off)) as *const u64) };
         crate::display::kernel_write_line("  hh dbg: low_q="); theseus_shared::print_hex_u64_0xe9!(low_q);
         crate::display::kernel_write_line(" hi_q="); theseus_shared::print_hex_u64_0xe9!(hi_q);
         crate::display::kernel_write_line(if low_q == hi_q { " equal\n" } else { " DIFF\n" });
         if low_q == hi_q {
             unsafe { core::arch::asm!("jmp rax", in("rax") target, options(noreturn)); }
         } else {
-            crate::display::kernel_write_line("  hh dbg: ABORT high-half jump due to mismatch\n");
+            // Provide a clear error message using our debug macros before panicking
+            theseus_shared::qemu_println!("PANIC: High-half jump verification failed (bytes mismatch)");
+            theseus_shared::qemu_print!("  phys_base="); theseus_shared::print_hex_u64_0xe9!(phys_base); theseus_shared::qemu_println!("");
+            theseus_shared::qemu_print!("  low_rip=");   theseus_shared::print_hex_u64_0xe9!(rip_now);   theseus_shared::qemu_println!("");
+            theseus_shared::qemu_print!("  offset=");    theseus_shared::print_hex_u64_0xe9!(offset);    theseus_shared::qemu_println!("");
+            theseus_shared::qemu_print!("  virt_base="); theseus_shared::print_hex_u64_0xe9!(virt_base); theseus_shared::qemu_println!("");
+            theseus_shared::qemu_print!("  target=");    theseus_shared::print_hex_u64_0xe9!(target);    theseus_shared::qemu_println!("");
+            theseus_shared::qemu_print!("  low_q=");     theseus_shared::print_hex_u64_0xe9!(low_q);     theseus_shared::qemu_println!("");
+            theseus_shared::qemu_print!("  hi_q=");      theseus_shared::print_hex_u64_0xe9!(hi_q);      theseus_shared::qemu_println!("");
+            panic!("High-half jump verification failed: bytes mismatch at target");
         }
     }
 
-    unsafe { setup_idt(); }
-    crate::display::kernel_write_line("  IDT installed");
-    crate::display::kernel_write_line("  Detecting CPU features...");
-    unsafe {
-        let features = detect_cpu_features();
-        crate::display::kernel_write_line("  CPU features detected");
-        crate::display::kernel_write_line("  Setting up floating point...");
-        setup_floating_point(&features);
-        crate::display::kernel_write_line("  Floating point setup complete");
-        crate::display::kernel_write_line("  Setting up MSRs...");
-        setup_msrs();
-        crate::display::kernel_write_line("  MSR setup complete");
-    }
-    crate::display::kernel_write_line("  ✓ CPU features configured");
-    
-    crate::display::kernel_write_line("=== Kernel environment setup complete ===");
-    crate::display::kernel_write_line("Kernel environment test completed successfully");
-    
-    // For testing interrupts: trigger #DE, then #GP, then #PF in separate runs
-    #[allow(unreachable_code)] unsafe {
-        // Select which to trigger by changing this constant index (0=DE,1=GP,2=PF)
-        const WHICH: u8 = 3;
-        if WHICH == 0 { // #BP via int3
-            crate::display::kernel_write_line("Triggering #BP test (int3)...");
-            core::arch::asm!(
-                "int3",
-                options(noreturn)
-            );
-        } else if WHICH == 1 { // #UD via ud2
-            crate::display::kernel_write_line("Triggering #UD test (ud2)...");
-            core::arch::asm!(
-                "ud2",
-                options(noreturn)
-            );
-        } else if WHICH == 2 { // #GP: load invalid segment selector into DS
-            core::arch::asm!(
-                "mov ax, 0xFFFF",
-                "mov ds, ax",
-                options(noreturn)
-            );
-        } else if WHICH == 3 { // #DE: divide by zero
-            crate::display::kernel_write_line("Triggering #DE test (divide by zero)...");
-            core::arch::asm!(
-                "xor rax, rax",
-                "mov rdx, 1",
-                "div rax",
-                options(noreturn)
-            );
-        } else { // #PF: access unmapped VA
-            crate::display::kernel_write_line("Triggering #PF test (read from 0x50000000)...");
-            core::arch::asm!(
-                "mov rax, 0x50000000",
-                "mov rax, [rax]",
-                options(noreturn)
-            );
-        }
-    }
+    // Unreachable if jump succeeds; if we get here, panic to avoid continuing in low-half
+    theseus_shared::qemu_println!("PANIC: High-half jump did not transfer control");
+    panic!("High-half jump did not transfer control");
 }
