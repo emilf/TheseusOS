@@ -91,8 +91,11 @@ static GDT: [GdtEntry; 6] = [
 
 /// Selectors
 pub const KERNEL_CS: u16 = 0x08; // Entry 1 (kernel code)
+#[allow(dead_code)]
 const KERNEL_DS: u16 = 0x10; // Entry 2 (kernel data)
+#[allow(dead_code)]
 const USER_CS: u16 = 0x18;   // Entry 3 (user code)
+#[allow(dead_code)]
 const USER_DS: u16 = 0x20;   // Entry 4 (user data)
 
 /// Set up and load the GDT

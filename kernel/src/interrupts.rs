@@ -21,6 +21,7 @@ impl IdtEntry {
         Self { offset_low: 0, selector: 0, ist: 0, type_attr: 0, offset_mid: 0, offset_high: 0, zero: 0 }
     }
 
+    #[allow(dead_code)]
     fn set_handler_addr(&mut self, addr: u64) {
         self.offset_low = addr as u16;
         self.selector = super::gdt::KERNEL_CS as u16;
@@ -143,6 +144,7 @@ isr_bp_stub:
     jmp .Lhang_bp
 "#);
 
+#[allow(dead_code)]
 extern "C" {
     fn isr_de_stub();
     fn isr_gp_stub();
@@ -165,7 +167,7 @@ unsafe fn print_str_0xe9(s: &str) {
     for b in s.bytes() { out_char_0xe9(b); }
 }
 
-unsafe fn print_hex_u64_0xe9(mut v: u64) {
+unsafe fn print_hex_u64_0xe9(v: u64) {
     out_char_0xe9(b'0');
     out_char_0xe9(b'x');
     for i in (0..16).rev() {
@@ -537,8 +539,9 @@ pub unsafe fn setup_idt() {
     ); }
 
     let idt_ptr = IdtPointer {
-        limit: (core::mem::size_of_val(&IDT) - 1) as u16,
-        base: &IDT as *const _ as u64,
+        // Avoid taking a reference to a mutable static
+        limit: (core::mem::size_of::<[IdtEntry; 256]>() - 1) as u16,
+        base: core::ptr::addr_of!(IDT) as u64,
     };
     core::arch::asm!("lidt [{}]", in(reg) &idt_ptr, options(readonly, nostack, preserves_flags));
 
@@ -655,11 +658,13 @@ unsafe fn write_apic_register(apic_base: u64, offset: u32, value: u32) {
 }
 
 /// Enable interrupts (for future use)
+#[allow(dead_code)]
 pub unsafe fn enable_interrupts() {
     core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
 }
 
 /// Check if interrupts are enabled
+#[allow(dead_code)]
 pub fn interrupts_enabled() -> bool {
     let flags: u64;
     unsafe {

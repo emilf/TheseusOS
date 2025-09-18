@@ -1,4 +1,10 @@
 //! Memory management module
+//!
+//! Early paging and simple identity/high-half mappings used during kernel bring-up.
+//! Many helpers and constants are defined for future expansion and may be unused
+//! temporarily while the VM system is still being built out.
+#![allow(dead_code)]
+#![allow(static_mut_refs)]
 //! 
 //! This module provides page table creation, virtual memory mapping,
 //! and memory management for the kernel.

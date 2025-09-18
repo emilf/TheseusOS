@@ -562,7 +562,7 @@ fn apply_relocations(kernel_info: &KernelInfo, kernel_data: &[u8], physical_base
             if e_phoff != 0 && e_phentsize >= 56 && e_phoff + e_phnum * e_phentsize <= kernel_data.len() {
                 // Find PT_DYNAMIC (type=2)
                 let mut dyn_off = 0usize;
-                let mut dyn_vaddr = 0u64;
+                let mut _dyn_vaddr = 0u64;
                 let mut dyn_size = 0u64;
                 for i in 0..e_phnum {
                     let off = e_phoff + i * e_phentsize;
@@ -574,7 +574,7 @@ fn apply_relocations(kernel_info: &KernelInfo, kernel_data: &[u8], physical_base
                             kernel_data[off+8], kernel_data[off+9], kernel_data[off+10], kernel_data[off+11],
                             kernel_data[off+12], kernel_data[off+13], kernel_data[off+14], kernel_data[off+15],
                         ]) as usize; // p_offset
-                        dyn_vaddr = u64::from_le_bytes([
+                        _dyn_vaddr = u64::from_le_bytes([
                             kernel_data[off+16], kernel_data[off+17], kernel_data[off+18], kernel_data[off+19],
                             kernel_data[off+20], kernel_data[off+21], kernel_data[off+22], kernel_data[off+23],
                         ]);
@@ -624,7 +624,7 @@ fn apply_relocations(kernel_info: &KernelInfo, kernel_data: &[u8], physical_base
                     let v2p = |va: u64| -> u64 { (va as i64 + (physical_base as i64 - kernel_info.virtual_base as i64)) as u64 };
 
                     // Access .dynsym table if present
-                    let (symtab_ptr, symtab_size, symtab_entsz) = if dt_symtab != 0 && dt_syment != 0 {
+                    let (symtab_ptr, _symtab_size, symtab_entsz) = if dt_symtab != 0 && dt_syment != 0 {
                         (v2p(dt_symtab), 0usize, dt_syment as usize)
                     } else { (0u64, 0usize, 0usize) };
 

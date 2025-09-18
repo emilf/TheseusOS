@@ -53,6 +53,7 @@ fn set_handoff_pointers(handoff_phys: u64) {
     kernel_write_line(" virt="); theseus_shared::print_hex_u64_0xe9!(virt); kernel_write_line("\n");
 }
 
+#[allow(dead_code)]
 fn handoff_ref() -> &'static theseus_shared::handoff::Handoff {
     // Choose phys or high-half pointer based on current RIP
     let virt_base = memory::KERNEL_VIRTUAL_BASE;
@@ -181,6 +182,7 @@ unsafe fn init_heap_fallback() {
 /// This function verifies that the bump allocator is working correctly by performing
 /// simple string and vector allocations. It uses minimal allocations to avoid complex
 /// formatting that could cause issues during early kernel initialization.
+#[allow(dead_code)]
 fn test_allocator() {
     kernel_write_line("  Testing bump allocator with heap allocations...");
     
@@ -242,37 +244,35 @@ fn setup_kernel_environment(_handoff: &theseus_shared::handoff::Handoff) {
     kernel_write_line("  ✓ Paging enabled (identity + high-half kernel)");
     
     // 4. Install low-half IDT, then jump to high-half, then reinstall IDT and continue
+    //    We need the lower IDT for error handling if the jump to higher half fails
     kernel_write_line("4. Setting up CPU features...");
-    unsafe {
-        setup_idt();
-        kernel_write_line("  IDT (low-half) installed");
-        kernel_write_line("  [hh] preparing jump to high-half...");
-        // Compute addresses and verify bytes before jumping to high-half
-        let virt_base: u64 = memory::KERNEL_VIRTUAL_BASE;
-        let rip_now: u64; unsafe { core::arch::asm!("lea {}, [rip + 0]", out(reg) rip_now, options(nostack)); }
-        if rip_now >= virt_base {
-            kernel_write_line("  [hh] already in high-half, skipping jump\n");
+    unsafe { setup_idt(); }
+    kernel_write_line("  IDT (low-half) installed");
+    kernel_write_line("  [hh] preparing jump to high-half...");
+    // Compute addresses and verify bytes before jumping to high-half
+    let virt_base: u64 = memory::KERNEL_VIRTUAL_BASE;
+    let rip_now: u64; unsafe { core::arch::asm!("lea {}, [rip + 0]", out(reg) rip_now, options(nostack)); }
+    if rip_now >= virt_base {
+        kernel_write_line("  [hh] already in high-half, skipping jump\n");
+    } else {
+        let target: u64 = virt_base.wrapping_add(rip_now);
+        // Dump debug info and compare 8 bytes at low_rip vs target
+        kernel_write_line("  hh dbg: low_rip="); theseus_shared::print_hex_u64_0xe9!(rip_now);
+        kernel_write_line(" virt_base="); theseus_shared::print_hex_u64_0xe9!(virt_base);
+        kernel_write_line(" target="); theseus_shared::print_hex_u64_0xe9!(target); kernel_write_line("\n");
+        let low_q: u64 = unsafe { core::ptr::read_volatile(rip_now as *const u64) };
+        let hi_q: u64  = unsafe { core::ptr::read_volatile(target as *const u64) };
+        kernel_write_line("  hh dbg: low_q="); theseus_shared::print_hex_u64_0xe9!(low_q);
+        kernel_write_line(" hi_q="); theseus_shared::print_hex_u64_0xe9!(hi_q);
+        kernel_write_line(if low_q == hi_q { " equal\n" } else { " DIFF\n" });
+        if low_q == hi_q {
+            unsafe { core::arch::asm!("jmp rax", in("rax") target, options(noreturn)); }
         } else {
-            let target: u64 = virt_base.wrapping_add(rip_now);
-            // Dump debug info and compare 8 bytes at low_rip vs target
-            kernel_write_line("  hh dbg: low_rip="); theseus_shared::print_hex_u64_0xe9!(rip_now);
-            kernel_write_line(" virt_base="); theseus_shared::print_hex_u64_0xe9!(virt_base);
-            kernel_write_line(" target="); theseus_shared::print_hex_u64_0xe9!(target); kernel_write_line("\n");
-            let low_q: u64 = unsafe { core::ptr::read_volatile(rip_now as *const u64) };
-            let hi_q: u64  = unsafe { core::ptr::read_volatile(target as *const u64) };
-            kernel_write_line("  hh dbg: low_q="); theseus_shared::print_hex_u64_0xe9!(low_q);
-            kernel_write_line(" hi_q="); theseus_shared::print_hex_u64_0xe9!(hi_q);
-            kernel_write_line(if low_q == hi_q { " equal\n" } else { " DIFF\n" });
-            if low_q == hi_q {
-                unsafe { core::arch::asm!("jmp rax", in("rax") target, options(noreturn)); }
-            } else {
-                kernel_write_line("  hh dbg: ABORT high-half jump due to mismatch\n");
-            }
+            kernel_write_line("  hh dbg: ABORT high-half jump due to mismatch\n");
         }
-        // Sanity check: compare a known byte at RIP and its high-half counterpart
-        // Skip RIP byte-compare until high-half jump succeeds
-        setup_idt();
     }
+
+    unsafe { setup_idt(); }
     kernel_write_line("  IDT installed");
     kernel_write_line("  Detecting CPU features...");
     unsafe {

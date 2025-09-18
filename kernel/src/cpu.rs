@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! CPU setup and control module
 //! 
 //! This module provides functions to configure CPU features, control registers,
