@@ -715,9 +715,9 @@ fn apply_relocations(kernel_info: &KernelInfo, kernel_data: &[u8], physical_base
 /// 
 /// # Returns
 /// 
-/// * `Ok((physical_entry, virtual_entry))` - Entry point addresses
+/// * `Ok((physical_base, physical_entry, virtual_entry, image_size))` - key addresses and image span
 /// * `Err(status)` - Error loading kernel
-pub fn load_kernel_binary(_memory_map: &uefi::mem::memory_map::MemoryMapOwned, ) -> Result<(u64, u64, u64), uefi::Status> {
+pub fn load_kernel_binary(_memory_map: &uefi::mem::memory_map::MemoryMapOwned, ) -> Result<(u64, u64, u64, u64), uefi::Status> {
     write_line("=== Loading Kernel Binary ===");
     write_line("Starting kernel loading process...");
     
@@ -751,5 +751,5 @@ pub fn load_kernel_binary(_memory_map: &uefi::mem::memory_map::MemoryMapOwned, )
     write_line(&format!("  Entry point (physical): 0x{:016X}", physical_entry));
     write_line(&format!("  Entry point (virtual): 0x{:016X}", kernel_info.entry_point));
     
-    Ok((physical_base, physical_entry, kernel_info.entry_point))
+    Ok((physical_base, physical_entry, kernel_info.entry_point, kernel_info.total_span_size))
 }

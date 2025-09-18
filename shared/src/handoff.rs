@@ -90,12 +90,8 @@ pub struct Handoff {
     pub kernel_physical_base: u64,
     /// Kernel virtual entry point address
     pub kernel_virtual_entry: u64,
-    /// Page table root address (CR3 value for kernel)
-    pub page_table_root: u64,
-    /// Whether virtual memory is enabled (1) or identity mapped (0)
-    pub virtual_memory_enabled: u32,
-    /// Reserved for future virtual memory extensions
-    pub _reserved_virtual: u32,
+    /// Total kernel image size (bytes), covering all loaded sections
+    pub kernel_image_size: u64,
     
     // Temporary Heap Information
     /// Temporary heap base address (allocated by bootloader for kernel setup)
@@ -186,9 +182,7 @@ pub static mut HANDOFF: Handoff = Handoff {
     kernel_virtual_base: 0,
     kernel_physical_base: 0,
     kernel_virtual_entry: 0,
-    page_table_root: 0,
-    virtual_memory_enabled: 0,
-    _reserved_virtual: 0,
+    kernel_image_size: 0,
     
     // Temporary heap fields
     temp_heap_base: 0,

@@ -366,6 +366,8 @@ pub unsafe fn jump_to_kernel_with_handoff(physical_entry_point: u64, handoff_ptr
     // Exit boot services using uefi-rs
     // The function takes an optional memory type and returns the memory map
     let _memory_map = unsafe { uefi::boot::exit_boot_services(None) };
+    // Reflect reality in handoff
+    unsafe { (* (handoff_phys as *mut Handoff)).boot_services_exited = 1; }
     write_line("✓ Boot services exited successfully");
     
     write_line("Jumping to kernel...");
