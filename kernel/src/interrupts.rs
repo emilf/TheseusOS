@@ -40,6 +40,12 @@ struct IdtPointer {
 }
 
 static mut IDT: [IdtEntry; 256] = [const { IdtEntry::missing() }; 256];
+#[cfg(feature = "new_arch")]
+static IDT_POPULATED: spin::Once<()> = spin::Once::new();
+#[cfg(feature = "new_arch")]
+use volatile::VolatilePtr;
+#[cfg(feature = "new_arch")]
+use core::ptr::NonNull;
 
 core::arch::global_asm!(r#"
 .globl isr_de_stub
@@ -103,11 +109,94 @@ isr_gp_stub:
 
 .globl isr_pf_stub
 isr_pf_stub:
+    // Print: PF EC=<hex> CR2=<hex> RIP=<hex>\n
     mov dx, 0xE9
     mov al, 'P'
     out dx, al
     mov al, 'F'
     out dx, al
+    mov al, ' '
+    out dx, al
+    mov al, 'E'
+    out dx, al
+    mov al, 'C'
+    out dx, al
+    mov al, '='
+    out dx, al
+    // error code at [rsp]
+    mov rax, [rsp]
+    mov rcx, 16
+.Lpf_hex_loop_ec:
+    mov rbx, rax
+    shr rbx, 60
+    and bl, 0x0F
+    cmp bl, 9
+    jbe .Lpf_digit_num_ec
+    add bl, 'A' - 10
+    jmp .Lpf_emit_ec
+.Lpf_digit_num_ec:
+    add bl, '0'
+.Lpf_emit_ec:
+    mov al, bl
+    out dx, al
+    shl rax, 4
+    loop .Lpf_hex_loop_ec
+    // CR2
+    mov al, ' '
+    out dx, al
+    mov al, 'C'
+    out dx, al
+    mov al, 'R'
+    out dx, al
+    mov al, '2'
+    out dx, al
+    mov al, '='
+    out dx, al
+    mov rax, cr2
+    mov rcx, 16
+.Lpf_hex_loop_cr2:
+    mov rbx, rax
+    shr rbx, 60
+    and bl, 0x0F
+    cmp bl, 9
+    jbe .Lpf_digit_num_cr2
+    add bl, 'A' - 10
+    jmp .Lpf_emit_cr2
+.Lpf_digit_num_cr2:
+    add bl, '0'
+.Lpf_emit_cr2:
+    mov al, bl
+    out dx, al
+    shl rax, 4
+    loop .Lpf_hex_loop_cr2
+    // RIP (at [rsp+8])
+    mov al, ' '
+    out dx, al
+    mov al, 'R'
+    out dx, al
+    mov al, 'I'
+    out dx, al
+    mov al, 'P'
+    out dx, al
+    mov al, '='
+    out dx, al
+    mov rax, [rsp + 8]
+    mov rcx, 16
+.Lpf_hex_loop_rip:
+    mov rbx, rax
+    shr rbx, 60
+    and bl, 0x0F
+    cmp bl, 9
+    jbe .Lpf_digit_num_rip
+    add bl, 'A' - 10
+    jmp .Lpf_emit_rip
+.Lpf_digit_num_rip:
+    add bl, '0'
+.Lpf_emit_rip:
+    mov al, bl
+    out dx, al
+    shl rax, 4
+    loop .Lpf_hex_loop_rip
     mov al, 0x0A
     out dx, al
     cli
@@ -152,6 +241,18 @@ extern "C" {
     fn isr_ud_stub();
     fn isr_bp_stub();
 }
+
+/// Resolve symbol address at runtime using RIP-relative LEA to avoid relocations
+#[inline(always)]
+unsafe fn addr_isr_de() -> u64 { let a: u64; core::arch::asm!("lea {0}, [rip + isr_de_stub]", out(reg) a, options(nostack, preserves_flags)); a }
+#[inline(always)]
+unsafe fn addr_isr_bp() -> u64 { let a: u64; core::arch::asm!("lea {0}, [rip + isr_bp_stub]", out(reg) a, options(nostack, preserves_flags)); a }
+#[inline(always)]
+unsafe fn addr_isr_ud() -> u64 { let a: u64; core::arch::asm!("lea {0}, [rip + isr_ud_stub]", out(reg) a, options(nostack, preserves_flags)); a }
+#[inline(always)]
+unsafe fn addr_isr_gp() -> u64 { let a: u64; core::arch::asm!("lea {0}, [rip + isr_gp_stub]", out(reg) a, options(nostack, preserves_flags)); a }
+#[inline(always)]
+unsafe fn addr_isr_pf() -> u64 { let a: u64; core::arch::asm!("lea {0}, [rip + isr_pf_stub]", out(reg) a, options(nostack, preserves_flags)); a }
 
 #[inline(always)]
 unsafe fn out_char_0xe9(byte: u8) {
@@ -219,50 +320,57 @@ unsafe fn print_idt_entry(idx: usize, e: &IdtEntry) {
 pub unsafe fn validate_idt_basic() -> bool {
     let indices = [0usize, 3, 6, 13, 14];
     let mut ok = true;
-    for &i in &indices {
-        let e = &*(&IDT[i] as *const IdtEntry);
-        print_idt_entry(i, e);
-        if idt_entry_addr(e) == 0 { ok = false; }
+    #[cfg(feature = "new_arch")]
+    {
+        use x86_64::instructions::tables::sidt;
+        let idtr = sidt();
+        let base = idtr.base.as_u64();
+        for &i in &indices {
+            let e = &*(base.wrapping_add((i * core::mem::size_of::<IdtEntry>()) as u64) as *const IdtEntry);
+            print_idt_entry(i, e);
+            if idt_entry_addr(e) == 0 { ok = false; }
+        }
+        if ok { print_str_0xe9("IDT OK\n"); } else { print_str_0xe9("IDT BAD\n"); }
+        return ok;
     }
-    if ok { print_str_0xe9("IDT OK\n"); } else { print_str_0xe9("IDT BAD\n"); }
-    ok
+    #[cfg(not(feature = "new_arch"))]
+    {
+        for &i in &indices {
+            let e = &*(&IDT[i] as *const IdtEntry);
+            print_idt_entry(i, e);
+            if idt_entry_addr(e) == 0 { ok = false; }
+        }
+        if ok { print_str_0xe9("IDT OK\n"); } else { print_str_0xe9("IDT BAD\n"); }
+        ok
+    }
 }
 
 /// Set up a basic IDT with exception handlers
 pub unsafe fn setup_idt() {
     #[cfg(feature = "new_arch")]
     {
-        use x86_64::{structures::idt::InterruptDescriptorTable, VirtAddr};
+        // Populate entries only once; allow re-loading IDT after half-switch
+        IDT_POPULATED.call_once(|| {
+            IDT[0].set_handler_addr(addr_isr_de());
+            IDT[3].set_handler_addr(addr_isr_bp());
+            IDT[6].set_handler_addr(addr_isr_ud());
+            IDT[13].set_handler_addr(addr_isr_gp());
+            IDT[14].set_handler_addr(addr_isr_pf());
+        });
 
-        // Build a new IDT using existing stub handlers and load it.
-        let mut idt = alloc::boxed::Box::new(InterruptDescriptorTable::new());
-
-        // Safe because we provide valid handler addresses for our stubs.
-        unsafe {
-            idt.divide_error
-                .set_handler_addr(VirtAddr::new(isr_de_stub as usize as u64));
-            idt.breakpoint
-                .set_handler_addr(VirtAddr::new(isr_bp_stub as usize as u64));
-            idt.invalid_opcode
-                .set_handler_addr(VirtAddr::new(isr_ud_stub as usize as u64));
-            idt.double_fault
-                .set_handler_addr(VirtAddr::new(isr_de_stub as usize as u64)); // reuse DE stub for DF print+halt
-            idt.general_protection_fault
-                .set_handler_addr(VirtAddr::new(isr_gp_stub as usize as u64));
-            idt.page_fault
-                .set_handler_addr(VirtAddr::new(isr_pf_stub as usize as u64));
-        }
-
-        // Leak the IDT so it lives for 'static; required by CPU while active
-        let idt_ref: &'static InterruptDescriptorTable = alloc::boxed::Box::leak(idt);
-        idt_ref.load();
-
-        // Print and validate a few entries before testing exceptions (reuse existing helpers)
-        let _ = validate_idt_basic();
+        // Load IDT using physical identity for reliability; entries contain VA handlers
+        let base = core::ptr::addr_of!(IDT) as u64;
+        let idt_ptr = IdtPointer {
+            limit: (core::mem::size_of::<[IdtEntry; 256]>() - 1) as u16,
+            base,
+        };
+        core::arch::asm!("lidt [{}]", in(reg) &idt_ptr, options(readonly, nostack, preserves_flags));
+        // High-half verification is handled by the caller after jump
         return;
     }
 
     // Install handlers by computing addresses of inline labels at runtime (no relocations)
+    // and write gates using inline asm. Legacy path for non-new_arch.
     let ent0 = &IDT[0] as *const IdtEntry as u64 as *mut u8;
     let ent3 = &IDT[3] as *const IdtEntry as u64 as *mut u8;
     let ent6 = &IDT[6] as *const IdtEntry as u64 as *mut u8;
@@ -585,12 +693,57 @@ pub unsafe fn setup_idt() {
         base: core::ptr::addr_of!(IDT) as u64,
     };
     core::arch::asm!("lidt [{}]", in(reg) &idt_ptr, options(readonly, nostack, preserves_flags));
-
-    // Print and validate a few entries before testing exceptions
-    let _ = validate_idt_basic();
+    // Low-half validation suppressed to avoid interleaved prints; caller may invoke if needed
 }
 
 // ISR stubs implemented in global assembly above; no Rust bodies needed
+
+/// Print a compact one-line summary of key IDT handler addresses
+pub unsafe fn print_idt_summary_compact() {
+    let indices = [0usize, 3, 6, 13, 14];
+    #[cfg(feature = "new_arch")]
+    {
+        print_str_0xe9("IDT addrs: ");
+        // Compare entry vs resolved symbol address
+        let syms: [(usize, unsafe fn() -> u64); 5] = [
+            (0, addr_isr_de),
+            (3, addr_isr_bp),
+            (6, addr_isr_ud),
+            (13, addr_isr_gp),
+            (14, addr_isr_pf),
+        ];
+        for (k, &(idx, resolver)) in syms.iter().enumerate() {
+            if k > 0 { print_str_0xe9(" "); }
+            // idx
+            let d = idx as u32; let mut buf = [0u8;3]; let mut n=d; let mut c=0usize;
+            if n==0 { out_char_0xe9(b'0'); } else { while n>0 { buf[c]=b'0'+(n%10) as u8; n/=10; c+=1; } while c>0 { c-=1; out_char_0xe9(buf[c]); } }
+            out_char_0xe9(b'=');
+            // entry
+            print_hex_u64_0xe9(idt_entry_addr(&IDT[idx]));
+            out_char_0xe9(b'/');
+            // symbol
+            let sym_addr = resolver();
+            print_hex_u64_0xe9(sym_addr);
+        }
+        out_char_0xe9(b'\n');
+        return;
+    }
+    #[cfg(not(feature = "new_arch"))]
+    {
+        print_str_0xe9("IDT addrs: ");
+        for (k, &i) in indices.iter().enumerate() {
+            let e = &*(&IDT[i] as *const IdtEntry);
+            if k > 0 { print_str_0xe9(" "); }
+            let d = i as u32;
+            let mut buf = [0u8; 3];
+            let mut n = d; let mut c = 0usize;
+            if n == 0 { out_char_0xe9(b'0'); } else { while n > 0 { buf[c]= b'0'+(n%10) as u8; n/=10; c+=1; } while c>0 { c-=1; out_char_0xe9(buf[c]); } }
+            out_char_0xe9(b'=');
+            print_hex_u64_0xe9(idt_entry_addr(e));
+        }
+        out_char_0xe9(b'\n');
+    }
+}
 
 /// Disable all interrupts including NMI
 pub unsafe fn disable_all_interrupts() {
@@ -636,14 +789,22 @@ unsafe fn disable_nmi() {
 
 /// Disable local APIC interrupts
 unsafe fn disable_local_apic() {
-    // Check if APIC is available
-    if has_apic() {
-        // Disable APIC by clearing the APIC enable bit
-        let apic_base = get_apic_base();
-        if apic_base != 0 {
-            let mut apic_sivr = read_apic_register(apic_base, 0xF0); // SIVR register
-            apic_sivr &= !0x100; // Clear APIC enable bit
-            write_apic_register(apic_base, 0xF0, apic_sivr);
+    #[cfg(feature = "new_arch")]
+    {
+        // TODO: Map LAPIC MMIO (0xFEE0_0000) before accessing; skip for now
+        return;
+    }
+    #[cfg(not(feature = "new_arch"))]
+    {
+        // Check if APIC is available
+        if has_apic() {
+            // Disable APIC by clearing the APIC enable bit
+            let apic_base = get_apic_base();
+            if apic_base != 0 {
+                let mut apic_sivr = read_apic_register(apic_base, 0xF0); // SIVR register
+                apic_sivr &= !0x100; // Clear APIC enable bit
+                write_apic_register(apic_base, 0xF0, apic_sivr);
+            }
         }
     }
 }
@@ -682,21 +843,31 @@ unsafe fn mask_pic_interrupts() {
 
 /// Check if APIC is available
 unsafe fn has_apic() -> bool {
-    // Check CPUID feature flags for APIC
-    let _eax: u32;
-    let _ecx: u32;
-    let edx: u32;
-    
-    core::arch::asm!(
-        "cpuid",
-        inout("eax") 1 => _eax,
-        out("ecx") _ecx,
-        out("edx") edx,
-        options(nomem, nostack, preserves_flags)
-    );
-    
-    // Check APIC bit in EDX
-    (edx & (1 << 9)) != 0
+    #[cfg(feature = "new_arch")]
+    {
+        if let Some(fi) = raw_cpuid::CpuId::new().get_feature_info() {
+            return fi.has_apic();
+        }
+        return false;
+    }
+    #[cfg(not(feature = "new_arch"))]
+    {
+        // Check CPUID feature flags for APIC
+        let _eax: u32;
+        let _ecx: u32;
+        let edx: u32;
+        
+        core::arch::asm!(
+            "cpuid",
+            inout("eax") 1 => _eax,
+            out("ecx") _ecx,
+            out("edx") edx,
+            options(nomem, nostack, preserves_flags)
+        );
+        
+        // Check APIC bit in EDX
+        (edx & (1 << 9)) != 0
+    }
 }
 
 /// Get APIC base address from IA32_APIC_BASE MSR
@@ -717,14 +888,34 @@ unsafe fn get_apic_base() -> u64 {
 
 /// Read APIC register
 unsafe fn read_apic_register(apic_base: u64, offset: u32) -> u32 {
-    let addr = (apic_base & 0xFFFFF000) | (offset as u64);
-    core::ptr::read_volatile(addr as *const u32)
+    #[cfg(feature = "new_arch")]
+    {
+        let addr = (apic_base & 0xFFFFF000) | (offset as u64);
+        // Use VolatilePtr for MMIO safety under new_arch
+        let ptr = NonNull::new(addr as *mut u32).unwrap();
+        return unsafe { VolatilePtr::new_read_only(ptr) }.read();
+    }
+    #[cfg(not(feature = "new_arch"))]
+    {
+        let addr = (apic_base & 0xFFFFF000) | (offset as u64);
+        return core::ptr::read_volatile(addr as *const u32);
+    }
 }
 
 /// Write APIC register
 unsafe fn write_apic_register(apic_base: u64, offset: u32, value: u32) {
-    let addr = (apic_base & 0xFFFFF000) | (offset as u64);
-    core::ptr::write_volatile(addr as *mut u32, value);
+    #[cfg(feature = "new_arch")]
+    {
+        let addr = (apic_base & 0xFFFFF000) | (offset as u64);
+        let ptr = NonNull::new(addr as *mut u32).unwrap();
+        unsafe { VolatilePtr::new(ptr) }.write(value);
+        return;
+    }
+    #[cfg(not(feature = "new_arch"))]
+    {
+        let addr = (apic_base & 0xFFFFF000) | (offset as u64);
+        core::ptr::write_volatile(addr as *mut u32, value);
+    }
 }
 
 /// Enable interrupts (for future use)

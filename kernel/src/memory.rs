@@ -96,34 +96,23 @@ pub struct MemoryManager {
     pub frame_allocator: BootFrameAllocator,
 }
 // Simple global virt<->phys offset model for early paging
-static mut VIRT_PHYS_OFFSET: i64 = 0;
+static mut VIRT_PHYS_OFFSET: u64 = 0;
 
-fn virt_to_phys(va: u64) -> u64 {
-    unsafe { (va as i64 + VIRT_PHYS_OFFSET) as u64 }
-}
+fn virt_to_phys(va: u64) -> u64 { unsafe { va.wrapping_add(VIRT_PHYS_OFFSET) } }
 
-fn phys_to_virt(pa: u64) -> u64 {
-    unsafe { (pa as i64 - VIRT_PHYS_OFFSET) as u64 }
-}
+fn phys_to_virt(pa: u64) -> u64 { unsafe { pa.wrapping_sub(VIRT_PHYS_OFFSET) } }
 
-fn set_virt_phys_offset(offset: i64) {
-    unsafe { VIRT_PHYS_OFFSET = offset; }
-}
+fn set_virt_phys_offset(offset: u64) { unsafe { VIRT_PHYS_OFFSET = offset; } }
 
 /// Expose current virt->phys offset (phys - virt)
-pub fn virt_phys_offset() -> i64 { unsafe { VIRT_PHYS_OFFSET } }
-
-/// Compute phys->virt offset (virt - phys)
-pub fn virt_offset() -> i64 { unsafe { -VIRT_PHYS_OFFSET } }
+pub fn virt_phys_offset() -> u64 { unsafe { VIRT_PHYS_OFFSET } }
 
 
 impl MemoryManager {
     /// Create a new memory manager
     pub unsafe fn new(handoff: &theseus_shared::handoff::Handoff) -> Self {
-        #[cfg(feature = "new_arch")]
-        crate::display::kernel_write_line("  [vm/new] start");
-        // Establish virt->phys offset for kernel image tables
-        set_virt_phys_offset(handoff.kernel_physical_base as i64 - KERNEL_VIRTUAL_BASE as i64);
+            #[cfg(feature = "new_arch")]
+            crate::display::kernel_write_line("  [vm/new] start");
         // Allocate PML4 from a static pool and get its physical address
         let (pml4, pml4_phys) = alloc_table_from_pool();
         #[cfg(feature = "new_arch")]
@@ -133,8 +122,10 @@ impl MemoryManager {
         // Identity map first 1 GiB
         #[cfg(feature = "new_arch")]
         {
+            crate::display::kernel_write_line("  [vm/new] id-map 1GiB begin");
             // Bootstrap with legacy identity map so the x86_64 mapper can access page tables
             identity_map_first_1gb_2mb(pml4);
+            crate::display::kernel_write_line("  [vm/new] id-map 1GiB done");
         }
         #[cfg(not(feature = "new_arch"))]
         {
@@ -142,10 +133,15 @@ impl MemoryManager {
             identity_map_first_1gb_2mb(pml4);
         }
 
+        // Do not clone bootloader HH entry; create our own HH structures deterministically
+
         // Map the kernel image high-half
         #[cfg(feature = "new_arch")]
         {
-            // defer to x86_64 mapper below
+            crate::display::kernel_write_line("  [vm/new] map kernel HH begin");
+            // Map kernel code/data into the high-half using 4KiB pages (handles unaligned phys)
+            map_kernel_high_half_4k(pml4, handoff);
+            crate::display::kernel_write_line("  [vm/new] map kernel HH done");
         }
         #[cfg(not(feature = "new_arch"))]
         {
@@ -153,10 +149,13 @@ impl MemoryManager {
             map_kernel_high_half_4k(pml4, handoff);
         }
 
-        // Map framebuffer and temp heap if available (4KiB pages are fine here)
+        // Map framebuffer and temp heap if available (pre-CR3 using legacy helpers)
         #[cfg(feature = "new_arch")]
         {
-            // Post-CR3, mappings are handled via x86_64 mapper (see environment setup)
+            crate::display::kernel_write_line("  [vm/new] map fb/heap begin");
+            if handoff.gop_fb_base != 0 { map_framebuffer(pml4, handoff); }
+            if handoff.temp_heap_base != 0 { map_temporary_heap(pml4, handoff); }
+            crate::display::kernel_write_line("  [vm/new] map fb/heap done");
         }
         #[cfg(not(feature = "new_arch"))]
         {
@@ -197,12 +196,14 @@ static mut PAGE_POOL_NEXT: usize = 0;
 
 unsafe fn alloc_table_from_pool() -> (&'static mut PageTable, u64) {
     if PAGE_POOL_NEXT >= PAGE_POOL.len() { panic!("Out of static page pool"); }
-    let ptr = PAGE_POOL[PAGE_POOL_NEXT].0.as_mut_ptr();
+    let hh_ptr_va = PAGE_POOL[PAGE_POOL_NEXT].0.as_mut_ptr() as u64;
     PAGE_POOL_NEXT += 1;
-    // Zero via current VA; we're identity-mapped pre-CR3
-    core::ptr::write_bytes(ptr, 0, PAGE_SIZE);
-    let pa = ptr as u64;
-    let table = &mut *(ptr as *mut PageTable);
+    // Pre-CR3: identity mapping; VA equals PA
+    let pa = hh_ptr_va;
+    // Use current kernel VA of the pool page; kernel image (including .bss) is mapped
+    let id_ptr = pa as *mut u8; // access via identity VA before CR3
+    core::ptr::write_bytes(id_ptr, 0, PAGE_SIZE);
+    let table = &mut *(id_ptr as *mut PageTable);
     (table, pa)
 }
 
@@ -213,9 +214,12 @@ unsafe fn identity_map_first_1gb_2mb(pml4: &mut PageTable) {
     let gigabyte: u64 = 1 << 30;
     let two_mb: u64 = 2 * 1024 * 1024;
     let mut addr: u64 = 0;
+    let mut count: u32 = 0;
     while addr < gigabyte {
+        if count < 4 { crate::display::kernel_write_line("    [vm] map2m"); theseus_shared::print_hex_u64_0xe9!(addr); crate::display::kernel_write_line(" -> "); theseus_shared::print_hex_u64_0xe9!(addr); crate::display::kernel_write_line("\n"); }
         map_2mb_page(pml4, addr, addr, flags);
         addr += two_mb;
+        count += 1;
     }
 }
 
@@ -345,11 +349,15 @@ unsafe fn map_2mb_page(pml4: &mut PageTable, virtual_addr: u64, physical_addr: u
 /// Get or create a page table
 unsafe fn get_or_create_page_table(entry: &mut PageTableEntry) -> &mut PageTable {
     if entry.is_present() {
-        // Access the existing next-level table via identity VA (pre-CR3)
-        (entry.physical_addr() as *mut PageTable).as_mut().unwrap()
+        // Access existing next-level table via identity VA (pre-CR3)
+        let pa = entry.physical_addr();
+        if pa == 0 { crate::display::kernel_write_line("    [vm] present but pa=0\n"); }
+        let va = pa as *mut PageTable;
+        va.as_mut().unwrap()
     } else {
         // Allocate a new table; write through identity VA
         let (_table, phys) = alloc_table_from_pool();
+        crate::display::kernel_write_line("    [vm] new tbl pa="); theseus_shared::print_hex_u64_0xe9!(phys); crate::display::kernel_write_line("\n");
         *entry = PageTableEntry::new(phys, PTE_PRESENT | PTE_WRITABLE);
         (phys as *mut PageTable).as_mut().unwrap()
     }
@@ -359,9 +367,12 @@ unsafe fn get_or_create_page_table(entry: &mut PageTableEntry) -> &mut PageTable
 pub unsafe fn activate_virtual_memory(page_table_root: u64) {
     #[cfg(feature = "new_arch")]
     {
-        use x86_64::registers::control::Cr3;
-        use x86_64::{PhysAddr, structures::paging::PhysFrame};
-        Cr3::write(PhysFrame::containing_address(PhysAddr::new(page_table_root)), x86_64::registers::control::Cr3Flags::empty());
+        // Switch to our freshly created PML4 (pre-CR3 identity makes this safe)
+        core::arch::asm!(
+            "mov cr3, {}",
+            in(reg) page_table_root,
+            options(nomem, nostack, preserves_flags)
+        );
         return;
     }
     // Legacy path

@@ -4,6 +4,10 @@
 //! This module provides functions to configure CPU features, control registers,
 //! and set up the CPU for kernel operation.
 
+#[cfg(feature = "new_arch")]
+use raw_cpuid::CpuId;
+#[cfg(feature = "new_arch")]
+use spin::Once;
 /// Control register flags
 pub const CR0_PE: u64 = 1 << 0;   // Protected Mode Enable
 pub const CR0_MP: u64 = 1 << 1;   // Monitor Coprocessor
@@ -71,12 +75,34 @@ impl CpuFeatures {
     }
 }
 
+#[cfg(feature = "new_arch")]
+static CPU_FEATURES_ONCE: Once<CpuFeatures> = Once::new();
+
+#[cfg(feature = "new_arch")]
+pub unsafe fn detect_cpu_features_once_lowhalf() {
+    let _ = CPU_FEATURES_ONCE.call_once(|| detect_cpu_features());
+}
+
+#[cfg(not(feature = "new_arch"))]
+pub unsafe fn detect_cpu_features_once_lowhalf() {
+    // no-op for legacy path
+}
+
+#[cfg(feature = "new_arch")]
+pub fn get_cpu_features_once() -> Option<CpuFeatures> {
+    CPU_FEATURES_ONCE.get().copied()
+}
+
+#[cfg(not(feature = "new_arch"))]
+pub fn get_cpu_features_once() -> Option<CpuFeatures> { None }
+
 /// Set up control registers for kernel mode
 pub unsafe fn setup_control_registers() {
     // Configure CR0
     #[cfg(feature = "new_arch")]
     {
         use x86_64::registers::control::{Cr0, Cr0Flags};
+        crate::display::kernel_write_line("  [cr] CR0: begin");
         let mut f0 = Cr0::read();
         // Enable protected mode, paging, write protection, alignment check, numeric error
         f0.insert(Cr0Flags::PROTECTED_MODE_ENABLE);
@@ -88,6 +114,7 @@ pub unsafe fn setup_control_registers() {
         f0.remove(Cr0Flags::EMULATE_COPROCESSOR);
         f0.insert(Cr0Flags::MONITOR_COPROCESSOR);
         Cr0::write(f0);
+        crate::display::kernel_write_line("  [cr] CR0: done");
     }
     #[cfg(not(feature = "new_arch"))]
     {
@@ -106,17 +133,22 @@ pub unsafe fn setup_control_registers() {
     #[cfg(feature = "new_arch")]
     {
         use x86_64::registers::control::{Cr4, Cr4Flags};
-        let mut f4 = Cr4::read();
-        // Enable PAE, PGE, OSFXSR, OSXMMEXCPT, SMEP, SMAP
-        f4.insert(Cr4Flags::PHYSICAL_ADDRESS_EXTENSION);
-        f4.insert(Cr4Flags::PAGE_GLOBAL);
-        f4.insert(Cr4Flags::OSFXSR);
-        f4.insert(Cr4Flags::OSXMMEXCPT_ENABLE);
-        f4.insert(Cr4Flags::SUPERVISOR_MODE_EXECUTION_PROTECTION);
-        f4.insert(Cr4Flags::SUPERVISOR_MODE_ACCESS_PREVENTION);
-        if has_fsgsbase() { f4.insert(Cr4Flags::FSGSBASE); }
-        if has_osxsave() { f4.insert(Cr4Flags::OSXSAVE); }
-        Cr4::write(f4);
+
+        // NOTE:This breaks stuff, we need to figure out how to enable this
+        // let mut f4 = Cr4::read();
+        // // Enable PAE, PGE, OSFXSR, OSXMMEXCPT, SMEP, SMAP
+        // f4.insert(Cr4Flags::PHYSICAL_ADDRESS_EXTENSION);
+        // f4.insert(Cr4Flags::PAGE_GLOBAL);
+        // f4.insert(Cr4Flags::OSFXSR);
+        // f4.insert(Cr4Flags::OSXMMEXCPT_ENABLE);
+        // f4.insert(Cr4Flags::SUPERVISOR_MODE_EXECUTION_PROTECTION);
+        // f4.insert(Cr4Flags::SUPERVISOR_MODE_ACCESS_PREVENTION);
+        // if has_fsgsbase() { f4.insert(Cr4Flags::FSGSBASE); }
+        // if has_osxsave() { f4.insert(Cr4Flags::OSXSAVE); }
+        // Cr4::write(f4);
+        crate::display::kernel_write_line("  [cr] CR4: begin");
+        let _ = Cr4::read();
+        crate::display::kernel_write_line("  [cr] CR4: skip modifications");
     }
     #[cfg(not(feature = "new_arch"))]
     {
@@ -132,32 +164,58 @@ pub unsafe fn setup_control_registers() {
 
 /// Detect CPU features using CPUID
 pub unsafe fn detect_cpu_features() -> CpuFeatures {
-    let mut features = CpuFeatures::new();
-    
-    // Check standard features (CPUID.1:EDX)
-    let (_, _, _, edx) = cpuid(1, 0);
-    
-    features.sse = (edx & (1 << 25)) != 0;  // SSE
-    features.sse2 = (edx & (1 << 26)) != 0; // SSE2
-    
-    // Check extended features (CPUID.1:ECX)
-    let (_, _, ecx, _) = cpuid(1, 0);
-    
-    features.sse3 = (ecx & (1 << 0)) != 0;   // SSE3
-    features.ssse3 = (ecx & (1 << 9)) != 0;  // SSSE3
-    features.sse4_1 = (ecx & (1 << 19)) != 0; // SSE4.1
-    features.sse4_2 = (ecx & (1 << 20)) != 0; // SSE4.2
-    features.avx = (ecx & (1 << 28)) != 0;    // AVX
-    features.xsave = (ecx & (1 << 26)) != 0;  // XSAVE
-    features.osxsave = (ecx & (1 << 27)) != 0; // OSXSAVE
-    
-    // Check extended features (CPUID.7:EBX)
-    let (_, ebx, _, _) = cpuid(7, 0);
-    
-    features.avx2 = (ebx & (1 << 5)) != 0;   // AVX2
-    features.fma = (ebx & (1 << 12)) != 0;   // FMA
-    
-    features
+    #[cfg(feature = "new_arch")]
+    {
+        let mut f = CpuFeatures::new();
+        let cpuid = CpuId::new();
+        if let Some(fi) = cpuid.get_feature_info() {
+            f.sse = fi.has_sse();
+            f.sse2 = fi.has_sse2();
+            f.sse3 = fi.has_sse3();
+            f.ssse3 = fi.has_ssse3();
+            f.sse4_1 = fi.has_sse41();
+            f.sse4_2 = fi.has_sse42();
+            f.avx = fi.has_avx();
+            f.xsave = fi.has_xsave();
+            // Some CPUs report OSXSAVE only after CR4.OSXSAVE is set; treat as false at detect time
+            f.osxsave = false;
+            // FMA is reported in CPUID.1 ECX bit 12
+            f.fma = fi.has_fma();
+        }
+        if let Some(efi) = cpuid.get_extended_feature_info() {
+            f.avx2 = efi.has_avx2();
+        }
+        return f;
+    }
+    #[cfg(not(feature = "new_arch"))]
+    {
+        let mut features = CpuFeatures::new();
+        
+        // Check standard features (CPUID.1:EDX)
+        let (_, _, _, edx) = cpuid(1, 0);
+        
+        features.sse = (edx & (1 << 25)) != 0;  // SSE
+        features.sse2 = (edx & (1 << 26)) != 0; // SSE2
+        
+        // Check extended features (CPUID.1:ECX)
+        let (_, _, ecx, _) = cpuid(1, 0);
+        
+        features.sse3 = (ecx & (1 << 0)) != 0;   // SSE3
+        features.ssse3 = (ecx & (1 << 9)) != 0;  // SSSE3
+        features.sse4_1 = (ecx & (1 << 19)) != 0; // SSE4.1
+        features.sse4_2 = (ecx & (1 << 20)) != 0; // SSE4.2
+        features.avx = (ecx & (1 << 28)) != 0;    // AVX
+        features.xsave = (ecx & (1 << 26)) != 0;  // XSAVE
+        features.osxsave = (ecx & (1 << 27)) != 0; // OSXSAVE
+        
+        // Check extended features (CPUID.7:EBX)
+        let (_, ebx, _, _) = cpuid(7, 0);
+        
+        features.avx2 = (ebx & (1 << 5)) != 0;   // AVX2
+        features.fma = (ebx & (1 << 12)) != 0;   // FMA
+        
+        features
+    }
 }
 
 /// Enable SSE/AVX if available
@@ -286,14 +344,32 @@ unsafe fn cpuid(eax: u32, ecx: u32) -> (u32, u32, u32, u32) {
 
 /// Check if FSGSBASE is available
 unsafe fn has_fsgsbase() -> bool {
-    let (_, ebx, _, _) = cpuid(7, 0);
-    (ebx & (1 << 0)) != 0
+    #[cfg(feature = "new_arch")]
+    {
+        if let Some(efi) = CpuId::new().get_extended_feature_info() {
+            return efi.has_fsgsbase();
+        }
+        return false;
+    }
+    #[cfg(not(feature = "new_arch"))]
+    {
+        let (_, ebx, _, _) = cpuid(7, 0);
+        (ebx & (1 << 0)) != 0
+    }
 }
 
 /// Check if OSXSAVE is available
 unsafe fn has_osxsave() -> bool {
-    let (_, _, ecx, _) = cpuid(1, 0);
-    (ecx & (1 << 27)) != 0
+    #[cfg(feature = "new_arch")]
+    {
+        // Querying OSXSAVE via CPUID bit 27 is unreliable before CR4.OSXSAVE; treat as false
+        return false;
+    }
+    #[cfg(not(feature = "new_arch"))]
+    {
+        let (_, _, ecx, _) = cpuid(1, 0);
+        (ecx & (1 << 27)) != 0
+    }
 }
 
 /// Set up Model Specific Registers (MSRs)

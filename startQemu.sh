@@ -9,8 +9,8 @@ TIMEOUT=${2:-0}
 
 pushd "$SCRIPT_DIR" >/dev/null
 
-# Remove debug.log
-rm -f debug.log
+# Remove debug logs
+rm -f debug.log qemu.log
 
 # Build everything including BIOS files
 echo "Building project..."
@@ -67,7 +67,7 @@ QEMU_CMD=(
   qemu-system-x86_64
   -machine q35,accel=kvm:tcg
   -cpu max
-  -m 256M
+  -m 1G
   -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE"
   -drive if=pflash,format=raw,file="$OVMF_VARS_RW"
   -device isa-debug-exit,iobase=0xf4,iosize=0x04
