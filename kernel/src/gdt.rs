@@ -4,8 +4,7 @@
 //! It creates the necessary segment descriptors for kernel and user mode operation.
 
 use core::mem::size_of;
-#[cfg(feature = "new_arch")]
-use alloc::boxed::Box; // may be unused after fallback
+// no alloc needed for new_arch path now; keep minimal imports
 
 /// GDT Entry structure
 #[repr(C, packed)]
@@ -102,26 +101,11 @@ const USER_DS: u16 = 0x20;   // Entry 4 (user data)
 
 /// Set up and load the GDT
 pub unsafe fn setup_gdt() {
-    #[cfg(feature = "new_arch")]
-    {
-        // Fallback to legacy static GDT path pre-paging to avoid high-half heap allocation
-        let gdt_ptr = core::ptr::addr_of!(GDT) as *const GdtEntry;
-        let gdt_slice = core::slice::from_raw_parts(gdt_ptr, 6);
-        let gdt_ptr = GdtPointer::new(gdt_slice);
-        gdt_ptr.load();
-        reload_segments();
-        return;
-    }
-
-    // Legacy path: Create GDT pointer using raw pointer to avoid static_mut_refs warning
+    // Use the same static GDT path in both feature modes to avoid unreachable warnings
     let gdt_ptr = core::ptr::addr_of!(GDT) as *const GdtEntry;
     let gdt_slice = core::slice::from_raw_parts(gdt_ptr, 6);
     let gdt_ptr = GdtPointer::new(gdt_slice);
-    
-    // Load GDT
     gdt_ptr.load();
-    
-    // Reload segment registers
     reload_segments();
 }
 

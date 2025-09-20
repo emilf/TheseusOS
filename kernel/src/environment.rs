@@ -6,12 +6,51 @@
 use theseus_shared::handoff::Handoff;
 use crate::interrupts::{disable_all_interrupts, setup_idt};
 use crate::gdt::setup_gdt;
-use crate::cpu::{setup_control_registers, detect_cpu_features, setup_floating_point, setup_msrs};
-use crate::memory::{MemoryManager, activate_virtual_memory, KERNEL_VIRTUAL_BASE};
+use crate::cpu::{setup_control_registers, setup_floating_point, setup_msrs};
+use crate::memory::{MemoryManager, activate_virtual_memory, KERNEL_VIRTUAL_BASE, TEMP_HEAP_VIRTUAL_BASE};
+
+#[link_section = ".bss.stack"]
+static mut KERNEL_STACK: [u8; 64 * 1024] = [0; 64 * 1024];
+
+#[inline(never)]
+unsafe fn switch_to_high_stack_and_continue() -> ! {
+    extern "C" fn high_stack_main() -> ! { unsafe { continue_after_stack_switch() } }
+    let base = core::ptr::addr_of!(KERNEL_STACK) as u64;
+    let size = core::mem::size_of::<[u8; 64 * 1024]>() as u64;
+    let top_aligned = (base + size) & !0xFu64;
+    core::arch::asm!(
+        "mov rsp, {stack_top}",
+        "jmp {cont}",
+        stack_top = in(reg) top_aligned,
+        cont = sym high_stack_main,
+        options(noreturn)
+    );
+}
 
 unsafe extern "C" fn after_high_half_entry() -> ! {
+    // Switch stack immediately to a high-half kernel stack
+    switch_to_high_stack_and_continue();
+}
+
+pub(super) unsafe fn continue_after_stack_switch() -> ! {
     // Reinstall IDT and continue setup now that we're in high-half
     crate::display::kernel_write_line("  [hh] entered high-half");
+    // Debug: print current CS and expected KERNEL_CS
+    {
+        let cs_val: u16; unsafe { core::arch::asm!("mov {0:x}, cs", out(reg) cs_val, options(nomem, nostack, preserves_flags)); }
+        crate::display::kernel_write_line("  [dbg] CS="); theseus_shared::print_hex_u64_0xe9!(cs_val as u64); crate::display::kernel_write_line(" expected="); theseus_shared::print_hex_u64_0xe9!(crate::gdt::KERNEL_CS as u64); crate::display::kernel_write_line("\n");
+        // Print IDT[14] selector/type_attr to ensure correct gate
+        unsafe {
+            use x86_64::instructions::tables::sidt;
+            let idtr = sidt();
+            let base = idtr.base.as_u64();
+            let ent = base + (14 * 16) as u64;
+            let sel = core::ptr::read_unaligned((ent + 2) as *const u16) as u64;
+            let ty  = core::ptr::read_unaligned((ent + 5) as *const u8) as u64;
+            crate::display::kernel_write_line("  [dbg] IDT14 sel="); theseus_shared::print_hex_u64_0xe9!(sel);
+            crate::display::kernel_write_line(" type="); theseus_shared::print_hex_u64_0xe9!(ty); crate::display::kernel_write_line("\n");
+        }
+    }
     setup_idt();
     crate::display::kernel_write_line("  IDT installed");
     // Explicitly verify IDT entries in high-half before continuing
@@ -20,7 +59,6 @@ unsafe extern "C" fn after_high_half_entry() -> ! {
     crate::display::kernel_write_line("  IDT verification (high-half) complete");
     // Skip CPU feature detection and SSE for now to keep high-half path stable
     // Re-enable safe CR4 bits now that paging is active
-    #[cfg(feature = "new_arch")]
     {
         use x86_64::registers::control::{Cr4, Cr4Flags};
         let mut f4 = Cr4::read();
@@ -42,6 +80,77 @@ unsafe extern "C" fn after_high_half_entry() -> ! {
         setup_msrs();
     }
     crate::display::kernel_write_line("  MSRs configured");
+
+    // Initialize global allocator on a high-half VA range (mapped temp heap), then migrate to permanent heap
+    {
+        use crate::handoff::handoff_phys_ptr;
+        let h = unsafe { &*(handoff_phys_ptr() as *const Handoff) };
+        if h.temp_heap_base != 0 && h.temp_heap_size != 0 {
+            // Rebase the physical temp heap to its mapped high VA
+            let base = TEMP_HEAP_VIRTUAL_BASE as *mut u8;
+            let size = h.temp_heap_size as usize;
+            unsafe { crate::allocator::ALLOCATOR_LINKED.lock().init(base, size); }
+            crate::display::kernel_write_line("  High-half heap initialized");
+            // Quick allocation probe to validate the heap works before heavier use
+            {
+                use alloc::boxed::Box;
+                let bx = Box::new(0xDEADBEEFu64);
+                crate::display::kernel_write_line("  [alloc] Box<u64> at ");
+                theseus_shared::print_hex_u64_0xe9!((&*bx as *const u64) as u64);
+                crate::display::kernel_write_line("\n");
+                core::mem::drop(bx);
+            }
+        } else {
+            crate::display::kernel_write_line("  No temp heap available for high-half allocator");
+        }
+    }
+
+    // Create a permanent heap at KERNEL_HEAP_BASE and switch allocator to it
+    {
+        use x86_64::{VirtAddr, registers::control::Cr3, structures::paging::{OffsetPageTable, PageTable as X86PageTable}};
+        use crate::memory::{BootFrameAllocator, map_kernel_heap_x86, unmap_temporary_heap_x86, unmap_identity_kernel_x86};
+        use crate::handoff::handoff_phys_ptr;
+        let h = unsafe { &*(handoff_phys_ptr() as *const Handoff) };
+        // Build a frame allocator from the handoff and map the permanent heap first
+        crate::display::kernel_write_line("  [perm] begin");
+        {
+            crate::display::kernel_write_line("  [perm] frame_alloc from handoff...");
+            let mut frame_alloc = unsafe { BootFrameAllocator::from_handoff(h) };
+            crate::display::kernel_write_line("  [perm] frame_alloc ready");
+            let (_frame, _flags) = Cr3::read();
+            let pml4_pa = _frame.start_address().as_u64();
+            crate::display::kernel_write_line("  [perm] PML4 pa=");
+            theseus_shared::print_hex_u64_0xe9!(pml4_pa);
+            crate::display::kernel_write_line("\n");
+            let l4: &mut X86PageTable = unsafe { &mut *(pml4_pa as *mut X86PageTable) };
+            let mut mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(0)) };
+            crate::display::kernel_write_line("  [perm] mapper ready");
+            crate::display::kernel_write_line("  [perm] map kernel heap...");
+            map_kernel_heap_x86(&mut mapper, &mut frame_alloc);
+            crate::display::kernel_write_line("  [perm] map kernel heap done");
+            // frame_alloc drops here while the allocator still points to temp heap → safe
+        }
+        crate::display::kernel_write_line("  [perm] switching allocator to permanent heap...");
+        // Now switch the global allocator to the permanent heap
+        let perm_base = crate::memory::KERNEL_HEAP_BASE as *mut u8;
+        let perm_size = crate::memory::KERNEL_HEAP_SIZE as usize;
+        unsafe { crate::allocator::ALLOCATOR_LINKED.lock().init(perm_base, perm_size); }
+        crate::display::kernel_write_line("  Permanent kernel heap initialized");
+
+        // Optionally unmap the temporary heap to catch stale references
+        const UNMAP_TEMP_HEAP: bool = true;
+        if UNMAP_TEMP_HEAP {
+            let (_frame, _flags) = Cr3::read();
+            let pml4_pa = _frame.start_address().as_u64();
+            let l4: &mut X86PageTable = unsafe { &mut *(pml4_pa as *mut X86PageTable) };
+            let mut mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(0)) };
+            unmap_temporary_heap_x86(&mut mapper, h);
+            crate::display::kernel_write_line("  Temporary heap unmapped");
+            // Also unmap identity of kernel image to catch stale low-VA code/data
+            unmap_identity_kernel_x86(&mut mapper, h);
+            crate::display::kernel_write_line("  Identity-mapped kernel image unmapped");
+        }
+    }
     
     crate::display::kernel_write_line("=== Kernel environment setup complete ===");
     crate::display::kernel_write_line("Kernel environment test completed successfully");
@@ -96,13 +205,12 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64) {
 
         // Defer IDT installation to step 4 (pre-jump) to avoid early faults
 
-        #[cfg(feature = "new_arch")]
         {
             use x86_64::{VirtAddr, structures::paging::{OffsetPageTable, PageTable as X86PageTable, Translate}};
             // Initialize mapper after CR3 load using identity phys-mem offset (0);
             // rely on pre-CR3 legacy mappings for framebuffer, heap, and kernel image.
             let l4: &mut X86PageTable = &mut *(mm.pml4 as *mut _ as *mut X86PageTable);
-            let mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(0)) };
+            let mapper = OffsetPageTable::new(l4, VirtAddr::new(0));
             let _ = mapper.translate_addr(VirtAddr::new(KERNEL_VIRTUAL_BASE));
         }
     }
@@ -131,7 +239,6 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64) {
         crate::display::kernel_write_line(" offset="); theseus_shared::print_hex_u64_0xe9!(offset);
         crate::display::kernel_write_line(" virt_base="); theseus_shared::print_hex_u64_0xe9!(virt_base);
         crate::display::kernel_write_line(" target="); theseus_shared::print_hex_u64_0xe9!(target); crate::display::kernel_write_line("\n");
-        #[cfg(feature = "new_arch")]
         {
             // Verify mapping exists for target VA before jumping
             use x86_64::{VirtAddr, registers::control::Cr3, structures::paging::{OffsetPageTable, PageTable as X86PageTable, Translate}};
@@ -139,6 +246,12 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64) {
             let pml4_pa = _frame.start_address().as_u64();
             let l4: &mut X86PageTable = unsafe { &mut *(pml4_pa as *mut X86PageTable) };
             let mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(0)) };
+            // Debug: dump PML4[HH] entry value
+            let hh_index = ((KERNEL_VIRTUAL_BASE >> 39) & 0x1FF) as usize;
+            let pml4_entry_val = unsafe { core::ptr::read_volatile((pml4_pa as *const u64).add(hh_index)) };
+            crate::display::kernel_write_line("  [hh] PML4[HH]=");
+            theseus_shared::print_hex_u64_0xe9!(pml4_entry_val);
+            crate::display::kernel_write_line("\n");
             let phys = mapper.translate_addr(VirtAddr::new(target));
             crate::display::kernel_write_line("  [hh] target phys=");
             if let Some(pa) = phys { theseus_shared::print_hex_u64_0xe9!(pa.as_u64()); } else { theseus_shared::qemu_println!("NONE"); }
@@ -146,28 +259,7 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64) {
             crate::display::kernel_write_line("  [hh] jumping to high-half (via virt_off)");
             unsafe { core::arch::asm!("jmp rax", in("rax") target, options(noreturn)); }
         }
-        #[cfg(not(feature = "new_arch"))]
-        {
-            let low_q: u64 = unsafe { core::ptr::read_volatile(rip_now as *const u64) };
-            let hi_q: u64  = unsafe { core::ptr::read_volatile((rip_now.wrapping_add(virt_off)) as *const u64) };
-            crate::display::kernel_write_line("  hh dbg: low_q="); theseus_shared::print_hex_u64_0xe9!(low_q);
-            crate::display::kernel_write_line(" hi_q="); theseus_shared::print_hex_u64_0xe9!(hi_q);
-            crate::display::kernel_write_line(if low_q == hi_q { " equal\n" } else { " DIFF\n" });
-            if low_q == hi_q {
-                unsafe { core::arch::asm!("jmp rax", in("rax") target, options(noreturn)); }
-            } else {
-                // Provide a clear error message using our debug macros before panicking
-                theseus_shared::qemu_println!("PANIC: High-half jump verification failed (bytes mismatch)");
-                theseus_shared::qemu_print!("  phys_base="); theseus_shared::print_hex_u64_0xe9!(phys_base); theseus_shared::qemu_println!("");
-                theseus_shared::qemu_print!("  low_rip=");   theseus_shared::print_hex_u64_0xe9!(rip_now);   theseus_shared::qemu_println!("");
-                theseus_shared::qemu_print!("  offset=");    theseus_shared::print_hex_u64_0xe9!(offset);    theseus_shared::qemu_println!("");
-                theseus_shared::qemu_print!("  virt_base="); theseus_shared::print_hex_u64_0xe9!(virt_base); theseus_shared::qemu_println!("");
-                theseus_shared::qemu_print!("  target=");    theseus_shared::print_hex_u64_0xe9!(target);    theseus_shared::qemu_println!("");
-                theseus_shared::qemu_print!("  low_q=");     theseus_shared::print_hex_u64_0xe9!(low_q);     theseus_shared::qemu_println!("");
-                theseus_shared::qemu_print!("  hi_q=");      theseus_shared::print_hex_u64_0xe9!(hi_q);      theseus_shared::qemu_println!("");
-                panic!("High-half jump verification failed: bytes mismatch at target");
-            }
-        }
+        // legacy path removed
     }
 
     // Unreachable if jump succeeds; if we get here, panic to avoid continuing in low-half

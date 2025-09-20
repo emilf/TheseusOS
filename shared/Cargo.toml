@@ -6,8 +6,7 @@ edition = "2021"
 [dependencies]
 log = { workspace = true }
 acpi = { workspace = true }
-x86_64 = { workspace = true, optional = true, default-features = false }
-raw-cpuid = { workspace = true, optional = true }
+x86_64 = { workspace = true, default-features = false }
+raw-cpuid = { workspace = true }
 
-[features]
-default = []
+# features not needed

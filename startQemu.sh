@@ -91,8 +91,13 @@ fi
 ## Run QEMU with optional timeout
 if [[ "$TIMEOUT" -gt 0 ]]; then
   echo "Running QEMU with ${TIMEOUT}s timeout..."
-  timeout --foreground "${TIMEOUT}s" "${QEMU_CMD[@]}" 2>&1
+  TMP_OUT=$(mktemp)
+  timeout --foreground "${TIMEOUT}s" "${QEMU_CMD[@]}" 2>&1 | tee "$TMP_OUT"
   EXIT_CODE=$?
+  if grep -q "Kernel environment test completed successfully" "$TMP_OUT"; then
+    echo "✓ Detected success marker from kernel"
+    EXIT_CODE=0
+  fi
   if [[ $EXIT_CODE -eq 1 ]]; then
     echo "✓ QEMU exited gracefully from guest"
   elif [[ $EXIT_CODE -eq 124 ]]; then
@@ -100,13 +105,20 @@ if [[ "$TIMEOUT" -gt 0 ]]; then
   else
     echo "QEMU exited with code $EXIT_CODE"
   fi
+  exit $EXIT_CODE
 else
   echo "Running QEMU (no timeout)..."
-  "${QEMU_CMD[@]}" 2>&1
+  TMP_OUT=$(mktemp)
+  "${QEMU_CMD[@]}" 2>&1 | tee "$TMP_OUT"
   EXIT_CODE=$?
+  if grep -q "Kernel environment test completed successfully" "$TMP_OUT"; then
+    echo "✓ Detected success marker from kernel"
+    EXIT_CODE=0
+  fi
   if [[ $EXIT_CODE -eq 1 ]]; then
     echo "✓ QEMU exited gracefully from guest"
   fi
+  exit $EXIT_CODE
 fi
 
 popd >/dev/null

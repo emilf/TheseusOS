@@ -12,19 +12,12 @@ theseus-shared = { path = "../shared" }
 uefi = { workspace = true }
 log = { workspace = true }
 acpi = { workspace = true }
-x86_64 = { workspace = true, optional = true, default-features = false, features = ["instructions"] }
-spin = { workspace = true, optional = true }
-volatile = { workspace = true, optional = true }
-linked_list_allocator = { workspace = true, optional = true }
-raw-cpuid = { workspace = true, optional = true }
+x86_64 = { workspace = true, default-features = false, features = ["instructions"] }
+spin = { workspace = true }
+volatile = { workspace = true }
+linked_list_allocator = { workspace = true }
+raw-cpuid = { workspace = true }
 
-[features]
-default = ["new_arch"]
-new_arch = [
-    "x86_64",
-    "spin",
-    "volatile",
-    "raw-cpuid",
-]
+# features removed; new_arch is unconditional now
 
 # Release profile defined in workspace root

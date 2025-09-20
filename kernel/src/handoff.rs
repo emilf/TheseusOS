@@ -13,16 +13,15 @@ static mut HANDOFF_INITIALIZED: bool = false;
 
 /// Set up handoff pointer tracking for both physical and virtual access
 pub fn set_handoff_pointers(handoff_phys: u64) {
-    let virt = memory::KERNEL_VIRTUAL_BASE.wrapping_add(handoff_phys);
     unsafe {
         HANDOFF_PHYS_PTR = handoff_phys;
-        HANDOFF_VIRT_PTR = virt;
+        HANDOFF_VIRT_PTR = handoff_phys; // keep physical pointer to avoid stale HH mapping
         HANDOFF_INITIALIZED = true;
     }
     crate::display::kernel_write_line("[handoff] phys="); 
     theseus_shared::print_hex_u64_0xe9!(handoff_phys);
     crate::display::kernel_write_line(" virt="); 
-    theseus_shared::print_hex_u64_0xe9!(virt); 
+    theseus_shared::print_hex_u64_0xe9!(handoff_phys); 
     crate::display::kernel_write_line("\n");
 }
 
@@ -32,16 +31,14 @@ pub fn set_handoff_pointers(handoff_phys: u64) {
 /// This allows the same code to work both before and after high-half jumping.
 #[allow(dead_code)]
 pub fn handoff_ref() -> &'static Handoff {
-    // Choose phys or high-half pointer based on current RIP
-    let virt_base = memory::KERNEL_VIRTUAL_BASE;
-    let rip_now: u64; 
-    unsafe { 
-        core::arch::asm!("lea {}, [rip + 0]", out(reg) rip_now, options(nostack)); 
-    }
-    let ptr = unsafe { 
-        if rip_now >= virt_base { HANDOFF_VIRT_PTR } else { HANDOFF_PHYS_PTR } 
-    };
+    // Always use the physical pointer; identity mapping ensures accessibility
+    let ptr = unsafe { HANDOFF_PHYS_PTR };
     unsafe { &*(ptr as *const Handoff) }
+}
+
+/// Get the physical pointer to the handoff structure
+pub fn handoff_phys_ptr() -> u64 {
+    unsafe { HANDOFF_PHYS_PTR }
 }
 
 /// Validate the bootloader handoff structure for basic sanity.
