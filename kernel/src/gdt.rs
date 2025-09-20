@@ -3,114 +3,75 @@
 //! This module provides the GDT setup required for x86-64 long mode.
 //! It creates the necessary segment descriptors for kernel and user mode operation.
 
-use core::mem::size_of;
-// no alloc needed for new_arch path now; keep minimal imports
+use core::mem::MaybeUninit;
+use spin::Once as SpinOnce;
+use x86_64::{
+    VirtAddr,
+    instructions::{segmentation::{CS, Segment}, tables::load_tss},
+    structures::{
+        gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector},
+        tss::TaskStateSegment,
+    },
+};
 
-/// GDT Entry structure
-#[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
-pub struct GdtEntry {
-    /// Low 16 bits of limit
-    limit_low: u16,
-    /// Low 16 bits of base address
-    base_low: u16,
-    /// Middle 8 bits of base address
-    base_middle: u8,
-    /// Access byte (P, DPL, S, Type)
-    access: u8,
-    /// Flags and high 4 bits of limit
-    flags_limit: u8,
-    /// High 8 bits of base address
-    base_high: u8,
+// Legacy manual GDT removed; we use x86_64's GDT entirely
+
+// TSS and GDT built using x86_64 crate
+static mut TSS: TaskStateSegment = TaskStateSegment::new();
+static mut GDT_RT: MaybeUninit<GlobalDescriptorTable> = MaybeUninit::uninit();
+static SELECTORS: SpinOnce<Selectors> = SpinOnce::new();
+
+#[repr(C)]
+struct Selectors {
+    code: SegmentSelector,
+    tss: SegmentSelector,
 }
 
-impl GdtEntry {
-    /// Create a new GDT entry
-    const fn new(base: u32, limit: u32, access: u8, flags: u8) -> Self {
-        Self {
-            limit_low: limit as u16,
-            base_low: base as u16,
-            base_middle: (base >> 16) as u8,
-            access,
-            flags_limit: ((limit >> 16) & 0xF) as u8 | (flags << 4),
-            base_high: (base >> 24) as u8,
-        }
-    }
+// IST stacks (aligned in .bss)
+#[link_section = ".bss.stack"]
+static mut IST_DF_STACK: [u8; 16 * 4096] = [0; 16 * 4096];
+#[link_section = ".bss.stack"]
+static mut IST_NMI_STACK: [u8; 16 * 4096] = [0; 16 * 4096];
+#[link_section = ".bss.stack"]
+static mut IST_MC_STACK: [u8; 16 * 4096] = [0; 16 * 4096];
+
+pub const IST_INDEX_DF: u16 = 0; // IST1
+pub const IST_INDEX_NMI: u16 = 1; // IST2
+pub const IST_INDEX_MC: u16 = 2; // IST3
+
+unsafe fn init_tss() -> &'static TaskStateSegment {
+    // Set IST stack pointers to top of stacks (16-byte aligned)
+    let df_top = (core::ptr::addr_of!(IST_DF_STACK) as u64) + (16 * 4096) as u64;
+    let nmi_top = (core::ptr::addr_of!(IST_NMI_STACK) as u64) + (16 * 4096) as u64;
+    let mc_top = (core::ptr::addr_of!(IST_MC_STACK) as u64) + (16 * 4096) as u64;
+    TSS.interrupt_stack_table[IST_INDEX_DF as usize] = VirtAddr::new(df_top & !0xFu64);
+    TSS.interrupt_stack_table[IST_INDEX_NMI as usize] = VirtAddr::new(nmi_top & !0xFu64);
+    TSS.interrupt_stack_table[IST_INDEX_MC as usize] = VirtAddr::new(mc_top & !0xFu64);
+    core::mem::transmute::<*const TaskStateSegment, &'static TaskStateSegment>(&raw const TSS as *const _)
 }
 
-/// GDT Pointer structure
-#[repr(C, packed)]
-#[derive(Debug, Clone, Copy)]
-struct GdtPointer {
-    /// Size of GDT in bytes minus 1
-    limit: u16,
-    /// Base address of GDT
-    base: u64,
-}
-
-impl GdtPointer {
-    /// Create a new GDT pointer
-    fn new(gdt: &[GdtEntry]) -> Self {
-        Self {
-            limit: (gdt.len() * size_of::<GdtEntry>() - 1) as u16,
-            base: gdt.as_ptr() as u64,
-        }
-    }
-    
-    /// Load the GDT using lgdt instruction
-    unsafe fn load(&self) {
-        core::arch::asm!(
-            "lgdt [{0}]",
-            in(reg) self as *const Self,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-}
-
-/// GDT entries
-static GDT: [GdtEntry; 6] = [
-    // Entry 0: Null descriptor (required)
-    GdtEntry::new(0, 0, 0x00, 0x00),
-    
-    // Entry 1: Kernel code segment (64-bit)
-    // flags nibble: G=1, D/B=0, L=1, AVL=0 => 0xA
-    GdtEntry::new(0, 0, 0x9A, 0x0A),
-    
-    // Entry 2: Kernel data segment
-    // In long mode, data segment flags are ignored; use 0x0
-    GdtEntry::new(0, 0, 0x92, 0x00),
-    
-    // Entry 3: User code segment (64-bit)
-    GdtEntry::new(0, 0, 0xFA, 0x0A),
-    
-    // Entry 4: User data segment
-    GdtEntry::new(0, 0, 0xF2, 0x00),
-    
-    // Entry 5: TSS (placeholder for future use)
-    GdtEntry::new(0, 0, 0x00, 0x00),
-];
-
-/// Selectors
-pub const KERNEL_CS: u16 = 0x08; // Entry 1 (kernel code)
-#[allow(dead_code)]
-const KERNEL_DS: u16 = 0x10; // Entry 2 (kernel data)
-#[allow(dead_code)]
-const USER_CS: u16 = 0x18;   // Entry 3 (user code)
-#[allow(dead_code)]
-const USER_DS: u16 = 0x20;   // Entry 4 (user data)
+/// Selectors (informational): x86_64 crate manages actual selectors; keep KERNEL_CS for checks
+pub const KERNEL_CS: u16 = 0x08;
 
 /// Set up and load the GDT
 pub unsafe fn setup_gdt() {
-    // Use the same static GDT path in both feature modes to avoid unreachable warnings
-    let gdt_ptr = core::ptr::addr_of!(GDT) as *const GdtEntry;
-    let gdt_slice = core::slice::from_raw_parts(gdt_ptr, 6);
-    let gdt_ptr = GdtPointer::new(gdt_slice);
-    gdt_ptr.load();
-    reload_segments();
+    // Build and load runtime GDT with TSS
+    let tss = init_tss();
+    GDT_RT = MaybeUninit::new(GlobalDescriptorTable::new());
+    let gdt_rt = &mut *GDT_RT.as_mut_ptr();
+    let code_sel = gdt_rt.add_entry(Descriptor::kernel_code_segment());
+    let tss_sel = gdt_rt.add_entry(Descriptor::tss_segment(tss));
+    gdt_rt.load();
+    SELECTORS.call_once(|| Selectors { code: code_sel, tss: tss_sel });
+    // Reload CS and load TSS
+    CS::set_reg(code_sel);
+    load_tss(tss_sel);
+    // Also reload data segments to 0 as before
+    reload_data_segments();
 }
 
 /// Reload segment registers with new selectors
-unsafe fn reload_segments() {
+unsafe fn reload_data_segments() {
     // ds := 0 (null selector is permitted for data segs in long mode)
     core::arch::asm!("xor eax, eax", "mov ds, ax", options(nomem, nostack, preserves_flags));
 
@@ -125,30 +86,6 @@ unsafe fn reload_segments() {
 
     // skip ss for now (can cause #GP in long mode if not needed)
     // core::arch::asm!("mov ss, ax", in("ax") KERNEL_DS, options(nomem, nostack, preserves_flags));
-    
-    // Reload CS using the cleaner approach
-    reload_cs();
 }
 
-/// Reload CS register using the cleaner approach
-/// 
-/// This uses the pattern (converted from AT&T to Intel syntax):
-/// sub rsp, 16
-/// mov qword ptr [rsp + 8], 8     ; CS selector
-/// mov rax, return_addr           ; Load return address
-/// mov qword ptr [rsp], rax       ; RIP
-/// retfq
-unsafe fn reload_cs() {
-    core::arch::asm!(
-        // build far-return frame: [RIP]=label 2f, [CS]=KERNEL_CS
-        "sub rsp, 16",
-        "mov qword ptr [rsp + 8], {cs}",
-        "lea rax, [rip + 2f]",
-        "mov qword ptr [rsp], rax",
-        "retfq",
-        // return lands here
-        "2:",
-        cs = const (KERNEL_CS as u64),
-        lateout("rax") _,
-    );
-}
+// CS is reloaded via x86_64 crate APIs; legacy helper removed

@@ -12,7 +12,7 @@ theseus-shared = { path = "../shared" }
 log = { workspace = true }
 acpi = { workspace = true }
 uefi-raw = "0.1.0"
-x86_64 = { workspace = true, default-features = false, features = ["instructions","inline_asm"] }
+x86_64 = { workspace = true, default-features = false, features = ["instructions","inline_asm","abi_x86_interrupt"] }
 spin = { workspace = true }
 volatile = { workspace = true }
 linked_list_allocator = { workspace = true }

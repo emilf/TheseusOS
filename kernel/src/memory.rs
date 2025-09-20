@@ -38,6 +38,8 @@ pub const KERNEL_HEAP_BASE: u64 = 0xFFFFFFFF80010000;
 pub const KERNEL_HEAP_SIZE: usize = 0x100000; // 1MB
 /// Fixed virtual base where the temporary boot heap is mapped
 pub const TEMP_HEAP_VIRTUAL_BASE: u64 = 0xFFFFFFFFA0000000;
+/// Physical memory linear mapping base (maps [0..N) -> [PHYS_OFFSET..PHYS_OFFSET+N))
+pub const PHYS_OFFSET: u64 = 0xFFFF800000000000;
 
 /// Page table entry
 #[repr(transparent)]
@@ -120,18 +122,21 @@ impl MemoryManager {
     /// Create a new memory manager
     pub unsafe fn new(handoff: &theseus_shared::handoff::Handoff) -> Self {
             crate::display::kernel_write_line("  [vm/new] start");
-            // Make kernel phys base available to low-level allocators
+            // Make kernel phys base available (legacy var no longer used after pool removal)
             KERNEL_PHYS_BASE_FOR_POOL = handoff.kernel_physical_base;
-        // Allocate PML4 from a static pool and get its physical address
-        let (pml4, pml4_phys) = alloc_table_from_pool();
+        // Initialize early frame allocator and allocate a fresh PML4 frame
+        let mut early_frame_alloc = BootFrameAllocator::from_handoff(handoff);
+        let pml4_frame = early_frame_alloc.allocate_frame().expect("Out of frames for PML4");
+        let pml4_phys = pml4_frame.start_address().as_u64();
+        core::ptr::write_bytes(pml4_phys as *mut u8, 0, PAGE_SIZE);
+        let pml4: &mut PageTable = &mut *(pml4_phys as *mut PageTable);
         crate::display::kernel_write_line("  [vm/new] got pml4");
-        // Use kernel VA for table writes; bootloader already mapped high-half
 
         // Identity map first 1 GiB
         {
             crate::display::kernel_write_line("  [vm/new] id-map 1GiB begin");
-            // Bootstrap with legacy identity map so the x86_64 mapper can access page tables
-        identity_map_first_1gb_2mb(pml4);
+            // Bootstrap identity map using frame-backed tables
+        identity_map_first_1gb_2mb_alloc(pml4, &mut early_frame_alloc);
             crate::display::kernel_write_line("  [vm/new] id-map 1GiB done");
         }
         // legacy path removed
@@ -141,8 +146,8 @@ impl MemoryManager {
         // Map the kernel image high-half
         {
             crate::display::kernel_write_line("  [vm/new] map kernel HH begin");
-            // Map kernel code/data into the high-half using 4KiB pages (handles unaligned phys)
-        map_kernel_high_half_4k(pml4, handoff);
+            // Map kernel code/data into the high-half using 4KiB pages with frame allocator
+            map_kernel_high_half_4k_alloc(pml4, handoff, &mut early_frame_alloc);
             crate::display::kernel_write_line("  [vm/new] map kernel HH done");
             // Debug: print PML4[HH] entry after mapping
             let hh_index = ((KERNEL_VIRTUAL_BASE >> 39) & 0x1FF) as usize;
@@ -153,7 +158,7 @@ impl MemoryManager {
             crate::display::kernel_write_line("\n");
             if entry_val == 0 {
                 // Force-create HH PDPT so the entry is present
-                let _ = get_or_create_page_table(pml4.get_entry(hh_index));
+                let _ = get_or_create_page_table_alloc(pml4.get_entry(hh_index), &mut early_frame_alloc);
                 let entry_val2 = core::ptr::read_volatile((pml4_addr as *const u64).add(hh_index));
                 crate::display::kernel_write_line("  [vm/new] PML4[HH] forced=");
                 theseus_shared::print_hex_u64_0xe9!(entry_val2);
@@ -162,12 +167,18 @@ impl MemoryManager {
         }
         // legacy path removed
 
-        // Map framebuffer and temp heap if available (pre-CR3 using legacy helpers)
+        // Map framebuffer and temp heap using frame allocator
         {
             crate::display::kernel_write_line("  [vm/new] map fb/heap begin");
-            if handoff.gop_fb_base != 0 { map_framebuffer(pml4, handoff); }
-            if handoff.temp_heap_base != 0 { map_temporary_heap(pml4, handoff); }
+            if handoff.gop_fb_base != 0 { map_framebuffer_alloc(pml4, handoff, &mut early_frame_alloc); }
+            if handoff.temp_heap_base != 0 { map_temporary_heap_alloc(pml4, handoff, &mut early_frame_alloc); }
             crate::display::kernel_write_line("  [vm/new] map fb/heap done");
+        }
+        // Map a linear physical mapping for first 1 GiB at PHYS_OFFSET
+        {
+            crate::display::kernel_write_line("  [vm/new] map phys_offset 1GiB begin");
+            map_phys_offset_1gb_2mb_alloc(pml4, &mut early_frame_alloc);
+            crate::display::kernel_write_line("  [vm/new] map phys_offset 1GiB done");
         }
         // legacy path removed
 
@@ -183,7 +194,7 @@ impl MemoryManager {
             pml4_phys,
             kernel_heap_start,
             kernel_heap_end,
-            frame_allocator: unsafe { BootFrameAllocator::from_handoff(handoff) },
+            frame_allocator: early_frame_alloc,
         };
         s
     }
@@ -192,35 +203,10 @@ impl MemoryManager {
     pub fn page_table_root(&self) -> u64 { self.pml4_phys }
 }
 
-/// Allocate a page table using the temporary heap
-// Static pool of page tables linked into the kernel image
-#[repr(align(4096))]
-#[derive(Copy, Clone)]
-struct RawPage([u8; PAGE_SIZE]);
-
-static mut PAGE_POOL: [RawPage; 64] = [const { RawPage([0; PAGE_SIZE]) }; 64];
-static mut PAGE_POOL_NEXT: usize = 0;
-
-unsafe fn alloc_table_from_pool() -> (&'static mut PageTable, u64) {
-    if PAGE_POOL_NEXT >= PAGE_POOL.len() { panic!("Out of static page pool"); }
-    let hh_ptr_va = PAGE_POOL[PAGE_POOL_NEXT].0.as_mut_ptr() as u64;
-    PAGE_POOL_NEXT += 1;
-    // If we're still executing in the low-half (identity map), the pool VA equals PA.
-    // After switching to the high-half, the pool VA would be high and must be rebased.
-    let pa = if hh_ptr_va >= KERNEL_VIRTUAL_BASE {
-        hh_ptr_va.wrapping_sub(KERNEL_VIRTUAL_BASE).wrapping_add(KERNEL_PHYS_BASE_FOR_POOL)
-    } else {
-        hh_ptr_va
-    };
-    // Zero the new table using identity mapping via its physical address
-    let id_ptr = pa as *mut u8;
-    core::ptr::write_bytes(id_ptr, 0, PAGE_SIZE);
-    let table = &mut *(id_ptr as *mut PageTable);
-    (table, pa)
-}
+// Removed static page-table pool; all tables are allocated from BootFrameAllocator
 
 /// Set up identity mapping for first 1 GiB using 2 MiB pages
-unsafe fn identity_map_first_1gb_2mb(pml4: &mut PageTable) {
+unsafe fn identity_map_first_1gb_2mb_alloc(pml4: &mut PageTable, fa: &mut BootFrameAllocator) {
     // Identity map using 2MiB pages with NX cleared (executable)
     let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_PS;
     let gigabyte: u64 = 1 << 30;
@@ -229,14 +215,14 @@ unsafe fn identity_map_first_1gb_2mb(pml4: &mut PageTable) {
     let mut count: u32 = 0;
     while addr < gigabyte {
         if count < 4 { crate::display::kernel_write_line("    [vm] map2m"); theseus_shared::print_hex_u64_0xe9!(addr); crate::display::kernel_write_line(" -> "); theseus_shared::print_hex_u64_0xe9!(addr); crate::display::kernel_write_line("\n"); }
-        map_2mb_page(pml4, addr, addr, flags);
+        map_2mb_page_alloc(pml4, addr, addr, flags, fa);
         addr += two_mb;
         count += 1;
     }
 }
 
 /// Map kernel to high-half using a single 2 MiB page
-unsafe fn map_high_half_1gb_2mb(pml4: &mut PageTable) {
+unsafe fn map_high_half_1gb_2mb(pml4: &mut PageTable, fa: &mut BootFrameAllocator) {
     // Map [0 .. 1GiB) physical -> [KERNEL_VIRTUAL_BASE .. +1GiB) virtual using 2MiB pages
     let two_mb: u64 = 2 * 1024 * 1024;
     let one_gb: u64 = 1024 * 1024 * 1024;
@@ -246,13 +232,27 @@ unsafe fn map_high_half_1gb_2mb(pml4: &mut PageTable) {
     while offset < one_gb {
         let pa = offset;
         let va = virt_base + offset;
-        map_2mb_page(pml4, va, pa, flags);
+        map_2mb_page_alloc(pml4, va, pa, flags, fa);
+        offset += two_mb;
+    }
+}
+
+/// Map a 1GiB linear physical mapping at PHYS_OFFSET using 2MiB pages
+unsafe fn map_phys_offset_1gb_2mb_alloc(pml4: &mut PageTable, fa: &mut BootFrameAllocator) {
+    let two_mb: u64 = 2 * 1024 * 1024;
+    let one_gb: u64 = 1024 * 1024 * 1024;
+    let mut offset: u64 = 0;
+    let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL;
+    while offset < one_gb {
+        let pa = offset;
+        let va = PHYS_OFFSET + offset;
+        map_2mb_page_alloc(pml4, va, pa, flags, fa);
         offset += two_mb;
     }
 }
 
 /// Map the kernel's physical image range into the high-half window using 2MiB pages
-unsafe fn map_kernel_high_half_2mb(pml4: &mut PageTable, handoff: &theseus_shared::handoff::Handoff) {
+unsafe fn map_kernel_high_half_2mb(pml4: &mut PageTable, handoff: &theseus_shared::handoff::Handoff, fa: &mut BootFrameAllocator) {
     let two_mb: u64 = 2 * 1024 * 1024;
     let phys_base = handoff.kernel_physical_base;
     let phys_size = handoff.kernel_image_size;
@@ -269,14 +269,14 @@ unsafe fn map_kernel_high_half_2mb(pml4: &mut PageTable, handoff: &theseus_share
     let mut pa = phys_start;
     let mut va = va_start;
     while pa < phys_end {
-        map_2mb_page(pml4, va, pa, flags);
+        map_2mb_page_alloc(pml4, va, pa, flags, fa);
         pa += two_mb;
         va += two_mb;
     }
 }
 
 /// Map the kernel's physical image range into the high-half window using 4KiB pages
-unsafe fn map_kernel_high_half_4k(pml4: &mut PageTable, handoff: &theseus_shared::handoff::Handoff) {
+unsafe fn map_kernel_high_half_4k_alloc(pml4: &mut PageTable, handoff: &theseus_shared::handoff::Handoff, fa: &mut BootFrameAllocator) {
     let phys_base = handoff.kernel_physical_base;
     let phys_size = handoff.kernel_image_size;
     if phys_base == 0 || phys_size == 0 { return; }
@@ -287,12 +287,12 @@ unsafe fn map_kernel_high_half_4k(pml4: &mut PageTable, handoff: &theseus_shared
     for i in 0..pages {
         let pa = phys_base + i * PAGE_SIZE as u64;
         let va = KERNEL_VIRTUAL_BASE + i * PAGE_SIZE as u64;
-        map_page(pml4, va, pa, flags);
+        map_page_alloc(pml4, va, pa, flags, fa);
     }
 }
 
 /// Map framebuffer
-unsafe fn map_framebuffer(pml4: &mut PageTable, handoff: &theseus_shared::handoff::Handoff) {
+unsafe fn map_framebuffer_alloc(pml4: &mut PageTable, handoff: &theseus_shared::handoff::Handoff, fa: &mut BootFrameAllocator) {
     let fb_physical = handoff.gop_fb_base;
     let fb_virtual = 0xFFFFFFFF90000000; // Map framebuffer to high memory
     let fb_size = handoff.gop_fb_size;
@@ -302,13 +302,13 @@ unsafe fn map_framebuffer(pml4: &mut PageTable, handoff: &theseus_shared::handof
         let physical_addr = fb_physical + page * PAGE_SIZE as u64;
         let virtual_addr = fb_virtual + page * PAGE_SIZE as u64;
         
-        map_page(pml4, virtual_addr, physical_addr,
-                PTE_PRESENT | PTE_WRITABLE | PTE_NO_EXEC);
+        map_page_alloc(pml4, virtual_addr, physical_addr,
+                PTE_PRESENT | PTE_WRITABLE | PTE_NO_EXEC, fa);
     }
 }
 
 /// Map temporary heap
-unsafe fn map_temporary_heap(pml4: &mut PageTable, handoff: &theseus_shared::handoff::Handoff) {
+unsafe fn map_temporary_heap_alloc(pml4: &mut PageTable, handoff: &theseus_shared::handoff::Handoff, fa: &mut BootFrameAllocator) {
     let heap_physical = handoff.temp_heap_base;
     let heap_virtual = 0xFFFFFFFFA0000000; // Map heap to high memory
     let heap_size = handoff.temp_heap_size;
@@ -318,60 +318,71 @@ unsafe fn map_temporary_heap(pml4: &mut PageTable, handoff: &theseus_shared::han
         let physical_addr = heap_physical + page * PAGE_SIZE as u64;
         let virtual_addr = heap_virtual + page * PAGE_SIZE as u64;
         
-        map_page(pml4, virtual_addr, physical_addr,
-                PTE_PRESENT | PTE_WRITABLE | PTE_NO_EXEC);
+        map_page_alloc(pml4, virtual_addr, physical_addr,
+                PTE_PRESENT | PTE_WRITABLE | PTE_NO_EXEC, fa);
     }
 }
 
 /// Map a single page
-unsafe fn map_page(pml4: &mut PageTable, virtual_addr: u64, physical_addr: u64, flags: u64) {
+// legacy map_page removed; use map_page_alloc
+
+/// Map a single page using frame-backed table allocation
+unsafe fn map_page_alloc(pml4: &mut PageTable, virtual_addr: u64, physical_addr: u64, flags: u64, fa: &mut BootFrameAllocator) {
     // Extract page table indices
     let pml4_index = ((virtual_addr >> 39) & 0x1FF) as usize;
     let pdpt_index = ((virtual_addr >> 30) & 0x1FF) as usize;
     let pd_index = ((virtual_addr >> 21) & 0x1FF) as usize;
     let pt_index = ((virtual_addr >> 12) & 0x1FF) as usize;
-    
+
     // Get or create PDPT
-    let pdpt = get_or_create_page_table(pml4.get_entry(pml4_index));
-    
+    let pdpt = get_or_create_page_table_alloc(pml4.get_entry(pml4_index), fa);
+
     // Get or create PD
-    let pd = get_or_create_page_table(pdpt.get_entry(pdpt_index));
-    
+    let pd = get_or_create_page_table_alloc(pdpt.get_entry(pdpt_index), fa);
+
     // Get or create PT
-    let pt = get_or_create_page_table(pd.get_entry(pd_index));
-    
+    let pt = get_or_create_page_table_alloc(pd.get_entry(pd_index), fa);
+
     // Set the page table entry
     *pt.get_entry(pt_index) = PageTableEntry::new(physical_addr, flags);
 }
 
 /// Map a single 2 MiB page by setting a PD entry with PS
-unsafe fn map_2mb_page(pml4: &mut PageTable, virtual_addr: u64, physical_addr: u64, flags: u64) {
+// legacy map_2mb_page removed; use map_2mb_page_alloc
+
+/// Map a single 2 MiB page using frame-backed table allocation
+unsafe fn map_2mb_page_alloc(pml4: &mut PageTable, virtual_addr: u64, physical_addr: u64, flags: u64, fa: &mut BootFrameAllocator) {
     let pml4_index = ((virtual_addr >> 39) & 0x1FF) as usize;
     let pdpt_index = ((virtual_addr >> 30) & 0x1FF) as usize;
     let pd_index = ((virtual_addr >> 21) & 0x1FF) as usize;
 
     // Ensure next-level tables exist up to PD
-    let pdpt = get_or_create_page_table(pml4.get_entry(pml4_index));
-    let pd = get_or_create_page_table(pdpt.get_entry(pdpt_index));
+    let pdpt = get_or_create_page_table_alloc(pml4.get_entry(pml4_index), fa);
+    let pd = get_or_create_page_table_alloc(pdpt.get_entry(pdpt_index), fa);
 
     // Set PD entry with PS bit
     *pd.get_entry(pd_index) = PageTableEntry::new(physical_addr, flags | PTE_PS);
 }
 
 /// Get or create a page table
-unsafe fn get_or_create_page_table(entry: &mut PageTableEntry) -> &mut PageTable {
+// Legacy helper removed; use get_or_create_page_table_alloc instead
+
+/// Get or create a page table using a frame allocator
+unsafe fn get_or_create_page_table_alloc(entry: &mut PageTableEntry, fa: &mut BootFrameAllocator) -> &'static mut PageTable {
     if entry.is_present() {
-        // Access existing next-level table via identity VA (pre-CR3)
         let pa = entry.physical_addr();
-        if pa == 0 { crate::display::kernel_write_line("    [vm] present but pa=0\n"); }
-        let va = pa as *mut PageTable;
-        va.as_mut().unwrap()
+        let va = pa as *mut PageTable; // identity mapping expected for early boot
+        &mut *va
     } else {
-        // Allocate a new table; write through identity VA
-        let (_table, phys) = alloc_table_from_pool();
-        crate::display::kernel_write_line("    [vm] new tbl pa="); theseus_shared::print_hex_u64_0xe9!(phys); crate::display::kernel_write_line("\n");
-        *entry = PageTableEntry::new(phys, PTE_PRESENT | PTE_WRITABLE);
-        (phys as *mut PageTable).as_mut().unwrap()
+        if let Some(frame) = fa.allocate_frame() {
+            let phys = frame.start_address().as_u64();
+            // Zero via identity mapping (frames currently allocated in low memory)
+            core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
+            *entry = PageTableEntry::new(phys, PTE_PRESENT | PTE_WRITABLE);
+            &mut *(phys as *mut PageTable)
+        } else {
+            panic!("Out of frames for page tables");
+        }
     }
 }
 

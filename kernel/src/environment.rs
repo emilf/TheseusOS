@@ -207,10 +207,9 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64) {
 
         {
             use x86_64::{VirtAddr, structures::paging::{OffsetPageTable, PageTable as X86PageTable, Translate}};
-            // Initialize mapper after CR3 load using identity phys-mem offset (0);
-            // rely on pre-CR3 legacy mappings for framebuffer, heap, and kernel image.
+            // Initialize mapper after CR3 load using PHYS_OFFSET for physical mapping base
             let l4: &mut X86PageTable = &mut *(mm.pml4 as *mut _ as *mut X86PageTable);
-            let mapper = OffsetPageTable::new(l4, VirtAddr::new(0));
+            let mapper = OffsetPageTable::new(l4, VirtAddr::new(crate::memory::PHYS_OFFSET));
             let _ = mapper.translate_addr(VirtAddr::new(KERNEL_VIRTUAL_BASE));
         }
     }
@@ -245,7 +244,7 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64) {
             let (_frame, _flags) = Cr3::read();
             let pml4_pa = _frame.start_address().as_u64();
             let l4: &mut X86PageTable = unsafe { &mut *(pml4_pa as *mut X86PageTable) };
-            let mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(0)) };
+            let mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(crate::memory::PHYS_OFFSET)) };
             // Debug: dump PML4[HH] entry value
             let hh_index = ((KERNEL_VIRTUAL_BASE >> 39) & 0x1FF) as usize;
             let pml4_entry_val = unsafe { core::ptr::read_volatile((pml4_pa as *const u64).add(hh_index)) };
