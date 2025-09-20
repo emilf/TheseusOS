@@ -1,8 +1,22 @@
 # TheseusOS Multi-Binary Workspace Setup
 
-## Overview
+## What is This?
 
-Successfully implemented **Option 1: Multi-Binary Project with Shared Library** for the TheseusOS project. This setup allows both the bootloader and kernel to share common data structures and constants while maintaining clean separation of concerns.
+This document explains how TheseusOS is organized as a **multi-binary workspace** - think of it like having multiple separate programs that work together to create an operating system. This is a common pattern in Rust projects where you need different parts of your system to run in different environments.
+
+## Why Multi-Binary?
+
+Operating systems need different components that run in different contexts:
+
+1. **Bootloader**: Runs in the UEFI environment (like a mini-operating system)
+2. **Kernel**: Runs in "bare metal" mode (directly on the hardware)
+3. **Shared Library**: Contains common data structures both need
+
+This setup allows us to:
+- Keep related code together
+- Share common data structures between components
+- Build each part independently
+- Follow Rust best practices for large projects
 
 ## Project Structure
 
@@ -50,33 +64,37 @@ TheseusOS/
 
 **Note**: The old monolithic `src/` directory has been removed and replaced with the new workspace structure.
 
-## Key Features
+## How It Works
 
-### 1. **Workspace Configuration**
-- **Root `Cargo.toml`**: Defines workspace with shared dependencies
-- **Profile Settings**: Panic handling configured for no_std compatibility
-- **Dependency Management**: Centralized dependency versions across all crates
+### 1. **Workspace Configuration** (The Master Plan)
+- **Root `Cargo.toml`**: This is like the "master configuration" that tells Rust about all the different parts of our project
+- **Profile Settings**: Special settings that make our code work without the standard library (needed for operating systems)
+- **Dependency Management**: All parts of the project use the same versions of external libraries
 
-### 2. **Shared Library (`TheseusOS-shared`)**
-- **No-Std Compatible**: Works in both UEFI and kernel environments
-- **Handoff Structure**: `#[repr(C)]` stable layout for kernel communication
-- **Constants**: Centralized I/O ports, memory limits, and magic numbers
-- **Clean Separation**: No UEFI-specific code in shared library
+### 2. **Shared Library** (`theseus_shared`) - The Common Ground
+- **What it does**: Contains data structures that both the bootloader and kernel need to share
+- **Why it's special**: It works in both UEFI and kernel environments (no standard library)
+- **Key component**: The "handoff structure" - a way for the bootloader to pass information to the kernel
+- **Think of it as**: A shared vocabulary that both parts of the system understand
 
-### 3. **Bootloader (`TheseusOS-bootloader`)**
-- **UEFI Target**: `x86_64-unknown-uefi` with full UEFI functionality
-- **System Information Collection**: Memory map, ACPI, hardware inventory
-- **Output Drivers**: UEFI Serial, Raw Serial, QEMU Debug with automatic selection
-- **Handoff Preparation**: Populates shared structure for kernel consumption
-- **Panic Handling**: QEMU debug output on panic with graceful exit
+### 3. **Bootloader** (`bootloader`) - The System Starter
+- **What it does**: Runs first when the computer starts up, collects system information, then starts the kernel
+- **Environment**: Runs in UEFI (like a mini-operating system provided by the motherboard)
+- **Key tasks**: 
+  - Find out what hardware is available
+  - Set up memory for the kernel
+  - Load the kernel from disk
+  - Pass control to the kernel
+- **Output**: Can display information during boot process
 
-### 4. **Kernel (`TheseusOS-kernel`)**
-- **Bare Metal Target**: `x86_64-unknown-none` for kernel development
-- **Custom Linker Script**: `linker.ld` for proper kernel memory layout
-- **Global Allocator**: Placeholder allocator (ready for proper memory management)
-- **Handoff Consumption**: Reads system information from bootloader
-- **Simple Output**: Direct QEMU debug port communication
-- **Panic Handling**: Kernel-specific panic handler with QEMU exit
+### 4. **Kernel** (`kernel`) - The Real Operating System
+- **What it does**: The actual operating system that manages the computer
+- **Environment**: Runs directly on the hardware (no other operating system)
+- **Key tasks**:
+  - Set up memory management
+  - Handle interrupts and exceptions
+  - Provide basic system services
+- **Current status**: Basic framework is working, ready for more features
 
 ### 5. **Build System Integration**
 - **Makefile Updates**: Handles multiple targets with correct dependencies
@@ -115,19 +133,23 @@ make build-kernel
 make all
 ```
 
-## Handoff Structure Flow
+## How the Bootloader and Kernel Communicate
 
-1. **Bootloader Phase**:
-   - Collects system information (memory map, ACPI, hardware)
-   - Populates `HANDOFF` static structure
-   - Exits UEFI boot services
-   - Jumps to kernel entry point
+The "handoff structure" is like a message that the bootloader writes to the kernel. Here's how it works:
 
-2. **Kernel Phase**:
-   - Starts at `kernel_main()` entry point
-   - Accesses `HANDOFF` structure from known memory location
-   - Uses system information for kernel initialization
-   - Implements kernel subsystems (memory management, ACPI, etc.)
+### 1. **Bootloader Phase** (System Startup)
+- **Step 1**: Collect information about the computer (how much memory, what hardware, etc.)
+- **Step 2**: Write this information into a special data structure called `HANDOFF`
+- **Step 3**: Exit the UEFI environment (we no longer need the motherboard's help)
+- **Step 4**: Jump to the kernel and pass it the address of the `HANDOFF` structure
+
+### 2. **Kernel Phase** (Operating System Takes Over)
+- **Step 1**: Start running at the `kernel_main()` function
+- **Step 2**: Read the `HANDOFF` structure to learn about the system
+- **Step 3**: Use this information to set up the operating system properly
+- **Step 4**: Begin normal operating system operation
+
+**Think of it like**: The bootloader is like a real estate agent who shows you around a house (the computer) and gives you a detailed report about what's available. The kernel is like the new owner who uses that report to set up the house properly.
 
 ## Technical Implementation Details
 
@@ -151,19 +173,25 @@ make all
 - **Kernel**: Direct QEMU debug port (0xe9) communication
 - **Panic Handling**: Both environments provide debug output on panic
 
-## Next Steps
+## Current Status (What's Working Now)
 
-### **Immediate Development**
-1. **Implement `exit_boot_services()`**: Complete the UEFI-to-kernel transition
-2. **Kernel Memory Management**: Replace dummy allocator with proper implementation
-3. **ACPI Kernel Integration**: Use ACPI tables for hardware initialization
-4. **Enhanced Hardware Support**: Add more comprehensive hardware detection
+### ✅ **Completed Features**
+- **Bootloader**: Successfully collects system information and loads the kernel
+- **Kernel Loading**: Can load and execute kernel binaries from the EFI file system
+- **Memory Management**: Basic virtual memory setup with identity and high-half mappings
+- **System Information**: Comprehensive hardware detection and information collection
+- **Documentation**: Complete documentation throughout the codebase
 
-### **Future Enhancements**
-1. **Kernel Subsystems**: Process management, device drivers, filesystem
-2. **Multi-Core Support**: CPU topology from ACPI MADT table
-3. **Graphics Support**: Use framebuffer information from handoff
-4. **Real Hardware Testing**: Adapt for non-QEMU environments
+### 🚧 **In Development**
+- **Kernel Features**: More advanced memory management and system services
+- **Device Drivers**: Support for various hardware devices
+- **Process Management**: Basic process and thread management
+
+### 🔮 **Future Goals**
+- **User Programs**: Ability to run user applications
+- **File System**: Support for reading and writing files
+- **Graphics**: Use the framebuffer for graphical output
+- **Real Hardware**: Testing on actual computers (not just QEMU)
 
 ## Benefits of This Setup
 

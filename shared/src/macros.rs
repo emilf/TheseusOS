@@ -5,15 +5,25 @@
 //! without duplicating inline assembly.
 
 #[macro_export]
+/// Print a string to QEMU debug port (0xE9)
+/// 
+/// This macro outputs each byte of the string to the QEMU debug port using
+/// the x86 OUT instruction. QEMU captures this output and displays it in
+/// the console or debug log.
+/// 
+/// # Assembly Details
+/// - `out dx, al`: Output byte in AL register to I/O port in DX register
+/// - `dx` = 0xE9: QEMU debug port I/O address
+/// - `al` = byte: The character to output
 macro_rules! qemu_print {
     ($s:expr) => {{
         let bytes: &[u8] = ($s).as_bytes();
         for &b in bytes {
             unsafe {
                 core::arch::asm!(
-                    "out dx, al",
-                    in("dx") $crate::constants::io_ports::QEMU_DEBUG,
-                    in("al") b,
+                    "out dx, al",  // Output byte in AL to I/O port in DX
+                    in("dx") $crate::constants::io_ports::QEMU_DEBUG,  // QEMU debug port (0xE9)
+                    in("al") b,    // Byte to output
                     options(nomem, nostack, preserves_flags)
                 );
             }
@@ -22,15 +32,24 @@ macro_rules! qemu_print {
 }
 
 #[macro_export]
+/// Print raw bytes to QEMU debug port (0xE9)
+/// 
+/// This macro outputs each byte from a byte slice to the QEMU debug port.
+/// Useful for printing binary data or when you already have bytes.
+/// 
+/// # Assembly Details
+/// - `out dx, al`: Output byte in AL register to I/O port in DX register
+/// - `dx` = 0xE9: QEMU debug port I/O address
+/// - `al` = byte: The byte to output
 macro_rules! qemu_print_bytes {
     ($bytes:expr) => {{
         let bytes: &[u8] = ($bytes);
         for &b in bytes {
             unsafe {
                 core::arch::asm!(
-                    "out dx, al",
-                    in("dx") $crate::constants::io_ports::QEMU_DEBUG,
-                    in("al") b,
+                    "out dx, al",  // Output byte in AL to I/O port in DX
+                    in("dx") $crate::constants::io_ports::QEMU_DEBUG,  // QEMU debug port (0xE9)
+                    in("al") b,    // Byte to output
                     options(nomem, nostack, preserves_flags)
                 );
             }
@@ -39,14 +58,22 @@ macro_rules! qemu_print_bytes {
 }
 
 #[macro_export]
+/// Print a string followed by a newline to QEMU debug port (0xE9)
+/// 
+/// This macro prints the string and then outputs a newline character (0x0A)
+/// to create a complete line of output.
+/// 
+/// # Assembly Details
+/// - First calls `qemu_print!` to output the string
+/// - Then `out dx, al`: Output newline byte (0x0A) to QEMU debug port
 macro_rules! qemu_println {
     ($s:expr) => {{
         $crate::qemu_print!($s);
         unsafe {
             core::arch::asm!(
-                "out dx, al",
-                in("dx") $crate::constants::io_ports::QEMU_DEBUG,
-                in("al") b'\n',
+                "out dx, al",  // Output newline byte to I/O port
+                in("dx") $crate::constants::io_ports::QEMU_DEBUG,  // QEMU debug port (0xE9)
+                in("al") b'\n',  // Newline character (0x0A)
                 options(nomem, nostack, preserves_flags)
             );
         }
@@ -54,14 +81,23 @@ macro_rules! qemu_println {
 }
 
 #[macro_export]
+/// Output a single byte to QEMU debug port (0xE9)
+/// 
+/// This macro outputs a single byte to the QEMU debug port. Useful for
+/// outputting individual characters or control bytes.
+/// 
+/// # Assembly Details
+/// - `out dx, al`: Output byte in AL register to I/O port in DX register
+/// - `dx` = 0xE9: QEMU debug port I/O address
+/// - `al` = byte: The byte to output
 macro_rules! out_char_0xe9 {
     ($byte:expr) => {{
         let b: u8 = $byte;
         unsafe {
             core::arch::asm!(
-                "out dx, al",
-                in("dx") $crate::constants::io_ports::QEMU_DEBUG,
-                in("al") b,
+                "out dx, al",  // Output byte in AL to I/O port in DX
+                in("dx") $crate::constants::io_ports::QEMU_DEBUG,  // QEMU debug port (0xE9)
+                in("al") b,    // Byte to output
                 options(nomem, nostack, preserves_flags)
             );
         }
@@ -85,14 +121,23 @@ macro_rules! print_hex_u64_0xe9 {
 }
 
 #[macro_export]
+/// Exit QEMU with a specific exit code
+/// 
+/// This macro causes QEMU to exit with the specified exit code. This is useful
+/// for cleanly terminating the virtual machine when the kernel is done.
+/// 
+/// # Assembly Details
+/// - `out dx, al`: Output exit code in AL register to I/O port in DX register
+/// - `dx` = 0xF4: QEMU isa-debug-exit device I/O address
+/// - `al` = code: The exit code (0 = success, non-zero = error)
 macro_rules! qemu_exit {
     ($code:expr) => {{
         let code: u8 = $code;
         unsafe {
             core::arch::asm!(
-                "out dx, al",
-                in("dx") $crate::constants::io_ports::QEMU_EXIT,
-                in("al") code,
+                "out dx, al",  // Output exit code to I/O port
+                in("dx") $crate::constants::io_ports::QEMU_EXIT,  // QEMU exit port (0xF4)
+                in("al") code,  // Exit code
                 options(nomem, nostack, preserves_flags)
             );
         }

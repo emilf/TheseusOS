@@ -1,22 +1,31 @@
 # Temporary Heap System for Kernel Setup
 
-## Overview
+## What is a "Heap"?
 
-The temporary heap system provides the kernel with a pre-allocated memory region for use during its initialization phase, before proper page tables and memory management are established. This system eliminates the need for complex memory map parsing in the kernel while ensuring safe memory allocation.
+In programming, a **heap** is a region of memory where programs can dynamically allocate and free memory as needed. Think of it like a storage room where you can put things and take them out as needed.
 
-## Architecture
+## Why Do We Need a Temporary Heap?
 
-### Bootloader Side
-- **Allocation**: Bootloader allocates 1MB of safe memory using UEFI Boot Services
-- **Storage**: Memory address and size stored in handoff structure
-- **Type**: Uses `LOADER_DATA` memory type for safe allocation
-- **Fallback**: If allocation fails, handoff fields are set to 0
+When the kernel starts up, it needs memory to work with, but it hasn't set up its own memory management system yet. It's like trying to organize a room when you don't have any shelves or storage containers - you need some basic storage first!
 
-### Kernel Side
-- **Detection**: Kernel checks handoff structure for temporary heap information
-- **Initialization**: Sets up bump allocator using pre-allocated memory
-- **Fallback**: Uses fixed 1MB region at 0x100000 if no temporary heap available
-- **Usage**: Provides working heap for kernel initialization without complex setup
+The temporary heap system solves this by:
+- Giving the kernel a "starter" memory region to use
+- Avoiding complex memory setup during early kernel initialization
+- Providing a safe, pre-allocated memory area
+
+## How It Works
+
+### Bootloader Side (The Memory Allocator)
+- **What it does**: Asks UEFI for 1MB of safe memory to give to the kernel
+- **How it works**: Uses UEFI's memory allocation services (like asking the system for memory)
+- **What it stores**: Saves the memory address and size in the handoff structure
+- **Safety**: If it can't get memory, it sets the fields to 0 (no memory available)
+
+### Kernel Side (The Memory User)
+- **What it does**: Checks if the bootloader left it any memory to use
+- **How it works**: Sets up a simple "bump allocator" (just moves a pointer forward as it allocates)
+- **Fallback**: If no memory was provided, uses a fixed 1MB region at a known address
+- **Result**: The kernel can now allocate memory during its startup phase
 
 ## Implementation Details
 
@@ -43,19 +52,19 @@ pub temp_heap_size: u64,   // Size of heap in bytes
 4. **Initialization**: Sets up bump allocator with pre-allocated memory
 5. **Usage**: Kernel can allocate memory immediately upon entry
 
-## Benefits
+## Why This Design is Good
 
-### For Kernel
-- **Immediate Availability**: Heap ready immediately upon kernel entry
-- **No Complexity**: No need to parse memory maps or set up complex memory management
-- **Safe Memory**: Guaranteed to use bootloader-allocated safe memory
-- **Setup Focused**: Designed specifically for kernel initialization phase
+### For the Kernel
+- **Ready to Use**: As soon as the kernel starts, it has memory available
+- **Simple**: No need to figure out complex memory management right away
+- **Safe**: The memory was allocated by the bootloader, so it's guaranteed to be safe
+- **Focused**: Designed just for the kernel's startup phase
 
-### For System
-- **Clean Separation**: Bootloader handles memory allocation, kernel consumes
-- **Robust Fallback**: System works even if temporary heap allocation fails
-- **Simple Interface**: Clean address/size fields in handoff structure
-- **Future Proof**: Easy to extend or modify heap size as needed
+### For the Overall System
+- **Clear Responsibilities**: Bootloader handles memory setup, kernel uses it
+- **Reliable**: Even if something goes wrong, the system has a backup plan
+- **Easy to Understand**: Simple address and size fields in the handoff structure
+- **Flexible**: Easy to change the heap size or add more features later
 
 ## Usage Example
 
@@ -91,17 +100,17 @@ The system includes comprehensive testing:
 - **Vector Allocation**: Dynamic array allocation using `alloc::vec!`
 - **Integration Test**: Full bootloader-to-kernel handoff verification
 
-## Status
+## Current Status
 
-✅ **Fully Functional**: System is working correctly with:
-- Successful bootloader heap allocation (1MB at 0xE184000)
-- Kernel heap initialization using pre-allocated memory
-- Working bump allocator with proper alignment
-- Clean kernel initialization and exit
+✅ **Working Perfectly**: The system is fully functional with:
+- Bootloader successfully allocates 1MB of memory for the kernel
+- Kernel can use this memory immediately when it starts
+- Simple but effective memory allocation system
+- Clean startup and shutdown process
 
-## Future Enhancements
+## What's Next
 
-- **Dynamic Sizing**: Allow configurable heap size based on system needs
-- **Multiple Regions**: Support for multiple heap regions if needed
-- **Memory Type Detection**: Automatic selection of best memory type for heap
-- **Statistics**: Track heap usage during kernel initialization
+- **Configurable Size**: Allow the heap size to be adjusted based on system needs
+- **Multiple Heaps**: Support for having several memory regions if needed
+- **Smart Memory Selection**: Automatically choose the best type of memory for the heap
+- **Usage Tracking**: Monitor how much memory is being used during startup

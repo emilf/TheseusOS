@@ -1,76 +1,86 @@
 # Overview
 
-This project provides a comprehensive Rust UEFI bootloader that:
+This project provides a comprehensive Rust UEFI bootloader and kernel system that:
+
+## Bootloader Features
 1. Initializes UEFI services and logging
 2. Prints to screen and serial with beautiful formatting
 3. Collects comprehensive environment information (GOP, memory map, ACPI, firmware, boot info, CPU)
 4. Retrieves and preserves the UEFI memory map with proper key management
-5. Prepares for kernel handoff with complete system information
-6. Passes a comprehensive `Handoff` struct pointer in RDI for the kernel
-7. Halts (placeholder until chaining to a kernel)
+5. Loads and parses kernel ELF binaries from the EFI file system
+6. Prepares for kernel handoff with complete system information
+7. Passes a comprehensive `Handoff` struct pointer in RDI for the kernel
 
-## Boot Flow
-- UEFI loads `EFI/BOOT/BOOTX64.EFI` from the ESP.
-- Entry `efi_main` runs with `SystemTable<Boot>`.
-- We initialize serial communication and logging.
-- We collect Graphics Output Protocol (GOP) framebuffer information.
-- We retrieve the complete UEFI memory map and preserve it for kernel access.
-- We attempt to locate ACPI RSDP table (placeholder for UEFI-RS 0.35 API).
-- We collect firmware, boot time, device path, and CPU information.
-- We finalize the comprehensive `Handoff` structure with all collected data.
-- We prepare the memory map for kernel handoff (with memory map key).
-- We halt the CPU (ready for kernel chaining).
+## Kernel Features
+1. Initializes heap from bootloader-provided memory
+2. Sets up virtual memory with identity and high-half mappings
+3. Configures CPU features and control registers
+4. Sets up interrupt handling and exception management
+5. Provides comprehensive system information access
+6. Implements proper kernel environment setup
 
-## Handoff ABI
-C-compatible layout (`#[repr(C)]`) - **168 bytes total**:
+## Documentation
+The entire codebase features comprehensive documentation following Rust standards:
+- All public functions include detailed parameter and return value documentation
+- Module-level documentation explains purpose and functionality
+- Safety requirements are clearly documented for unsafe functions
+- Examples and usage patterns are provided where appropriate
 
-```
-struct Handoff {
-  // Header
-  size: u32,                    // Total size of this struct (168 bytes)
-  handoff_version: u32,         // Handoff format version (1)
-  
-  // Graphics Output Protocol (GOP) Information
-  gop_fb_base: u64,            // Framebuffer base address
-  gop_fb_size: u64,            // Framebuffer size in bytes
-  gop_width: u32,              // Framebuffer width in pixels
-  gop_height: u32,             // Framebuffer height in pixels
-  gop_stride: u32,             // Framebuffer stride
-  gop_pixel_format: u32,       // Pixel format enum (0=Rgb, 1=Bgr, 2=Bitmask, 3=BltOnly)
-  
-  // Memory Map Information
-  memory_map_buffer_ptr: u64,   // Memory map buffer pointer (managed by UEFI-RS)
-  memory_map_descriptor_size: u32,    // Descriptor size in bytes (48)
-  memory_map_descriptor_version: u32, // Descriptor version (1)
-  memory_map_entries: u32,      // Number of memory map entries
-  memory_map_size: u32,         // Total memory map buffer size
-  
-  // ACPI Information
-  acpi_rsdp: u64,              // ACPI RSDP table address (0 if not found)
-  
-  
-  // Firmware Information
-  firmware_vendor_ptr: u64,    // Firmware vendor string pointer (0 if not available)
-  firmware_vendor_len: u32,    // Firmware vendor string length
-  firmware_revision: u32,      // Firmware revision
-  
-  // Boot Time Information
-  boot_time_seconds: u64,      // Boot time (seconds since epoch)
-  boot_time_nanoseconds: u32,  // Boot time (nanoseconds)
-  boot_device_path_ptr: u64,   // Boot device path pointer (0 if not available)
-  boot_device_path_size: u32,  // Boot device path size in bytes
-  
-  // CPU Information
-  cpu_count: u32,              // CPU count
-  cpu_features: u64,           // CPU features flags
-  microcode_revision: u32,     // Microcode revision
-  
-  // Hardware Inventory Information
-  hardware_device_count: u32,  // Number of hardware devices found
-  hardware_inventory_ptr: u64, // Hardware inventory data pointer
-  hardware_inventory_size: u64, // Hardware inventory data size
-}
-```
+## How TheseusOS Starts Up
+
+Here's what happens when you run TheseusOS, step by step:
+
+### 1. **UEFI Phase** (The Motherboard Helps Out)
+- The computer's UEFI firmware (like a mini-operating system) loads our bootloader
+- Our bootloader starts running and can use UEFI's services
+- We set up communication so we can display information
+
+### 2. **Information Gathering** (Learning About the Computer)
+- **Graphics**: Find out what kind of display is available
+- **Memory**: Map out all the memory in the computer
+- **Hardware**: Discover what devices are connected
+- **CPU**: Learn about the processor's capabilities
+- **ACPI**: Get power management and hardware configuration info
+
+### 3. **Kernel Loading** (Getting Ready to Take Over)
+- Load the actual operating system (kernel) from disk
+- Set up memory for the kernel to use
+- Prepare all the information the kernel will need
+
+### 4. **Handoff** (Passing Control)
+- Exit UEFI mode (we no longer need the motherboard's help)
+- Jump to the kernel and give it all the information we collected
+- The kernel takes over and starts running the operating system
+
+### 5. **Kernel Phase** (The Real Operating System)
+- Set up memory management
+- Configure the CPU for optimal performance
+- Set up interrupt handling
+- Initialize the system for normal operation
+
+## The Handoff Structure (The Message Between Bootloader and Kernel)
+
+The "handoff structure" is like a detailed report that the bootloader writes for the kernel. It contains all the information the kernel needs to know about the computer.
+
+### What's in the Handoff Structure?
+
+Think of it like a comprehensive system report with these sections:
+
+- **System Info**: How big the structure is, what version it is
+- **Graphics**: Information about the display (resolution, color format, etc.)
+- **Memory**: Complete map of all the memory in the computer
+- **Hardware**: List of all devices connected to the computer
+- **CPU**: Information about the processor and its capabilities
+- **ACPI**: Power management and advanced hardware configuration
+- **Boot Info**: When the system started, what device it booted from
+- **Kernel Info**: Where the kernel is loaded in memory
+
+### Why This Design?
+
+- **Complete Information**: The kernel gets everything it needs in one place
+- **Efficient**: No need to re-discover hardware after bootloader finishes
+- **Reliable**: All information is collected while UEFI services are available
+- **Educational**: You can see exactly what information an OS needs to start up
 
 ### Handoff Structure Details:
 - **Register**: `RDI` = pointer to `Handoff`

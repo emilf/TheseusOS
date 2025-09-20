@@ -3,11 +3,17 @@
 //! Early paging and simple identity/high-half mappings used during kernel bring-up.
 //! Many helpers and constants are defined for future expansion and may be unused
 //! temporarily while the VM system is still being built out.
+//! 
+//! This module provides:
+//! - Page table creation and management
+//! - Virtual memory mapping (identity and high-half)
+//! - Frame allocation from UEFI memory map
+//! - Memory manager for kernel initialization
+//! 
+//! The module supports both custom page table implementation and x86_64 crate
+//! integration for comprehensive memory management.
 #![allow(dead_code)]
 #![allow(static_mut_refs)]
-//! 
-//! This module provides page table creation, virtual memory mapping,
-//! and memory management for the kernel.
 
 
 /// Page table entry flags
@@ -42,34 +48,64 @@ pub const TEMP_HEAP_VIRTUAL_BASE: u64 = 0xFFFFFFFFA0000000;
 pub const PHYS_OFFSET: u64 = 0xFFFF800000000000;
 
 /// Page table entry
+/// 
+/// Represents a single entry in a page table, containing a physical address
+/// and various flags that control memory access and caching behavior.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
 pub struct PageTableEntry(u64);
 
 impl PageTableEntry {
     /// Create a new page table entry
+    /// 
+    /// # Parameters
+    /// 
+    /// * `physical_addr` - The physical address to map
+    /// * `flags` - The flags to set for this entry
+    /// 
+    /// # Returns
+    /// 
+    /// A new PageTableEntry with the specified address and flags
     pub const fn new(physical_addr: u64, flags: u64) -> Self {
         Self(physical_addr & !PAGE_MASK | flags)
     }
     
     /// Get the physical address from the entry
+    /// 
+    /// # Returns
+    /// 
+    /// The physical address stored in this entry
     pub fn physical_addr(&self) -> u64 { self.0 & !PAGE_MASK }
     
     /// Check if the entry is present
+    /// 
+    /// # Returns
+    /// 
+    /// * `true` - If the entry is present and valid
+    /// * `false` - If the entry is not present
     pub fn is_present(&self) -> bool {
         self.0 & PTE_PRESENT != 0
     }
     
     /// Set the entry as present
+    /// 
+    /// This marks the entry as present and valid.
     pub fn set_present(&mut self) {
         self.0 |= PTE_PRESENT;
     }
     
     /// Get the flags
+    /// 
+    /// # Returns
+    /// 
+    /// The flags stored in this entry
     pub fn flags(&self) -> u64 { self.0 & PAGE_MASK }
 }
 
 /// Page table (512 entries)
+/// 
+/// Represents a page table containing 512 entries, each mapping a 4KB page
+/// or pointing to another level of page tables.
 #[repr(align(4096))]
 #[derive(Clone, Copy)]
 pub struct PageTable {
@@ -78,6 +114,10 @@ pub struct PageTable {
 
 impl PageTable {
     /// Create a new empty page table
+    /// 
+    /// # Returns
+    /// 
+    /// A new PageTable with all entries set to zero (not present)
     pub const fn new() -> Self {
         Self {
             entries: [PageTableEntry(0); 512],
@@ -85,6 +125,14 @@ impl PageTable {
     }
     
     /// Get a page table entry by index
+    /// 
+    /// # Parameters
+    /// 
+    /// * `index` - The index of the entry to retrieve (0-511)
+    /// 
+    /// # Returns
+    /// 
+    /// A mutable reference to the page table entry
     pub fn get_entry(&mut self, index: usize) -> &mut PageTableEntry {
         &mut self.entries[index]
     }
@@ -386,11 +434,35 @@ unsafe fn get_or_create_page_table_alloc(entry: &mut PageTableEntry, fa: &mut Bo
     }
 }
 
-/// Activate virtual memory
+/// Activate virtual memory by loading the page table root into CR3
+/// 
+/// This function performs the critical step of enabling virtual memory by loading
+/// the physical address of the PML4 (Page Map Level 4) table into the CR3 register.
+/// This makes the CPU use our page tables for address translation.
+/// 
+/// # Assembly Details
+/// - `mov cr3, {page_table_root}`: Load the PML4 physical address into CR3 register
+/// 
+/// # Parameters
+/// 
+/// * `page_table_root` - Physical address of the PML4 page table
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it:
+/// - Modifies the CR3 control register
+/// - Assumes the page table is properly set up
+/// - Must be called when identity mapping is active (before high-half transition)
+/// 
+/// The caller must ensure:
+/// - The page table is properly initialized and valid
+/// - Identity mapping is active for the current code
+/// - The page table root address is valid and accessible
+/// - No other code is modifying CR3 concurrently
 pub unsafe fn activate_virtual_memory(page_table_root: u64) {
-    // Switch to our freshly created PML4 (pre-CR3 identity makes this safe)
+    // Load our page table root into CR3 to enable virtual memory
     core::arch::asm!(
-        "mov cr3, {}",
+        "mov cr3, {}",  // Load PML4 physical address into CR3 register
         in(reg) page_table_root,
         options(nomem, nostack, preserves_flags)
     );

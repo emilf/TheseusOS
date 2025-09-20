@@ -12,6 +12,28 @@ use crate::memory::{MemoryManager, activate_virtual_memory, KERNEL_VIRTUAL_BASE,
 #[link_section = ".bss.stack"]
 static mut KERNEL_STACK: [u8; 64 * 1024] = [0; 64 * 1024];
 
+/// Switch to high-half kernel stack and continue execution
+/// 
+/// This function performs a critical transition from the low-half (identity-mapped)
+/// kernel to the high-half (virtual-mapped) kernel. It switches to a dedicated
+/// kernel stack and jumps to the high-half continuation function.
+/// 
+/// # Assembly Details
+/// - `mov rsp, {stack_top}`: Load the stack pointer with the top of our kernel stack
+/// - `jmp {cont}`: Jump to the high-half continuation function
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it:
+/// - Modifies the stack pointer directly
+/// - Performs a non-returning jump
+/// - Assumes the kernel stack is properly aligned and accessible
+/// 
+/// The caller must ensure:
+/// - The kernel stack is properly allocated and aligned
+/// - The stack memory is accessible and not corrupted
+/// - The high-half continuation function is valid and properly mapped
+/// - No other code is using the stack during the transition
 #[inline(never)]
 unsafe fn switch_to_high_stack_and_continue() -> ! {
     extern "C" fn high_stack_main() -> ! { unsafe { continue_after_stack_switch() } }
@@ -19,36 +41,86 @@ unsafe fn switch_to_high_stack_and_continue() -> ! {
     let size = core::mem::size_of::<[u8; 64 * 1024]>() as u64;
     let top_aligned = (base + size) & !0xFu64;
     core::arch::asm!(
-        "mov rsp, {stack_top}",
-        "jmp {cont}",
+        "mov rsp, {stack_top}",  // Set stack pointer to top of kernel stack
+        "jmp {cont}",            // Jump to high-half continuation function
         stack_top = in(reg) top_aligned,
         cont = sym high_stack_main,
         options(noreturn)
     );
 }
 
+/// High-half entry point function
+/// 
+/// This function is called after jumping to the high-half virtual address space.
+/// It immediately switches to the high-half kernel stack and continues execution.
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it:
+/// - Calls unsafe functions that modify the stack pointer
+/// - Assumes the high-half environment is properly set up
+/// - Performs non-returning operations
+/// 
+/// The caller must ensure:
+/// - Virtual memory is properly configured
+/// - High-half mappings are active
+/// - The kernel stack is accessible in high-half space
 unsafe extern "C" fn after_high_half_entry() -> ! {
     // Switch stack immediately to a high-half kernel stack
     switch_to_high_stack_and_continue();
 }
 
+/// Continue kernel setup after switching to high-half stack
+/// 
+/// This function completes the kernel initialization process after transitioning
+/// to the high-half virtual address space. It sets up the IDT, configures CPU
+/// features, initializes memory management, and prepares the system for normal operation.
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it:
+/// - Modifies global system state (IDT, CR4, MSRs)
+/// - Performs memory allocation operations
+/// - Assumes the high-half environment is properly configured
+/// 
+/// The caller must ensure:
+/// - We are running in high-half virtual address space
+/// - Virtual memory mappings are active and correct
+/// - The kernel stack is properly set up
+/// - No other code is modifying system state concurrently
 pub(super) unsafe fn continue_after_stack_switch() -> ! {
     // Reinstall IDT and continue setup now that we're in high-half
     crate::display::kernel_write_line("  [hh] entered high-half");
-    // Debug: print current CS and expected KERNEL_CS
+    // Debug: Verify we're running in the correct code segment and IDT is properly set up
     {
-        let cs_val: u16; unsafe { core::arch::asm!("mov {0:x}, cs", out(reg) cs_val, options(nomem, nostack, preserves_flags)); }
-        crate::display::kernel_write_line("  [dbg] CS="); theseus_shared::print_hex_u64_0xe9!(cs_val as u64); crate::display::kernel_write_line(" expected="); theseus_shared::print_hex_u64_0xe9!(crate::gdt::KERNEL_CS as u64); crate::display::kernel_write_line("\n");
-        // Print IDT[14] selector/type_attr to ensure correct gate
+        // Read current code segment selector to verify we're using the kernel CS
+        let cs_val: u16; 
+        unsafe { 
+            core::arch::asm!(
+                "mov {0:x}, cs",  // Read code segment register
+                out(reg) cs_val, 
+                options(nomem, nostack, preserves_flags)
+            ); 
+        }
+        crate::display::kernel_write_line("  [dbg] CS="); 
+        theseus_shared::print_hex_u64_0xe9!(cs_val as u64); 
+        crate::display::kernel_write_line(" expected="); 
+        theseus_shared::print_hex_u64_0xe9!(crate::gdt::KERNEL_CS as u64); 
+        crate::display::kernel_write_line("\n");
+        
+        // Verify IDT entry 14 (Page Fault) is properly configured
         unsafe {
             use x86_64::instructions::tables::sidt;
             let idtr = sidt();
             let base = idtr.base.as_u64();
-            let ent = base + (14 * 16) as u64;
-            let sel = core::ptr::read_unaligned((ent + 2) as *const u16) as u64;
-            let ty  = core::ptr::read_unaligned((ent + 5) as *const u8) as u64;
-            crate::display::kernel_write_line("  [dbg] IDT14 sel="); theseus_shared::print_hex_u64_0xe9!(sel);
-            crate::display::kernel_write_line(" type="); theseus_shared::print_hex_u64_0xe9!(ty); crate::display::kernel_write_line("\n");
+            let ent = base + (14 * 16) as u64;  // IDT entry 14 is 16 bytes each
+            let sel = core::ptr::read_unaligned((ent + 2) as *const u16) as u64;  // Selector at offset 2
+            let ty  = core::ptr::read_unaligned((ent + 5) as *const u8) as u64;   // Type/attributes at offset 5
+            crate::display::kernel_write_line("  [dbg] IDT14 sel="); 
+            theseus_shared::print_hex_u64_0xe9!(sel);
+            crate::display::kernel_write_line(" type="); 
+            theseus_shared::print_hex_u64_0xe9!(ty); 
+            crate::display::kernel_write_line("\n");
         }
     }
     setup_idt();
@@ -171,6 +243,19 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
 /// 4. Configure control registers
 /// 5. Set up CPU features
 /// 6. Test basic operations
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it:
+/// - Modifies global system state (interrupts, GDT, control registers)
+/// - Performs memory management operations
+/// - Assumes the handoff structure is valid and properly initialized
+/// 
+/// The caller must ensure:
+/// - The handoff structure contains valid system information
+/// - No other code is running concurrently
+/// - The kernel physical base address is correct
+/// - UEFI boot services have been exited
 pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64) {
     crate::display::kernel_write_line("=== Setting up Kernel Environment ===");
     
@@ -221,44 +306,77 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64) {
     unsafe { setup_idt(); }
     crate::display::kernel_write_line("  IDT (low-half) installed");
     crate::display::kernel_write_line("  [hh] preparing jump to high-half...");
-    // Compute addresses and verify bytes before jumping to high-half
+    // Prepare for high-half transition: compute addresses and verify mappings
     let virt_base: u64 = KERNEL_VIRTUAL_BASE;
     let phys_base: u64 = kernel_physical_base;
-    let rip_now: u64; unsafe { core::arch::asm!("lea {}, [rip + 0]", out(reg) rip_now, options(nostack)); }
+    
+    // Get current instruction pointer to determine if we're already in high-half
+    let rip_now: u64; 
+    unsafe { 
+        core::arch::asm!(
+            "lea {}, [rip + 0]",  // Load effective address of current instruction
+            out(reg) rip_now, 
+            options(nostack)
+        ); 
+    }
+    
     if rip_now >= virt_base {
         crate::display::kernel_write_line("  [hh] already in high-half, skipping jump\n");
     } else {
-        // Compute target HH VA from current symbol address: (sym - phys_base) + KERNEL_VIRTUAL_BASE
+        // Calculate the virtual address of our high-half entry point
+        // Formula: (physical_symbol - physical_base) + virtual_base
         let sym: u64 = after_high_half_entry as usize as u64;
         let target: u64 = sym.wrapping_sub(phys_base).wrapping_add(KERNEL_VIRTUAL_BASE);
         let offset = rip_now.wrapping_sub(phys_base);
-        // Dump debug info and compare 8 bytes at low_rip vs target (use current rip for consistency)
-        crate::display::kernel_write_line("  hh dbg: phys_base="); theseus_shared::print_hex_u64_0xe9!(phys_base);
-        crate::display::kernel_write_line(" low_rip="); theseus_shared::print_hex_u64_0xe9!(rip_now);
-        crate::display::kernel_write_line(" offset="); theseus_shared::print_hex_u64_0xe9!(offset);
-        crate::display::kernel_write_line(" virt_base="); theseus_shared::print_hex_u64_0xe9!(virt_base);
-        crate::display::kernel_write_line(" target="); theseus_shared::print_hex_u64_0xe9!(target); crate::display::kernel_write_line("\n");
+        
+        // Debug output: show address translation details
+        crate::display::kernel_write_line("  hh dbg: phys_base="); 
+        theseus_shared::print_hex_u64_0xe9!(phys_base);
+        crate::display::kernel_write_line(" low_rip="); 
+        theseus_shared::print_hex_u64_0xe9!(rip_now);
+        crate::display::kernel_write_line(" offset="); 
+        theseus_shared::print_hex_u64_0xe9!(offset);
+        crate::display::kernel_write_line(" virt_base="); 
+        theseus_shared::print_hex_u64_0xe9!(virt_base);
+        crate::display::kernel_write_line(" target="); 
+        theseus_shared::print_hex_u64_0xe9!(target); 
+        crate::display::kernel_write_line("\n");
+        
         {
-            // Verify mapping exists for target VA before jumping
+            // Verify that the target virtual address is properly mapped before jumping
             use x86_64::{VirtAddr, registers::control::Cr3, structures::paging::{OffsetPageTable, PageTable as X86PageTable, Translate}};
             let (_frame, _flags) = Cr3::read();
             let pml4_pa = _frame.start_address().as_u64();
             let l4: &mut X86PageTable = unsafe { &mut *(pml4_pa as *mut X86PageTable) };
             let mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(crate::memory::PHYS_OFFSET)) };
-            // Debug: dump PML4[HH] entry value
+            
+            // Debug: Check PML4 entry for high-half region (bits 47:39 of virtual address)
             let hh_index = ((KERNEL_VIRTUAL_BASE >> 39) & 0x1FF) as usize;
             let pml4_entry_val = unsafe { core::ptr::read_volatile((pml4_pa as *const u64).add(hh_index)) };
             crate::display::kernel_write_line("  [hh] PML4[HH]=");
             theseus_shared::print_hex_u64_0xe9!(pml4_entry_val);
             crate::display::kernel_write_line("\n");
+            
+            // Verify the target address translates to a valid physical address
             let phys = mapper.translate_addr(VirtAddr::new(target));
             crate::display::kernel_write_line("  [hh] target phys=");
-            if let Some(pa) = phys { theseus_shared::print_hex_u64_0xe9!(pa.as_u64()); } else { theseus_shared::qemu_println!("NONE"); }
+            if let Some(pa) = phys { 
+                theseus_shared::print_hex_u64_0xe9!(pa.as_u64()); 
+            } else { 
+                theseus_shared::qemu_println!("NONE"); 
+            }
             crate::display::kernel_write_line("\n");
+            
+            // Perform the jump to high-half virtual address
             crate::display::kernel_write_line("  [hh] jumping to high-half (via virt_off)");
-            unsafe { core::arch::asm!("jmp rax", in("rax") target, options(noreturn)); }
+            unsafe { 
+                core::arch::asm!(
+                    "jmp rax",  // Jump to the calculated virtual address
+                    in("rax") target, 
+                    options(noreturn)
+                ); 
+            }
         }
-        // legacy path removed
     }
 
     // Unreachable if jump succeeds; if we get here, panic to avoid continuing in low-half

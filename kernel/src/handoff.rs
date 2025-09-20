@@ -1,7 +1,14 @@
 //! Handoff management module
 //! 
 //! This module provides functions for validating and accessing the handoff structure
-//! passed from the bootloader to the kernel.
+//! passed from the bootloader to the kernel. The handoff structure contains all
+//! the system information collected by the bootloader, including memory maps,
+//! ACPI tables, hardware inventory, and other critical system data.
+//! 
+//! The module provides:
+//! - Handoff structure validation
+//! - Pointer management for physical and virtual access
+//! - Safe access to handoff data
 
 use theseus_shared::handoff::Handoff;
 use crate::memory;
@@ -12,6 +19,14 @@ static mut HANDOFF_VIRT_PTR: u64 = 0;
 static mut HANDOFF_INITIALIZED: bool = false;
 
 /// Set up handoff pointer tracking for both physical and virtual access
+/// 
+/// This function initializes the global handoff pointers used throughout the kernel.
+/// It stores both physical and virtual pointers to the handoff structure for
+/// safe access during different phases of kernel initialization.
+/// 
+/// # Parameters
+/// 
+/// * `handoff_phys` - Physical address of the handoff structure
 pub fn set_handoff_pointers(handoff_phys: u64) {
     unsafe {
         HANDOFF_PHYS_PTR = handoff_phys;
@@ -29,6 +44,14 @@ pub fn set_handoff_pointers(handoff_phys: u64) {
 /// 
 /// Chooses between physical and virtual pointer based on current execution context.
 /// This allows the same code to work both before and after high-half jumping.
+/// 
+/// # Returns
+/// 
+/// A reference to the handoff structure
+/// 
+/// # Safety
+/// 
+/// The caller must ensure that the handoff structure is valid and properly initialized.
 #[allow(dead_code)]
 pub fn handoff_ref() -> &'static Handoff {
     // Always use the physical pointer; identity mapping ensures accessibility
@@ -37,12 +60,28 @@ pub fn handoff_ref() -> &'static Handoff {
 }
 
 /// Get the physical pointer to the handoff structure
+/// 
+/// # Returns
+/// 
+/// The physical address of the handoff structure
 pub fn handoff_phys_ptr() -> u64 {
     unsafe { HANDOFF_PHYS_PTR }
 }
 
-/// Validate the bootloader handoff structure for basic sanity.
-/// Returns Ok(()) if all checks pass, otherwise Err(message) describing the issue.
+/// Validate the bootloader handoff structure for basic sanity
+/// 
+/// This function performs comprehensive validation of the handoff structure
+/// to ensure it contains valid system information. It checks structure size,
+/// version, memory map consistency, and other critical fields.
+/// 
+/// # Parameters
+/// 
+/// * `h` - Reference to the handoff structure to validate
+/// 
+/// # Returns
+/// 
+/// * `Ok(())` - If all validation checks pass
+/// * `Err(message)` - If validation fails, with a description of the issue
 pub fn validate_handoff(h: &Handoff) -> Result<(), &'static str> {
     // Expected struct size and version
     let expected_size = core::mem::size_of::<Handoff>() as u32;

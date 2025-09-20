@@ -2,8 +2,20 @@
 //! 
 //! This module provides functions to disable all interrupts including NMI,
 //! and control various interrupt sources during kernel initialization.
+//! 
+//! The module provides:
+//! - Interrupt Descriptor Table (IDT) setup
+//! - Exception and interrupt handlers
+//! - Interrupt disabling and masking
+//! - APIC and PIC management
+//! 
+//! This is essential for kernel initialization to ensure a clean environment
+//! before setting up proper interrupt handling.
 
 /// Minimal IDT structures for exception handling (64-bit gate is 16 bytes)
+/// 
+/// This structure represents a single entry in the Interrupt Descriptor Table.
+/// It contains the handler address, segment selector, and various flags.
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
 struct IdtEntry {
@@ -149,6 +161,16 @@ pub unsafe fn validate_idt_basic() -> bool {
 }
 
 /// Set up a basic IDT with exception handlers
+/// 
+/// This function creates and loads the Interrupt Descriptor Table with handlers
+/// for critical exceptions. It sets up handlers for divide error, breakpoint,
+/// invalid opcode, general protection fault, page fault, double fault, NMI,
+/// and machine check exceptions.
+/// 
+/// # Safety
+/// 
+/// This function modifies the IDT and should only be called during kernel
+/// initialization when it's safe to set up interrupt handling.
 pub unsafe fn setup_idt() {
     let idt = IDT_X86.call_once(|| {
         let mut idt = InterruptDescriptorTable::new();
@@ -250,6 +272,15 @@ pub unsafe fn print_idt_summary_compact() {
 }
 
 /// Disable all interrupts including NMI
+/// 
+/// This function comprehensively disables all interrupt sources to ensure
+/// a clean environment during kernel initialization. It disables regular
+/// interrupts, NMI, local APIC interrupts, and masks all PIC interrupts.
+/// 
+/// # Safety
+/// 
+/// This function modifies interrupt control registers and should only be called
+/// during kernel initialization when it's safe to disable all interrupts.
 pub unsafe fn disable_all_interrupts() {
     // Disable regular interrupts (CLI)
     x86_64::instructions::interrupts::disable();
@@ -273,8 +304,12 @@ unsafe fn disable_nmi() {
 }
 
 /// Disable local APIC interrupts
+/// 
+/// Currently disabled as LAPIC MMIO region (0xFEE0_0000) needs to be mapped
+/// before we can access it. This is a placeholder for future implementation.
 unsafe fn disable_local_apic() {
-    // TODO: Map LAPIC MMIO (0xFEE0_0000) before accessing; skip for now
+    // Note: LAPIC MMIO region (0xFEE0_0000) needs to be mapped before accessing
+    // For now, we skip APIC configuration during early kernel initialization
     return;
 }
 
@@ -299,19 +334,45 @@ unsafe fn has_apic() -> bool {
 }
 
 /// Get APIC base address from IA32_APIC_BASE MSR
+/// Get the Local APIC base address from the IA32_APIC_BASE MSR
+/// 
+/// This function reads the Model Specific Register (MSR) that contains the
+/// physical base address of the Local APIC (Advanced Programmable Interrupt Controller).
+/// The APIC is used for interrupt handling in modern x86-64 systems.
+/// 
+/// # Assembly Details
+/// - `rdmsr`: Read Model Specific Register instruction
+/// - `ecx` = 0x1B: IA32_APIC_BASE MSR number
+/// - `eax` and `edx`: 64-bit value returned in two 32-bit registers
+/// 
+/// # Returns
+/// 
+/// The 64-bit physical base address of the Local APIC
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it:
+/// - Executes privileged MSR read instruction
+/// - Assumes the CPU supports the APIC_BASE MSR
+/// 
+/// The caller must ensure:
+/// - The CPU supports the IA32_APIC_BASE MSR
+/// - We are running in kernel mode with sufficient privileges
+/// - The MSR is accessible and not corrupted
 #[allow(dead_code)]
 unsafe fn get_apic_base() -> u64 {
     let mut eax: u32;
     let mut edx: u32;
     
     core::arch::asm!(
-        "rdmsr",
-        in("ecx") 0x1Bu32, // IA32_APIC_BASE MSR
-        out("eax") eax,
-        out("edx") edx,
+        "rdmsr",                    // Read Model Specific Register
+        in("ecx") 0x1Bu32,         // IA32_APIC_BASE MSR number
+        out("eax") eax,            // Lower 32 bits of result
+        out("edx") edx,            // Upper 32 bits of result
         options(nomem, nostack, preserves_flags)
     );
     
+    // Combine the two 32-bit values into a 64-bit address
     ((edx as u64) << 32) | (eax as u64)
 }
 
@@ -339,17 +400,36 @@ pub unsafe fn enable_interrupts() { x86_64::instructions::interrupts::enable(); 
 #[allow(dead_code)]
 pub fn trigger_breakpoint() { x86_64::instructions::interrupts::int3(); }
 
-/// Check if interrupts are enabled
+/// Check if interrupts are currently enabled
+/// 
+/// This function reads the CPU flags register to determine if interrupts
+/// are enabled. It's useful for debugging and ensuring proper interrupt state.
+/// 
+/// # Assembly Details
+/// - `pushfq`: Push the RFLAGS register onto the stack
+/// - `pop {flags}`: Pop the flags into a general-purpose register
+/// - The Interrupt Flag (IF) is bit 9 (0x200) in the RFLAGS register
+/// 
+/// # Returns
+/// 
+/// * `true` - If interrupts are enabled (IF flag is set)
+/// * `false` - If interrupts are disabled (IF flag is clear)
+/// 
+/// # Safety
+/// 
+/// This function is safe because it only reads the flags register without
+/// modifying any system state. However, the result may be stale if interrupts
+/// are enabled/disabled between the read and use of the result.
 #[allow(dead_code)]
 pub fn interrupts_enabled() -> bool {
     let flags: u64;
     unsafe {
         core::arch::asm!(
-            "pushfq",
-            "pop {}",
+            "pushfq",        // Push RFLAGS register onto stack
+            "pop {}",        // Pop flags into general-purpose register
             out(reg) flags,
             options(nomem, nostack, preserves_flags)
         );
     }
-    (flags & 0x200) != 0 // IF flag
+    (flags & 0x200) != 0 // Check bit 9 (IF flag) in RFLAGS
 }

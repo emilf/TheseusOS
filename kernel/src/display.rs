@@ -1,15 +1,29 @@
 //! Display and output module
 //! 
 //! This module provides functions for displaying kernel information and debug output.
+//! It handles formatted output to the QEMU debug port and provides utilities for
+//! displaying handoff structure contents in a readable format.
 
 use theseus_shared::handoff::Handoff;
 
 /// Simple kernel output function that writes directly to QEMU debug port
+/// 
+/// This function provides a simple way to output text from the kernel to the
+/// QEMU debug port (0xE9). It's used for kernel logging and debug output.
+/// 
+/// # Parameters
+/// 
+/// * `message` - The message string to output
 pub fn kernel_write_line(message: &str) { 
     theseus_shared::qemu_println!(message); 
 }
 
-/// Print key/value with hex value
+/// Print key/value pair with hex value
+/// 
+/// # Parameters
+/// 
+/// * `name` - The field name to display
+/// * `value` - The 64-bit value to display in hex
 fn print_kv_u64(name: &str, value: u64) {
     theseus_shared::qemu_print!(name);
     theseus_shared::qemu_print!(": ");
@@ -18,9 +32,23 @@ fn print_kv_u64(name: &str, value: u64) {
     theseus_shared::qemu_println!("");
 }
 
+/// Print key/value pair with hex value (32-bit version)
+/// 
+/// # Parameters
+/// 
+/// * `name` - The field name to display
+/// * `value` - The 32-bit value to display in hex
 fn print_kv_u32(name: &str, value: u32) { print_kv_u64(name, value as u64); }
 
-/// Pretty print the Handoff structure. Optionally dump raw bytes too.
+/// Pretty print the Handoff structure with optional raw byte dump
+/// 
+/// This function displays the contents of the handoff structure in a formatted
+/// table, showing all the system information passed from the bootloader to the kernel.
+/// 
+/// # Parameters
+/// 
+/// * `h` - Reference to the handoff structure to display
+/// * `dump_bytes` - If true, also dump the raw bytes of the structure
 pub fn dump_handoff(h: &Handoff, dump_bytes: bool) {
     kernel_write_line("");
     kernel_write_line("┌─────────────────────────────────────────────────────────┐");
@@ -92,6 +120,19 @@ pub fn dump_handoff(h: &Handoff, dump_bytes: bool) {
 }
 
 /// Dump raw bytes of the handoff in a hex table (16 bytes per row)
+/// 
+/// This function displays the raw memory contents of the handoff structure
+/// in a hexadecimal format, useful for debugging memory layout issues.
+/// 
+/// # Parameters
+/// 
+/// * `ptr` - Pointer to the start of the memory to dump
+/// * `size` - Number of bytes to dump
+/// 
+/// # Safety
+/// 
+/// The caller must ensure that the memory pointed to by `ptr` is valid
+/// and readable for `size` bytes.
 pub fn dump_handoff_bytes(ptr: *const u8, size: usize) {
     kernel_write_line("");
     kernel_write_line("Handoff raw bytes (hex):");

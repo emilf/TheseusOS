@@ -59,8 +59,8 @@ use environment::setup_kernel_environment;
 /// The handoff structure address is passed as a parameter.
 #[no_mangle]
 pub extern "C" fn kernel_main(handoff_addr: u64) -> ! {
-    // Initialize kernel logging (placeholder)
-    // TODO: Set up kernel logging system
+    // Initialize kernel logging using QEMU debug port
+    // Note: We use direct QEMU debug port output for kernel logging
     
     kernel_write_line("=== TheseusOS Kernel Starting ===");
     kernel_write_line("Kernel entry point reached successfully");

@@ -1,58 +1,74 @@
 # Driver Output Configuration Guide
 
-This document explains how to configure QEMU to capture output from the different drivers in the TheseusOS UEFI loader.
+This document explains how TheseusOS displays information during boot and how to see that output.
 
-## Driver Types and Output Destinations
+## What are "Drivers"?
 
-### 1. QEMU Debug Driver (Default)
-- **What it does**: Writes directly to QEMU debug port (0xe9) using I/O ports
-- **When it's active**: Always (default driver for QEMU targets)
-- **Output destination**: QEMU debug console (stdout in headless, `debug.log` in headed)
-- **Use case**: QEMU development and testing (simplest option)
+In operating systems, a **driver** is a piece of code that knows how to talk to a specific piece of hardware. For displaying text, we need drivers that know how to send text to different output devices.
 
-### 2. UEFI Serial Driver
-- **What it does**: Uses UEFI Serial I/O protocol
-- **When it's active**: Available during boot services (not used by default)
-- **Output destination**: UEFI serial console (QEMU's `-serial` option)
-- **Use case**: Real hardware UEFI systems
+## Why Do We Need Different Drivers?
 
-### 3. Raw Serial Driver
-- **What it does**: Direct hardware access to COM1 serial port (0x3f8)
-- **When it's active**: If not on QEMU and after exiting boot services
-- **Output destination**: COM1 serial port (real hardware)
-- **Use case**: Real hardware after boot services exit
+Different environments need different ways to display text:
 
-## Current QEMU Configuration
+1. **During Development**: We use QEMU (a computer simulator), so we need a driver that works with QEMU
+2. **On Real Hardware**: We need drivers that work with actual computer hardware
+3. **Different Phases**: Some drivers work during UEFI boot, others work after the kernel takes over
 
-The current `startQemu.sh` script configures serial output as follows:
+## Driver Types and Where They Send Output
 
-### Headless Mode (Default)
+### 1. QEMU Debug Driver (Default - What We Use Most)
+- **What it does**: Sends text directly to QEMU's debug port
+- **When it works**: Always (this is our main driver for development)
+- **Where you see output**: In your terminal when running QEMU
+- **Why it's good**: Simple and works great for learning and development
+
+### 2. UEFI Serial Driver (For Real Hardware)
+- **What it does**: Uses UEFI's built-in text output system
+- **When it works**: During the bootloader phase on real hardware
+- **Where you see output**: On the computer's serial port (like an old modem port)
+- **Why it's useful**: Works on real computers, not just simulators
+
+### 3. Raw Serial Driver (Backup for Real Hardware)
+- **What it does**: Talks directly to the computer's serial port hardware
+- **When it works**: After the kernel takes over on real hardware
+- **Where you see output**: On the computer's serial port
+- **Why it's needed**: Some systems don't have UEFI serial support
+
+## How to See the Output
+
+### Simple Way (Recommended for Learning)
+Just run TheseusOS and you'll see all the output in your terminal:
+
 ```bash
-QEMU_SERIAL="-serial stdio"
-QEMU_DEBUG="-device isa-debugcon,chardev=debugcon"
-QEMU_DEBUG_CHAR="-chardev file,id=debugcon,path=debug.log"
-```
-- **UEFI Serial Driver**: ✅ Output goes to stdout
-- **QEMU Debug Driver**: ✅ Output goes to `debug.log`
-- **Raw Serial Driver**: ✅ Available as fallback (COM1)
+# Run in headless mode (no graphics window)
+make run
 
-### Headed Mode
+# Run with graphics window
+make run-headed
+```
+
+### What You'll See
+- **Bootloader output**: Information about system hardware, memory, etc.
+- **Kernel output**: Messages from the operating system as it starts up
+- **Debug information**: Technical details about what's happening
+
+### Advanced: Multiple Output Streams
+If you want to see output from different drivers separately:
+
 ```bash
-QEMU_SERIAL="-serial file:serial.log"
-QEMU_DEBUG="-device isa-debugcon,chardev=debugcon"
-QEMU_DEBUG_CHAR="-chardev file,id=debugcon,path=debug.log"
+# Terminal 1: Start TheseusOS
+make run
+
+# Terminal 2: Watch debug output (if using headed mode)
+tail -f debug.log
 ```
-- **UEFI Serial Driver**: ✅ Output goes to `serial.log`
-- **QEMU Debug Driver**: ✅ Output goes to `debug.log`
-- **Raw Serial Driver**: ✅ Available as fallback (COM1)
 
-## ✅ All Drivers Now Working!
+## Current Status
 
-All three drivers are now properly configured and working:
-
-1. **UEFI Serial Driver**: Works during boot services via UEFI Serial I/O protocol
-2. **QEMU Debug Driver**: Works after boot services via port 0xe9 (QEMU-specific)
-3. **Raw Serial Driver**: Available as fallback via COM1 (real hardware)
+✅ **Everything Working**: All output drivers are properly configured:
+1. **QEMU Debug Driver**: Main driver for development (shows in terminal)
+2. **UEFI Serial Driver**: Works during bootloader phase
+3. **Raw Serial Driver**: Available as backup for real hardware
 
 ## Solutions
 

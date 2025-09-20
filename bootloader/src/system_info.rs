@@ -184,7 +184,7 @@ pub fn collect_cpu_info() -> Option<(u32, u64, u32)> {
 
     write_line(&alloc::format!("✓ CPU count determined from ACPI: {}", count));
 
-    let cpu_features: u64 = 0; // TODO: CPUID feature bits
-    let microcode_revision: u32 = 0; // TODO: Read microcode revision if desired
+    let cpu_features: u64 = 0; // Note: CPUID feature detection is handled in kernel
+    let microcode_revision: u32 = 0; // Note: Microcode revision reading deferred to kernel
     Some((count, cpu_features, microcode_revision))
 }

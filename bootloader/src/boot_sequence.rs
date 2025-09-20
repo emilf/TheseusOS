@@ -361,11 +361,11 @@ pub unsafe fn jump_to_kernel_with_handoff(physical_entry_point: u64, handoff_ptr
     unsafe { (*(handoff_phys as *mut Handoff)).boot_services_exited = 1; }
 
     // Do NOT log after ExitBootServices; firmware services are gone
-    // Jump to the kernel entry point using SysV ABI: first arg in RDI
+    // Jump to the kernel entry point using System V ABI: first argument in RDI
     unsafe {
         core::arch::asm!(
-            "mov rdi, {handoff}",
-            "jmp {entry}",
+            "mov rdi, {handoff}",  // Load handoff structure address into RDI (first argument)
+            "jmp {entry}",         // Jump to kernel entry point
             handoff = in(reg) handoff_phys as u64,
             entry = in(reg) physical_entry_point,
             options(noreturn)

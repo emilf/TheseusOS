@@ -5,6 +5,17 @@ This is an experiment in "vibe coding", as the creator is not well versed in rus
 
 TheseusOS demonstrates modern OS development practices with comprehensive system information collection, proper UEFI boot services management, and kernel environment setup.
 
+## Documentation
+
+This project features comprehensive documentation throughout the codebase:
+
+- **Function Documentation**: All public functions include detailed documentation with parameter descriptions, return values, and safety requirements
+- **Module Documentation**: Each module has a comprehensive overview explaining its purpose and functionality
+- **Code Comments**: Inline comments explain complex logic and implementation details
+- **API Documentation**: Generated documentation available via `cargo doc --open`
+
+The codebase follows Rust documentation standards and includes examples where appropriate.
+
 ## Architecture
 
 TheseusOS is composed of three main components:
@@ -137,6 +148,34 @@ telnet 127.0.0.1 55555
 - Implements correct FileInfo buffer management
 - Follows UEFI specification for file system access
 - Proper memory map handling and boot services exit
+
+## Documentation Standards
+
+This project follows comprehensive documentation standards:
+
+### Function Documentation
+Every public function includes:
+- Brief description of what the function does
+- `# Parameters` section listing all parameters with types and descriptions
+- `# Returns` section describing the return value and possible error conditions
+- `# Safety` section for unsafe functions explaining safety requirements
+- `# Examples` section where appropriate
+
+### Module Documentation
+Each module includes:
+- Module-level documentation explaining the module's purpose
+- Overview of the module's functionality and responsibilities
+- List of key types and functions provided
+- Usage examples and integration notes
+
+### Code Comments
+- Inline comments explain complex logic and implementation details
+- TODO comments mark areas for future improvement
+- Safety comments explain why certain operations are safe
+- Architecture comments explain design decisions
+
+### Generated Documentation
+Run `cargo doc --open` to generate and view the complete API documentation.
 
 ## Next Steps
 - **Kernel Development**: Implement actual kernel functionality (memory management, process scheduling)
