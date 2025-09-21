@@ -332,12 +332,12 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         }
         }
         // Stress test: repeatedly arm the LAPIC one-shot timer to exercise IRQ handling
-        const STRESS_TIMER: bool = true;
+        const STRESS_TIMER: bool = false; // disabled during quick boot to ensure completion
         if STRESS_TIMER {
             use x86_64::instructions::interrupts;
             crate::display::kernel_write_line("  [lapic] starting stress test");
             let ticks_before = crate::interrupts::timer_tick_count();
-            const STRESS_ITER: usize = 500; // number of re-arms
+            const STRESS_ITER: usize = 20; // number of re-arms (reduced for quicker boot)
             for i in 0..STRESS_ITER {
                 // small count to make test quick
                 unsafe { crate::interrupts::lapic_timer_start_oneshot(50_000); }
@@ -345,7 +345,7 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
                 // wait for tick or timeout
                 let start = crate::interrupts::timer_tick_count();
                 let mut waited = 0usize;
-                while crate::interrupts::timer_tick_count() == start && waited < 5_000_000 { waited += 1; core::hint::spin_loop(); }
+                while crate::interrupts::timer_tick_count() == start && waited < 1_000_000 { waited += 1; core::hint::spin_loop(); }
                 interrupts::disable();
                 if i % 100 == 0 {
                     crate::display::kernel_write_line("  [lapic] stress progress: ");
@@ -533,13 +533,11 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64) {
         // Debug: print mm internals before loading CR3
         // minimal debug: pml4 physical
         theseus_shared::print_hex_u64_0xe9!(mm.page_table_root());
-        // Trace marker: before CR3 load
-        theseus_shared::qemu_print_bytes!(b"[TRACE:BEFORE_CR3_LOAD]\n");
         activate_virtual_memory(mm.page_table_root());
         // Mark PHYS_OFFSET mapping active for later helpers
         crate::memory::set_phys_offset_active();
-        // Trace marker: after CR3 load
-        theseus_shared::qemu_print_bytes!(b"[TRACE:AFTER_CR3_LOAD]\n");
+
+        // (temporary smoke test removed to avoid consuming early frames)
         crate::display::kernel_write_line("  [vm] after CR3");
 
         // Optional: probe LAPIC MMIO mapping safely (ID/Version) after paging

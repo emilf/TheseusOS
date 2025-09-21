@@ -1,17 +1,25 @@
 //! Memory management module
 //!
-//! Early paging and simple identity/high-half mappings used during kernel bring-up.
-//! Many helpers and constants are defined for future expansion and may be unused
-//! temporarily while the VM system is still being built out.
-//! 
-//! This module provides:
-//! - Page table creation and management
-//! - Virtual memory mapping (identity and high-half)
-//! - Frame allocation from UEFI memory map
-//! - Memory manager for kernel initialization
-//! 
-//! The module supports both custom page table implementation and x86_64 crate
-//! integration for comprehensive memory management.
+//! This module contains the early-boot memory-management primitives used during
+//! kernel bring-up. It is intentionally self-contained and provides a small
+//! custom page-table representation (for early identity mapping and boot-time
+//! page-table setup) as well as helpers that integrate with the `x86_64` crate
+//! once paging is active.
+//!
+//! Major responsibilities:
+//! - Building a PML4 and mapping an identity region used during early boot
+//! - Mapping the kernel into a higher-half and establishing `PHYS_OFFSET`
+//! - Providing a `BootFrameAllocator` built from the UEFI handoff memory map
+//! - Utilities for mapping single pages and 2MiB huge pages using frame-backed
+//!   page-table allocation helpers
+//! - A small `TemporaryWindow` API to perform single-frame temporary mappings
+//!   without relying on identity access once the PHYS_OFFSET mapping is active
+//!
+//! Safety notes:
+//! - Many functions in this module are `unsafe` because they manipulate raw
+//!   page tables, write to control registers (CR3) or access physical memory
+//!   via virtual translations. Callers must ensure the required invariants for
+//!   these operations hold (correct PML4, appropriate mapping state, etc.).
 #![allow(dead_code)]
 #![allow(static_mut_refs)]
 
@@ -46,6 +54,15 @@ pub const KERNEL_HEAP_SIZE: usize = 0x100000; // 1MB
 pub const TEMP_HEAP_VIRTUAL_BASE: u64 = 0xFFFFFFFFA0000000;
 /// Physical memory linear mapping base (maps [0..N) -> [PHYS_OFFSET..PHYS_OFFSET+N))
 pub const PHYS_OFFSET: u64 = 0xFFFF800000000000;
+
+/// Convert a physical address into the kernel's high-half virtual address using
+/// the fixed `PHYS_OFFSET` mapping.
+///
+/// Arguments:
+/// - `pa`: physical address to convert
+///
+/// Returns:
+/// - virtual address corresponding to `pa` in the kernel's PHYS_OFFSET window
 
 /// Page table entry
 /// 
@@ -172,6 +189,15 @@ pub fn set_phys_offset_active() { unsafe { PHYS_OFFSET_ACTIVE = true; } }
 /// Query whether the PHYS_OFFSET mapping is active
 pub fn phys_offset_is_active() -> bool { unsafe { PHYS_OFFSET_ACTIVE } }
 
+/// Zero a range of physical memory by writing through the kernel's PHYS_OFFSET
+/// mapping. This is used for zeroing page-table frames after the PHYS_OFFSET
+/// mapping is established.
+///
+/// # Safety
+///
+/// The caller must ensure that the PHYS_OFFSET mapping is valid and maps the
+/// physical frame range `[pa, pa + size)` into the kernel virtual address space.
+
 #[allow(dead_code)]
 fn set_virt_phys_offset(offset: u64) { unsafe { VIRT_PHYS_OFFSET = offset; } }
 
@@ -198,16 +224,16 @@ pub unsafe fn zero_phys_range(pa: u64, size: usize) {
 /// identity physical writes which are valid early in boot.
 #[allow(dead_code)]
 pub unsafe fn zero_frame_safely(pa: u64) {
-    // If paging is enabled, prefer the PHYS_OFFSET virtual mapping
-    // Use PHYS_OFFSET mapping only if explicitly marked active; otherwise use identity
+    // Zero a single frame safely. When the PHYS_OFFSET mapping is active we
+    // call `zero_phys_range` which writes via the kernel virtual mapping; when
+    // PHYS_OFFSET is not available (very early boot) we fall back to identity
+    // writes into the physical address directly.
     if phys_offset_is_active() {
-        theseus_shared::qemu_print_bytes!(b"[TRACE:ZERO_FRAME_BRANCH=PHYS_OFFSET]\n");
         zero_phys_range(pa, PAGE_SIZE as usize);
-        theseus_shared::qemu_print_bytes!(b"[TRACE:ZERO_FRAME_DONE=PHYS_OFFSET]\n");
     } else {
-        theseus_shared::qemu_print_bytes!(b"[TRACE:ZERO_FRAME_BRANCH=IDENTITY]\n");
+        // Early boot path: identity write into physical memory. This is only
+        // valid because early boot is still identity-addressable.
         core::ptr::write_bytes(pa as *mut u8, 0, PAGE_SIZE);
-        theseus_shared::qemu_print_bytes!(b"[TRACE:ZERO_FRAME_DONE=IDENTITY]\n");
     }
 }
 
@@ -218,23 +244,45 @@ pub fn virt_phys_offset() -> u64 { unsafe { VIRT_PHYS_OFFSET } }
 
 impl MemoryManager {
     /// Create a new memory manager
+    ///
+    /// Construct a new MemoryManager and build an initial PML4 with the
+    /// following mappings established:
+    /// - identity mapping for the first 1 GiB (2MiB pages)
+    /// - kernel image mapped into the high-half (4KiB pages)
+    /// - a PHYS_OFFSET linear mapping for the first 1 GiB
+    /// - framebuffer and temporary heap mappings if provided by the handoff
+    ///
+    /// # Arguments
+    /// - `handoff`: pointer to the bootloader handoff structure containing the
+    ///   UEFI memory map, kernel physical base/size, framebuffer info and temp
+    ///   heap location.
+    ///
+    /// # Returns
+    /// - `MemoryManager` containing a pointer to the PML4 (virtual), the
+    ///   physical PML4 frame, and an initialized early `BootFrameAllocator`.
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because it writes raw page tables and performs
+    /// identity physical memory writes while paging is not yet active. The
+    /// caller must ensure the provided `handoff` is valid.
     pub unsafe fn new(handoff: &theseus_shared::handoff::Handoff) -> Self {
             crate::display::kernel_write_line("  [vm/new] start");
             // Make kernel phys base available (legacy var no longer used after pool removal)
             KERNEL_PHYS_BASE_FOR_POOL = handoff.kernel_physical_base;
         // Initialize early frame allocator and allocate a fresh PML4 frame
-        // Trace marker: about to allocate PML4 frame
-        theseus_shared::qemu_print_bytes!(b"[TRACE:PML4_ALLOC_BEFORE]\n");
         let mut early_frame_alloc = BootFrameAllocator::from_handoff(handoff);
+        // Reserve a small pool of frames for critical kernel structures (page
+        // tables, IST stacks, etc.) so ephemeral allocations won't starve them.
+        const RESERVED_FOR_CRITICAL: usize = 16;
+        let reserved = early_frame_alloc.reserve_frames(RESERVED_FOR_CRITICAL);
+        crate::display::kernel_write_line("  [fa] reserved frames="); theseus_shared::print_hex_u64_0xe9!(reserved as u64); crate::display::kernel_write_line("\n");
         let pml4_frame = early_frame_alloc.allocate_frame().expect("Out of frames for PML4");
-        theseus_shared::qemu_print_bytes!(b"[TRACE:PML4_ALLOC_AFTER]\n");
         let pml4_phys = pml4_frame.start_address().as_u64();
-        // Trace marker: about to zero PML4
-        theseus_shared::qemu_print_bytes!(b"[TRACE:PML4_ZERO_BEFORE]\n");
         // Zero the new PML4 frame using a helper that picks the correct method
         // depending on whether paging is active.
         zero_frame_safely(pml4_phys);
-        theseus_shared::qemu_print_bytes!(b"[TRACE:PML4_ZERO_AFTER]\n");
+        
         let pml4: &mut PageTable = &mut *(pml4_phys as *mut PageTable);
         crate::display::kernel_write_line("  [vm/new] got pml4");
 
@@ -316,6 +364,17 @@ impl MemoryManager {
 
 /// Set up identity mapping for first 1 GiB using 2 MiB pages
 unsafe fn identity_map_first_1gb_2mb_alloc(pml4: &mut PageTable, fa: &mut BootFrameAllocator) {
+    // Identity-map the first 1 GiB of physical memory using 2MiB pages.
+    //
+    // This is used during early boot so that low-VA virtual accesses still
+    // find the expected physical frames while we continue building the
+    // higher-half mappings.
+    //
+    // Arguments:
+    // - `pml4`: mutable reference to the newly-created PML4 table
+    // - `fa`: frame allocator used to allocate intermediate page tables
+    //
+    // Returns: nothing (maps are installed in `pml4`)
     // Identity map using 2MiB pages with NX cleared (executable)
     let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_PS;
     let gigabyte: u64 = 1 << 30;
@@ -461,6 +520,14 @@ unsafe fn map_framebuffer_alloc(pml4: &mut PageTable, handoff: &theseus_shared::
 
 /// Map temporary heap
 unsafe fn map_temporary_heap_alloc(pml4: &mut PageTable, handoff: &theseus_shared::handoff::Handoff, fa: &mut BootFrameAllocator) {
+    // Map the temporary heap provided by the bootloader into a fixed high-half
+    // virtual region. The kernel uses this temporary heap prior to switching to
+    // its permanent heap.
+    //
+    // Arguments:
+    // - `pml4`: mutable reference to PML4
+    // - `handoff`: bootloader handoff containing `temp_heap_base` and `temp_heap_size`
+    // - `fa`: frame allocator for page-table allocation
     let heap_physical = handoff.temp_heap_base;
     let heap_virtual = 0xFFFFFFFFA0000000; // Map heap to high memory
     let heap_size = handoff.temp_heap_size;
@@ -480,6 +547,17 @@ unsafe fn map_temporary_heap_alloc(pml4: &mut PageTable, handoff: &theseus_share
 
 /// Map a single page using frame-backed table allocation
 unsafe fn map_page_alloc(pml4: &mut PageTable, virtual_addr: u64, physical_addr: u64, flags: u64, fa: &mut BootFrameAllocator) {
+    // Map a single 4KiB page into `pml4`, creating intermediate page-table
+    // levels as necessary using `fa`.
+    //
+    // Arguments:
+    // - `pml4`: mutable reference to the root PML4 table
+    // - `virtual_addr`: virtual address to map
+    // - `physical_addr`: corresponding physical address
+    // - `flags`: page entry flags
+    // - `fa`: frame allocator for allocating intermediate page tables
+    //
+    // Returns: nothing; the mapping is written into page tables.
     // Extract page table indices
     let pml4_index = ((virtual_addr >> 39) & 0x1FF) as usize;
     let pdpt_index = ((virtual_addr >> 30) & 0x1FF) as usize;
@@ -521,20 +599,141 @@ unsafe fn map_2mb_page_alloc(pml4: &mut PageTable, virtual_addr: u64, physical_a
 
 /// Get or create a page table using a frame allocator
 unsafe fn get_or_create_page_table_alloc(entry: &mut PageTableEntry, fa: &mut BootFrameAllocator) -> &'static mut PageTable {
+    // Get the existing page table referenced by `entry`, or allocate, zero and
+    // install a new page-table frame and return a mutable reference to it.
+    //
+    // Arguments:
+    // - `entry`: mutable reference to a page-table entry where the PT/PD/PDPT
+    //   pointer would be stored
+    // - `fa`: frame allocator used to obtain a new physical frame if needed
+    //
+    // Returns:
+    // - `&'static mut PageTable` pointing to the created or existing table
     if entry.is_present() {
         let pa = entry.physical_addr();
-        let va = pa as *mut PageTable; // identity mapping expected for early boot
-        &mut *va
+        // Prefer PHYS_OFFSET mapping if active, otherwise fall back to identity
+        if phys_offset_is_active() {
+            let va = phys_to_virt_pa(pa) as *mut PageTable;
+            &mut *va
+        } else {
+            &mut *(pa as *mut PageTable)
+        }
     } else {
-        if let Some(frame) = fa.allocate_frame() {
+        // Prefer a reserved frame if available to avoid consuming the general
+        // pool used for non-critical allocations.
+        let frame_opt = fa.allocate_reserved_frame().or_else(|| fa.allocate_frame());
+        if let Some(frame) = frame_opt {
             let phys = frame.start_address().as_u64();
-            // Zero via identity mapping (frames currently allocated in low memory)
-            core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
+            // If PHYS_OFFSET mapping is active, map the frame into a temporary
+            // window and zero it through the window; otherwise fall back to identity.
+            if phys_offset_is_active() {
+                if let Some(mut tw) = TemporaryWindow::new_from_current_pml4() {
+                    tw.map_and_zero_frame(phys, fa);
+                } else {
+                    // Fallback to identity if we couldn't obtain current PML4
+                    core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
+                }
+                *entry = PageTableEntry::new(phys, PTE_PRESENT | PTE_WRITABLE);
+                let va = phys_to_virt_pa(phys) as *mut PageTable;
+                &mut *va
+            } else {
+                core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
         *entry = PageTableEntry::new(phys, PTE_PRESENT | PTE_WRITABLE);
-            &mut *(phys as *mut PageTable)
+                &mut *(phys as *mut PageTable)
+            }
         } else {
             panic!("Out of frames for page tables");
         }
+    }
+}
+
+/// A tiny temporary page mapper that maps a single physical frame to a fixed
+/// virtual window. Useful for safely accessing arbitrary physical memory
+/// (e.g., page tables) without relying on arbitrary identity writes.
+pub const TEMP_WINDOW_VA: u64 = 0xFFFF_FFFE_0000_0000u64;
+
+pub struct TemporaryWindow {
+    /// Virtual address of the temporary window
+    pub window_va: u64,
+    /// PML4 virtual pointer (PHYS_OFFSET translated)
+    pml4: *mut PageTable,
+}
+
+impl TemporaryWindow {
+    /// Create a new TemporaryWindow backed by the provided PML4 physical address.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `pml4_phys` is the physical address of the current PML4
+    /// and that PHYS_OFFSET mapping is available (or identity mapping exists for low
+    /// physical frames during early boot). The window VA is chosen from a high unused
+    /// virtual address range.
+    ///
+    /// # Arguments
+    /// - `pml4_phys`: physical address of the active PML4 (CR3)
+    ///
+    /// # Safety
+    /// Caller must ensure `phys_to_virt_pa(pml4_phys)` yields a valid virtual
+    /// address (PHYS_OFFSET mapping is active).
+    pub unsafe fn new(pml4_phys: u64) -> Self {
+        // Use a high, unlikely-to-collide virtual address for temporary mappings
+        const TEMP_WINDOW_VA: u64 = 0xFFFF_FFFE_0000_0000u64;
+        let pml4_va = phys_to_virt_pa(pml4_phys) as *mut PageTable;
+        Self { window_va: TEMP_WINDOW_VA, pml4: pml4_va }
+    }
+
+    /// Map a single 4KiB physical frame into the temporary window and return the VA.
+    ///
+    /// # Safety
+    ///
+    /// `fa` must be a valid BootFrameAllocator used to allocate intermediate page
+    /// tables if they are missing. This function will overwrite any existing mapping
+    /// at the temporary window.
+    pub unsafe fn map_phys_frame(&mut self, phys_frame_pa: u64, fa: &mut BootFrameAllocator) -> u64 {
+        let pml4 = &mut *self.pml4;
+        // If an existing mapping is present, simply overwrite the PT entry
+        map_page_alloc(pml4, self.window_va, phys_frame_pa, PTE_PRESENT | PTE_WRITABLE, fa);
+        self.window_va
+    }
+
+    /// Convenience constructor that reads CR3 to determine the current PML4 and
+    /// returns a new TemporaryWindow. Returns `None` if CR3 appears invalid.
+    ///
+    /// # Safety
+    ///
+    /// Requires that the PHYS_OFFSET mapping is active.
+    pub unsafe fn new_from_current_pml4() -> Option<Self> {
+        use x86_64::registers::control::Cr3;
+        let (frame, _flags) = Cr3::read();
+        let pml4_pa = frame.start_address().as_u64();
+        if pml4_pa == 0 { return None; }
+        Some(Self::new(pml4_pa))
+    }
+
+    /// Map then zero a frame: convenience wrapper that maps, zeroes through VA,
+    /// and unmaps the window.
+    pub unsafe fn map_and_zero_frame(&mut self, phys_frame_pa: u64, fa: &mut BootFrameAllocator) {
+        let va = self.map_phys_frame(phys_frame_pa, fa);
+        core::ptr::write_bytes(va as *mut u8, 0, PAGE_SIZE);
+        self.unmap();
+    }
+
+    /// Unmap the temporary window (clears the leaf PTE). Does not free page tables.
+    pub unsafe fn unmap(&mut self) {
+        let pml4 = &mut *self.pml4;
+        let pml4_index = ((self.window_va >> 39) & 0x1FF) as usize;
+        let pdpt_index = ((self.window_va >> 30) & 0x1FF) as usize;
+        let pd_index = ((self.window_va >> 21) & 0x1FF) as usize;
+        let pt_index = ((self.window_va >> 12) & 0x1FF) as usize;
+
+        if !pml4.entries[pml4_index].is_present() { return; }
+        let pdpt = &mut *(pml4.entries[pml4_index].physical_addr() as *mut PageTable);
+        if !pdpt.entries[pdpt_index].is_present() { return; }
+        let pd = &mut *(pdpt.entries[pdpt_index].physical_addr() as *mut PageTable);
+        if !pd.entries[pd_index].is_present() { return; }
+        let pt = &mut *(pd.entries[pd_index].physical_addr() as *mut PageTable);
+        // Clear the PT entry
+        *pt.get_entry(pt_index) = PageTableEntry::new(0, 0);
     }
 }
 
@@ -604,11 +803,16 @@ pub struct BootFrameAllocator {
     cur_index: usize,
     cur_next_addr: u64,
     cur_remaining_pages: u64,
+    // Reserved frames pool for critical boot-time allocations. Stores physical
+    // addresses of frames that have been removed from the general pool and are
+    // held back for critical kernel needs (page tables, IST stacks, etc.).
+    reserved: [u64; 16],
+    reserved_count: usize,
 }
 
 impl BootFrameAllocator {
     pub fn empty() -> Self {
-        Self { base_ptr: core::ptr::null(), desc_size: 0, count: 0, cur_index: 0, cur_next_addr: 0, cur_remaining_pages: 0 }
+        Self { base_ptr: core::ptr::null(), desc_size: 0, count: 0, cur_index: 0, cur_next_addr: 0, cur_remaining_pages: 0, reserved: [0u64; 16], reserved_count: 0 }
     }
 
     pub unsafe fn from_handoff(h: &theseus_shared::handoff::Handoff) -> Self {
@@ -619,11 +823,50 @@ impl BootFrameAllocator {
         crate::display::kernel_write_line("  [fa] base_ptr="); theseus_shared::print_hex_u64_0xe9!(base_ptr as u64);
         crate::display::kernel_write_line(" desc_size="); theseus_shared::print_hex_u64_0xe9!(desc_size as u64);
         crate::display::kernel_write_line(" count="); theseus_shared::print_hex_u64_0xe9!(count as u64); crate::display::kernel_write_line("\n");
-        let mut s = Self { base_ptr, desc_size, count, cur_index: 0, cur_next_addr: 0, cur_remaining_pages: 0 };
+        // Compute simple summary statistics of the provided UEFI memory map so
+        // we can verify the allocator will see the full map at early boot.
+        let mut total_pages: u128 = 0;
+        let mut conventional_pages: u128 = 0;
+        for i in 0..count {
+            let p = base_ptr.add(i * desc_size);
+            let typ = read_u32(p, 0);
+            let num_pages = read_u64(p, 24) as u128;
+            total_pages = total_pages.wrapping_add(num_pages);
+            if typ == UEFI_CONVENTIONAL_MEMORY { conventional_pages = conventional_pages.wrapping_add(num_pages); }
+        }
+        crate::display::kernel_write_line("  [fa] memmap total_pages="); theseus_shared::print_hex_u64_0xe9!(total_pages as u64); crate::display::kernel_write_line(" conv_pages="); theseus_shared::print_hex_u64_0xe9!(conventional_pages as u64); crate::display::kernel_write_line("\n");
+
+        let mut s = Self { base_ptr, desc_size, count, cur_index: 0, cur_next_addr: 0, cur_remaining_pages: 0, reserved: [0u64; 16], reserved_count: 0 };
         s.advance_to_next_region();
-        // Trace marker: completed early region setup in frame allocator
-        theseus_shared::qemu_print_bytes!(b"[TRACE:FA_FROM_HANDOFF_DONE]\n");
         s
+    }
+
+    /// Reserve up to `n` frames from the allocator and store them into the
+    /// internal reserved pool for critical kernel use. Returns the number of
+    /// frames actually reserved.
+    pub fn reserve_frames(&mut self, mut n: usize) -> usize {
+        let mut got = 0usize;
+        while n > 0 && self.reserved_count < self.reserved.len() {
+            if let Some(frame) = self.allocate_frame() {
+                let pa = frame.start_address().as_u64();
+                self.reserved[self.reserved_count] = pa;
+                self.reserved_count += 1;
+                got += 1;
+                n -= 1;
+            } else {
+                break;
+            }
+        }
+        got
+    }
+
+    /// Allocate a frame from the reserved pool (LIFO). Returns `None` if the
+    /// reserved pool is empty.
+    pub fn allocate_reserved_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        if self.reserved_count == 0 { return None; }
+        self.reserved_count -= 1;
+        let pa = self.reserved[self.reserved_count];
+        Some(PhysFrame::containing_address(PhysAddr::new(pa)))
     }
 
     unsafe fn advance_to_next_region(&mut self) {
