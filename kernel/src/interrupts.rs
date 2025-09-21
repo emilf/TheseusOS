@@ -192,11 +192,12 @@ pub unsafe fn setup_idt() {
         idt[APIC_ERROR_VECTOR as usize].set_handler_fn(handler_spurious);
         // Assign IST indices for critical exceptions
         {
-            use crate::gdt::{IST_INDEX_DF, IST_INDEX_NMI, IST_INDEX_MC};
+            use crate::gdt::{IST_INDEX_DF, IST_INDEX_NMI, IST_INDEX_MC, IST_INDEX_PF};
             unsafe {
                 idt.double_fault.set_handler_fn(handler_df).set_stack_index(IST_INDEX_DF);
                 idt.non_maskable_interrupt.set_handler_fn(handler_nmi).set_stack_index(IST_INDEX_NMI);
                 idt.machine_check.set_handler_fn(handler_mc).set_stack_index(IST_INDEX_MC);
+                idt.page_fault.set_handler_fn(handler_pf).set_stack_index(IST_INDEX_PF);
             }
         }
         idt
@@ -255,20 +256,39 @@ extern "x86-interrupt" fn handler_gp(stack: InterruptStackFrame, code: u64) {
     loop { x86_64::instructions::hlt(); }
 }
 
-extern "x86-interrupt" fn handler_pf(_stack: InterruptStackFrame, code: PageFaultErrorCode) {
+extern "x86-interrupt" fn handler_pf(stack: InterruptStackFrame, code: PageFaultErrorCode) {
     let cr2 = Cr2::read().as_u64();
     let ec = code.bits() as u64;
     unsafe {
         print_str_0xe9("PF EC="); print_hex_u64_0xe9(ec);
         print_str_0xe9(" CR2="); print_hex_u64_0xe9(cr2);
+        print_str_0xe9(" RIP="); print_hex_u64_0xe9(stack.instruction_pointer.as_u64());
+        print_str_0xe9(" CS="); print_hex_u64_0xe9(stack.code_segment as u64);
+        print_str_0xe9(" RFLAGS="); print_hex_u64_0xe9(stack.cpu_flags);
+        print_str_0xe9(" RSP="); print_hex_u64_0xe9(stack.stack_pointer.as_u64());
+        print_str_0xe9(" SS="); print_hex_u64_0xe9(stack.stack_segment as u64);
         out_char_0xe9(b'\n');
         theseus_shared::qemu_exit_ok!();
     }
     loop { x86_64::instructions::hlt(); }
 }
 
-extern "x86-interrupt" fn handler_df(_stack: InterruptStackFrame, _code: u64) -> ! {
-    unsafe { print_str_0xe9("DF\n"); }
+extern "x86-interrupt" fn handler_df(stack: InterruptStackFrame, code: u64) -> ! {
+    unsafe {
+        print_str_0xe9("DF EC=");
+        print_hex_u64_0xe9(code);
+        print_str_0xe9(" RIP=");
+        print_hex_u64_0xe9(stack.instruction_pointer.as_u64());
+        print_str_0xe9(" CS=");
+        print_hex_u64_0xe9(stack.code_segment as u64);
+        print_str_0xe9(" RFLAGS=");
+        print_hex_u64_0xe9(stack.cpu_flags);
+        print_str_0xe9(" RSP=");
+        print_hex_u64_0xe9(stack.stack_pointer.as_u64());
+        print_str_0xe9(" SS=");
+        print_hex_u64_0xe9(stack.stack_segment as u64);
+        print_str_0xe9("\n");
+    }
     theseus_shared::qemu_exit_ok!();
     loop { x86_64::instructions::hlt(); }
 }
@@ -285,7 +305,13 @@ extern "x86-interrupt" fn handler_mc(_stack: InterruptStackFrame) -> ! {
 }
 
 extern "x86-interrupt" fn handler_timer(_stack: InterruptStackFrame) {
-    // Minimal handler: just record the tick for now
+    // Acknowledge LAPIC EOI first to avoid stuck-in-service
+    unsafe {
+        print_str_0xe9("  [INT] Timer tick\n");
+        let apic_base = get_apic_base();
+        write_apic_register(apic_base, 0xB0, 0); // EOI
+    }
+    // Record the tick
     TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
 }
 

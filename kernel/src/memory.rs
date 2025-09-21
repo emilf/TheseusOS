@@ -347,13 +347,42 @@ unsafe fn map_kernel_high_half_4k_alloc(pml4: &mut PageTable, handoff: &theseus_
     let phys_size = handoff.kernel_image_size;
     if phys_base == 0 || phys_size == 0 { return; }
 
-    let pages: u64 = (phys_size + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64;
+    // Map with padding to cover .bss/.stack placed beyond reported image size,
+    // but intentionally leave a 1-page guard unmapped at the end to catch overruns.
+    const KERNEL_IMAGE_PAD: u64 = 8 * 1024 * 1024; // 8 MiB cushion
+    let mut total_bytes = phys_size + KERNEL_IMAGE_PAD;
+    if total_bytes >= PAGE_SIZE as u64 {
+        total_bytes -= PAGE_SIZE as u64; // leave one unmapped guard page at the end
+    }
+    let pages: u64 = (total_bytes + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64;
     let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL; // executable
 
     for i in 0..pages {
         let pa = phys_base + i * PAGE_SIZE as u64;
         let va = KERNEL_VIRTUAL_BASE + i * PAGE_SIZE as u64;
         map_page_alloc(pml4, va, pa, flags, fa);
+    }
+}
+
+/// Map an existing kernel VA range to its corresponding PA using the kernel base translation.
+/// VA->PA translation: pa = handoff.kernel_physical_base + (va - KERNEL_VIRTUAL_BASE)
+pub unsafe fn map_existing_region_va_to_its_pa(
+    pml4_phys: u64,
+    handoff: &theseus_shared::handoff::Handoff,
+    start_va: u64,
+    size: u64,
+    flags: u64,
+    fa: &mut BootFrameAllocator,
+) {
+    if size == 0 { return; }
+    let pml4: &mut PageTable = &mut *(pml4_phys as *mut PageTable);
+    let mut va = start_va & !((PAGE_SIZE as u64) - 1);
+    let end = (start_va + size + (PAGE_SIZE as u64) - 1) & !((PAGE_SIZE as u64) - 1);
+    while va < end {
+        let offset = va.wrapping_sub(KERNEL_VIRTUAL_BASE);
+        let pa = handoff.kernel_physical_base.wrapping_add(offset);
+        map_page_alloc(pml4, va, pa, flags, fa);
+        va = va.wrapping_add(PAGE_SIZE as u64);
     }
 }
 
