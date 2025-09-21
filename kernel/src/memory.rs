@@ -228,7 +228,13 @@ impl MemoryManager {
             map_phys_offset_1gb_2mb_alloc(pml4, &mut early_frame_alloc);
             crate::display::kernel_write_line("  [vm/new] map phys_offset 1GiB done");
         }
-        // legacy path removed
+
+        // Map LAPIC MMIO region (0xFEE00000-0xFEEFFFFF)
+        {
+            crate::display::kernel_write_line("  [vm/new] map LAPIC MMIO begin");
+            map_lapic_mmio_alloc(pml4, &mut early_frame_alloc);
+            crate::display::kernel_write_line("  [vm/new] map LAPIC MMIO done");
+        }
 
         let kernel_heap_start = KERNEL_HEAP_BASE;
         let kernel_heap_end = kernel_heap_start + KERNEL_HEAP_SIZE as u64;
@@ -250,8 +256,6 @@ impl MemoryManager {
     /// Get the page table root (CR3 value)
     pub fn page_table_root(&self) -> u64 { self.pml4_phys }
 }
-
-// Removed static page-table pool; all tables are allocated from BootFrameAllocator
 
 /// Set up identity mapping for first 1 GiB using 2 MiB pages
 unsafe fn identity_map_first_1gb_2mb_alloc(pml4: &mut PageTable, fa: &mut BootFrameAllocator) {
@@ -296,6 +300,20 @@ unsafe fn map_phys_offset_1gb_2mb_alloc(pml4: &mut PageTable, fa: &mut BootFrame
         let va = PHYS_OFFSET + offset;
         map_2mb_page_alloc(pml4, va, pa, flags, fa);
         offset += two_mb;
+    }
+}
+
+/// Map LAPIC MMIO region (0xFEE00000-0xFEEFFFFF) at a dedicated virtual address
+unsafe fn map_lapic_mmio_alloc(pml4: &mut PageTable, fa: &mut BootFrameAllocator) {
+    const LAPIC_PHYS_BASE: u64 = 0xFEE00000;
+    const LAPIC_VIRT_BASE: u64 = 0xFFFF800000000000 + 0xFEE00000; // Use PHYS_OFFSET + LAPIC_PHYS_BASE
+    const LAPIC_SIZE: u64 = 0x100000; // 1MB
+    
+    // Map LAPIC MMIO region using 4KB pages (it's only 1MB, so 4KB pages are fine)
+    for i in 0..(LAPIC_SIZE / PAGE_SIZE as u64) {
+        let virt_addr = LAPIC_VIRT_BASE + (i * PAGE_SIZE as u64);
+        let phys_addr = LAPIC_PHYS_BASE + (i * PAGE_SIZE as u64);
+        map_page_alloc(pml4, virt_addr, phys_addr, PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_PCD | PTE_PWT, fa);
     }
 }
 
@@ -381,16 +399,16 @@ unsafe fn map_page_alloc(pml4: &mut PageTable, virtual_addr: u64, physical_addr:
     let pdpt_index = ((virtual_addr >> 30) & 0x1FF) as usize;
     let pd_index = ((virtual_addr >> 21) & 0x1FF) as usize;
     let pt_index = ((virtual_addr >> 12) & 0x1FF) as usize;
-
+    
     // Get or create PDPT
     let pdpt = get_or_create_page_table_alloc(pml4.get_entry(pml4_index), fa);
-
+    
     // Get or create PD
     let pd = get_or_create_page_table_alloc(pdpt.get_entry(pdpt_index), fa);
-
+    
     // Get or create PT
     let pt = get_or_create_page_table_alloc(pd.get_entry(pd_index), fa);
-
+    
     // Set the page table entry
     *pt.get_entry(pt_index) = PageTableEntry::new(physical_addr, flags);
 }
@@ -426,7 +444,7 @@ unsafe fn get_or_create_page_table_alloc(entry: &mut PageTableEntry, fa: &mut Bo
             let phys = frame.start_address().as_u64();
             // Zero via identity mapping (frames currently allocated in low memory)
             core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
-            *entry = PageTableEntry::new(phys, PTE_PRESENT | PTE_WRITABLE);
+        *entry = PageTableEntry::new(phys, PTE_PRESENT | PTE_WRITABLE);
             &mut *(phys as *mut PageTable)
         } else {
             panic!("Out of frames for page tables");
@@ -538,12 +556,12 @@ unsafe impl FrameAllocator<Size4KiB> for BootFrameAllocator {
             if self.cur_remaining_pages == 0 {
                 // Safe here because we only read from the UEFI memory map provided in handoff
                 unsafe { self.advance_to_next_region(); }
-                if self.cur_remaining_pages == 0 { crate::display::kernel_write_line("  [fa] no more regions\n"); return None; }
+                if self.cur_remaining_pages == 0 { return None; }
             }
             let addr = self.cur_next_addr;
             self.cur_next_addr = self.cur_next_addr.saturating_add(PAGE_SIZE as u64);
             self.cur_remaining_pages = self.cur_remaining_pages.saturating_sub(1);
-            crate::display::kernel_write_line("  [fa] alloc frame="); theseus_shared::print_hex_u64_0xe9!(addr); crate::display::kernel_write_line("\n");
+            // Quiet: suppress per-frame allocation logging
             return Some(PhysFrame::containing_address(PhysAddr::new(addr)));
         }
     }

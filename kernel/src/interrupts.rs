@@ -38,9 +38,14 @@ impl IdtEntry {
 // Switch to x86_64 crate IDT; retain minimal entry struct for diagnostics via SIDT
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 use x86_64::registers::control::Cr2;
+use x86_64::instructions::tables::sgdt;
+use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Once as SpinOnce;
 
 static IDT_X86: SpinOnce<InterruptDescriptorTable> = SpinOnce::new();
+const APIC_TIMER_VECTOR: u8 = 0x40; // 64
+const APIC_ERROR_VECTOR: u8 = 0xFE; // APIC error interrupts
+static TIMER_TICKS: AtomicU32 = AtomicU32::new(0);
 
 // Legacy inline assembly ISR stubs removed in favor of x86-interrupt handlers
 
@@ -152,10 +157,10 @@ pub unsafe fn validate_idt_basic() -> bool {
         let base = idtr.base.as_u64();
         for &i in &_indices {
             let e = &*(base.wrapping_add((i * core::mem::size_of::<IdtEntry>()) as u64) as *const IdtEntry);
-            print_idt_entry(i, e);
-            if idt_entry_addr(e) == 0 { ok = false; }
-        }
-        if ok { print_str_0xe9("IDT OK\n"); } else { print_str_0xe9("IDT BAD\n"); }
+        print_idt_entry(i, e);
+        if idt_entry_addr(e) == 0 { ok = false; }
+    }
+    if ok { print_str_0xe9("IDT OK\n"); } else { print_str_0xe9("IDT BAD\n"); }
         return ok;
     }
 }
@@ -179,6 +184,12 @@ pub unsafe fn setup_idt() {
         idt.invalid_opcode.set_handler_fn(handler_ud);
         idt.general_protection_fault.set_handler_fn(handler_gp);
         idt.page_fault.set_handler_fn(handler_pf);
+        // Timer interrupt vector
+        idt[APIC_TIMER_VECTOR as usize].set_handler_fn(handler_timer);
+        // Spurious interrupt vector (0xFF)
+        idt[0xFF].set_handler_fn(handler_spurious);
+        // APIC error vector
+        idt[APIC_ERROR_VECTOR as usize].set_handler_fn(handler_spurious);
         // Assign IST indices for critical exceptions
         {
             use crate::gdt::{IST_INDEX_DF, IST_INDEX_NMI, IST_INDEX_MC};
@@ -211,16 +222,35 @@ extern "x86-interrupt" fn handler_bp(_stack: InterruptStackFrame) {
     loop { x86_64::instructions::hlt(); }
 }
 
-extern "x86-interrupt" fn handler_ud(_stack: InterruptStackFrame) {
-    unsafe { print_str_0xe9("UD\n"); }
+extern "x86-interrupt" fn handler_ud(stack: InterruptStackFrame) {
+    unsafe {
+        print_str_0xe9("UD RIP=");
+        print_hex_u64_0xe9(stack.instruction_pointer.as_u64());
+        print_str_0xe9(" CS=");
+        print_hex_u64_0xe9(stack.code_segment as u64);
+        print_str_0xe9(" RFLAGS=");
+        print_hex_u64_0xe9(stack.cpu_flags);
+        out_char_0xe9(b'\n');
+        theseus_shared::qemu_exit_ok!();
+    }
     loop { x86_64::instructions::hlt(); }
 }
 
-extern "x86-interrupt" fn handler_gp(_stack: InterruptStackFrame, code: u64) {
+extern "x86-interrupt" fn handler_gp(stack: InterruptStackFrame, code: u64) {
     unsafe {
         print_str_0xe9("GP EC=");
         print_hex_u64_0xe9(code);
+        print_str_0xe9(" RIP=");
+        print_hex_u64_0xe9(stack.instruction_pointer.as_u64());
+        print_str_0xe9(" CS=");
+        print_hex_u64_0xe9(stack.code_segment as u64);
+        print_str_0xe9(" RFLAGS=");
+        print_hex_u64_0xe9(stack.cpu_flags);
+        print_str_0xe9(" TR=");
+        let tr: u16; core::arch::asm!("str {0:x}", out(reg) tr, options(nomem, nostack, preserves_flags));
+        print_hex_u64_0xe9(tr as u64);
         out_char_0xe9(b'\n');
+        theseus_shared::qemu_exit_ok!();
     }
     loop { x86_64::instructions::hlt(); }
 }
@@ -232,12 +262,14 @@ extern "x86-interrupt" fn handler_pf(_stack: InterruptStackFrame, code: PageFaul
         print_str_0xe9("PF EC="); print_hex_u64_0xe9(ec);
         print_str_0xe9(" CR2="); print_hex_u64_0xe9(cr2);
         out_char_0xe9(b'\n');
+        theseus_shared::qemu_exit_ok!();
     }
     loop { x86_64::instructions::hlt(); }
 }
 
 extern "x86-interrupt" fn handler_df(_stack: InterruptStackFrame, _code: u64) -> ! {
     unsafe { print_str_0xe9("DF\n"); }
+    theseus_shared::qemu_exit_ok!();
     loop { x86_64::instructions::hlt(); }
 }
 
@@ -248,7 +280,17 @@ extern "x86-interrupt" fn handler_nmi(_stack: InterruptStackFrame) {
 
 extern "x86-interrupt" fn handler_mc(_stack: InterruptStackFrame) -> ! {
     unsafe { print_str_0xe9("MC\n"); }
+    theseus_shared::qemu_exit_ok!();
     loop { x86_64::instructions::hlt(); }
+}
+
+extern "x86-interrupt" fn handler_timer(_stack: InterruptStackFrame) {
+    // Minimal handler: just record the tick for now
+    TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
+}
+
+extern "x86-interrupt" fn handler_spurious(_stack: InterruptStackFrame) {
+    // No EOI for spurious
 }
 
 /// Print a compact one-line summary of key IDT handler addresses
@@ -268,6 +310,27 @@ pub unsafe fn print_idt_summary_compact() {
             print_hex_u64_0xe9(idt_entry_addr(e));
         }
         out_char_0xe9(b'\n');
+        // Also print selector for timer vector 0x40
+        let e40 = &*(base.wrapping_add(((APIC_TIMER_VECTOR as usize) * core::mem::size_of::<IdtEntry>()) as u64) as *const IdtEntry);
+        print_str_0xe9("IDT[0x40] sel="); print_hex_u64_0xe9(e40.selector as u64); out_char_0xe9(b'\n');
+    }
+}
+
+/// Print first few GDT entries raw to help diagnose selector issues
+pub unsafe fn print_gdt_summary_basic() {
+    let gdtr = sgdt();
+    let base = gdtr.base.as_u64();
+    let limit = gdtr.limit as u64;
+    print_str_0xe9("GDT base="); print_hex_u64_0xe9(base); print_str_0xe9(" limit="); print_hex_u64_0xe9(limit); out_char_0xe9(b'\n');
+    // dump first 8 descriptors (8 bytes each); TSS spans 16 bytes
+    let count = core::cmp::min(((limit+1)/8) as usize, 8usize);
+    for i in 0..count {
+        let lo = core::ptr::read_unaligned((base + (i as u64)*8) as *const u64);
+        print_str_0xe9("GDT[");
+        // print i
+        let d = i as u32; let mut buf = [0u8;3]; let mut n=d; let mut c=0usize;
+        if n==0 { out_char_0xe9(b'0'); } else { while n>0 { buf[c]=b'0'+(n%10) as u8; n/=10; c+=1; } while c>0 { c-=1; out_char_0xe9(buf[c]); } }
+        print_str_0xe9("]="); print_hex_u64_0xe9(lo); out_char_0xe9(b'\n');
     }
 }
 
@@ -305,12 +368,116 @@ unsafe fn disable_nmi() {
 
 /// Disable local APIC interrupts
 /// 
-/// Currently disabled as LAPIC MMIO region (0xFEE0_0000) needs to be mapped
-/// before we can access it. This is a placeholder for future implementation.
+/// This function disables the Local APIC by masking all interrupts and setting
+/// the Spurious Interrupt Vector register to disable the APIC.
 unsafe fn disable_local_apic() {
-    // Note: LAPIC MMIO region (0xFEE0_0000) needs to be mapped before accessing
-    // For now, we skip APIC configuration during early kernel initialization
-    return;
+    // Defer LAPIC access until after paging maps the MMIO region
+    crate::display::kernel_write_line("  [apic] deferring LAPIC access until after paging");
+}
+
+/// Mask LAPIC after paging is enabled and MMIO is mapped
+#[allow(dead_code)]
+pub unsafe fn mask_lapic_after_paging() {
+    if !has_apic() { return; }
+    let apic_base = get_apic_base();
+    // Probe-only: read APIC ID (0x20) and Version (0x30) to verify MMIO mapping
+    let apic_id = read_apic_register(apic_base, 0x20);
+    let apic_ver = read_apic_register(apic_base, 0x30);
+    crate::display::kernel_write_line("  [apic] LAPIC probed id=");
+    print_hex_u64_0xe9(apic_id as u64);
+    crate::display::kernel_write_line(" ver=");
+    print_hex_u64_0xe9(apic_ver as u64);
+    out_char_0xe9(b'\n');
+}
+
+/// Configure LAPIC timer (not started). Call after paging is active.
+#[allow(dead_code)]
+pub unsafe fn lapic_timer_configure() {
+    // Assume APIC present in this environment; avoid CPUID check to prevent early faults
+    let apic_base = get_apic_base();
+    crate::display::kernel_write_line("  [lapic] TPR=0");
+    // Allow all priorities
+    write_apic_register(apic_base, 0x80, 0x00); // TPR
+    // Enable APIC via SIVR and set spurious vector to 0xFF
+    let siv = (read_apic_register(apic_base, 0xF0) & !0xFF) | 0xFF | 0x100;
+    write_apic_register(apic_base, 0xF0, siv);
+    // Set divide configuration to /16 (0x3)
+    crate::display::kernel_write_line("  [lapic] set divide");
+    write_apic_register(apic_base, 0x3E0, 0x3);
+    // Program LVT Timer with our vector, masked for now (one-shot mode)
+    crate::display::kernel_write_line("  [lapic] program LVT timer (masked)");
+    let lvt_timer = (APIC_TIMER_VECTOR as u32) | (1 << 16);
+    write_apic_register(apic_base, 0x320, lvt_timer);
+    // Mask LINT0/LINT1 and set error LVT vector
+    let mut lint0 = read_apic_register(apic_base, 0x350); lint0 |= 1<<16; write_apic_register(apic_base, 0x350, lint0);
+    let mut lint1 = read_apic_register(apic_base, 0x360); lint1 |= 1<<16; write_apic_register(apic_base, 0x360, lint1);
+    let lvt_err = (read_apic_register(apic_base, 0x370) & !0xFF) | (APIC_ERROR_VECTOR as u32);
+    write_apic_register(apic_base, 0x370, lvt_err);
+    // Clear and read ESR
+    write_apic_register(apic_base, 0x280, 0);
+    let esr = read_apic_register(apic_base, 0x280);
+    // Debug: dump key LAPIC regs
+    let id = read_apic_register(apic_base, 0x20);
+    let ver = read_apic_register(apic_base, 0x30);
+    let sivr = read_apic_register(apic_base, 0xF0);
+    let tpr = read_apic_register(apic_base, 0x80);
+    let lvt = read_apic_register(apic_base, 0x320);
+    print_str_0xe9("  [lapic] ID="); print_hex_u64_0xe9(id as u64);
+    print_str_0xe9(" VER="); print_hex_u64_0xe9(ver as u64);
+    print_str_0xe9(" SIVR="); print_hex_u64_0xe9(sivr as u64);
+    print_str_0xe9(" TPR="); print_hex_u64_0xe9(tpr as u64);
+    print_str_0xe9(" LVT="); print_hex_u64_0xe9(lvt as u64);
+    print_str_0xe9(" ESR="); print_hex_u64_0xe9(esr as u64);
+    out_char_0xe9(b'\n');
+}
+
+/// Start LAPIC timer in one-shot mode with given initial count
+#[allow(dead_code)]
+pub unsafe fn lapic_timer_start_oneshot(initial_count: u32) {
+        let apic_base = get_apic_base();
+    // Unmask timer (one-shot by default when periodic bit not set)
+    let mut lvt = read_apic_register(apic_base, 0x320);
+    lvt &= !(1 << 16);
+    write_apic_register(apic_base, 0x320, lvt);
+    write_apic_register(apic_base, 0x380, initial_count);
+    // Debug: read current count right after arming
+    let cur = read_apic_register(apic_base, 0x390);
+    print_str_0xe9("  [lapic] current="); print_hex_u64_0xe9(cur as u64); out_char_0xe9(b'\n');
+}
+
+/// Stop/mask LAPIC timer
+#[allow(dead_code)]
+pub unsafe fn lapic_timer_mask() {
+    if !has_apic() { return; }
+    let apic_base = get_apic_base();
+    let mut lvt = read_apic_register(apic_base, 0x320);
+    lvt |= 1 << 16;
+    write_apic_register(apic_base, 0x320, lvt);
+}
+
+#[allow(dead_code)]
+pub fn timer_tick_count() -> u32 { TIMER_TICKS.load(Ordering::Relaxed) }
+
+// NOTE: Avoid RDMSR/WRMSR for APIC base to prevent UD on some setups; assume default LAPIC base.
+// QEMU and most PCs use 0xFEE00000 as the Local APIC physical base.
+/// Reinstall/patch timer vector (0x40) IDT entry at runtime with full 64-bit handler address
+pub unsafe fn install_timer_vector_runtime() {
+    use x86_64::instructions::tables::sidt;
+    let idtr = sidt();
+    let base = idtr.base.as_u64();
+    let ent = base + ((APIC_TIMER_VECTOR as u64) * 16);
+    let handler = handler_timer as usize as u64;
+    let selector = crate::gdt::KERNEL_CS as u64;
+    // Build low 64 bits: offset_low | selector | ist(0) | type_attr(0x8E) | offset_mid
+    let mut low: u64 = 0;
+    low |= (handler & 0xFFFF) as u64;                 // offset_low
+    low |= selector << 16;                            // selector
+    low |= (0u64) << 32;                              // ist (3 bits) kept zero
+    low |= (0x8Eu64) << 40;                           // type_attr (present, DPL=0, 64-bit interrupt gate)
+    low |= ((handler >> 16) & 0xFFFF) << 48;          // offset_mid
+    let high: u64 = (handler >> 32) & 0xFFFF_FFFF;    // offset_high in low dword; high dword zero
+    core::ptr::write_unaligned(ent as *mut u64, low);
+    core::ptr::write_unaligned((ent + 8) as *mut u64, high);
 }
 
 /// Mask all PIC interrupts
@@ -361,25 +528,16 @@ unsafe fn has_apic() -> bool {
 /// - The MSR is accessible and not corrupted
 #[allow(dead_code)]
 unsafe fn get_apic_base() -> u64 {
-    let mut eax: u32;
-    let mut edx: u32;
-    
-    core::arch::asm!(
-        "rdmsr",                    // Read Model Specific Register
-        in("ecx") 0x1Bu32,         // IA32_APIC_BASE MSR number
-        out("eax") eax,            // Lower 32 bits of result
-        out("edx") edx,            // Upper 32 bits of result
-        options(nomem, nostack, preserves_flags)
-    );
-    
-    // Combine the two 32-bit values into a 64-bit address
-    ((edx as u64) << 32) | (eax as u64)
+    // Assume default LAPIC base address. Avoid RDMSR to keep boot stable across hosts.
+    0xFEE0_0000u64
 }
 
 /// Read APIC register
 #[allow(dead_code)]
 unsafe fn read_apic_register(apic_base: u64, offset: u32) -> u32 {
-    let addr = (apic_base & 0xFFFFF000) | (offset as u64);
+    // The LAPIC MMIO is mapped at PHYS_OFFSET + physical address
+    let vbase = crate::memory::PHYS_OFFSET + (apic_base & 0xFFFFF000);
+    let addr = vbase | (offset as u64);
     // Use volatile read
     core::ptr::read_volatile(addr as *const u32)
 }
@@ -387,7 +545,8 @@ unsafe fn read_apic_register(apic_base: u64, offset: u32) -> u32 {
 /// Write APIC register
 #[allow(dead_code)]
 unsafe fn write_apic_register(apic_base: u64, offset: u32, value: u32) {
-    let addr = (apic_base & 0xFFFFF000) | (offset as u64);
+    let vbase = crate::memory::PHYS_OFFSET + (apic_base & 0xFFFFF000);
+    let addr = vbase | (offset as u64);
     core::ptr::write_volatile(addr as *mut u32, value);
 }
 

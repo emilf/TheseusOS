@@ -11,11 +11,10 @@
 //! This module uses the x86_64 crate for GDT management and provides
 //! the necessary setup functions for kernel initialization.
 
-use core::mem::MaybeUninit;
 use spin::Once as SpinOnce;
 use x86_64::{
     VirtAddr,
-    instructions::{segmentation::{CS, Segment}, tables::load_tss},
+    instructions::{segmentation::{CS, DS, ES, SS, Segment}, tables::load_tss},
     structures::{
         gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector},
         tss::TaskStateSegment,
@@ -24,17 +23,9 @@ use x86_64::{
 
 // Legacy manual GDT removed; we use x86_64's GDT entirely
 
-// TSS and GDT built using x86_64 crate
-static mut TSS: TaskStateSegment = TaskStateSegment::new();
-static mut GDT_RT: MaybeUninit<GlobalDescriptorTable> = MaybeUninit::uninit();
-static SELECTORS: SpinOnce<Selectors> = SpinOnce::new();
+struct GdtState { gdt: GlobalDescriptorTable, code_sel: SegmentSelector, data_sel: SegmentSelector, tss_sel: SegmentSelector }
 
-/// Structure to hold GDT selectors
-#[repr(C)]
-struct Selectors {
-    code: SegmentSelector,
-    tss: SegmentSelector,
-}
+static GDT_STATE: SpinOnce<GdtState> = SpinOnce::new();
 
 // IST stacks (aligned in .bss)
 /// Double Fault interrupt stack (16KB)
@@ -64,15 +55,25 @@ pub const IST_INDEX_MC: u16 = 2; // IST3 - Machine Check
 /// # Safety
 /// 
 /// This function is safe to call during kernel initialization.
-unsafe fn init_tss() -> &'static TaskStateSegment {
-    // Set IST stack pointers to top of stacks (16-byte aligned)
+unsafe fn build_gdt_state() -> GdtState {
+    // Create TSS and set IST stack pointers to top of stacks (16-byte aligned)
+    let mut tss = TaskStateSegment::new();
     let df_top = (core::ptr::addr_of!(IST_DF_STACK) as u64) + (16 * 4096) as u64;
     let nmi_top = (core::ptr::addr_of!(IST_NMI_STACK) as u64) + (16 * 4096) as u64;
     let mc_top = (core::ptr::addr_of!(IST_MC_STACK) as u64) + (16 * 4096) as u64;
-    TSS.interrupt_stack_table[IST_INDEX_DF as usize] = VirtAddr::new(df_top & !0xFu64);
-    TSS.interrupt_stack_table[IST_INDEX_NMI as usize] = VirtAddr::new(nmi_top & !0xFu64);
-    TSS.interrupt_stack_table[IST_INDEX_MC as usize] = VirtAddr::new(mc_top & !0xFu64);
-    core::mem::transmute::<*const TaskStateSegment, &'static TaskStateSegment>(&raw const TSS as *const _)
+    tss.interrupt_stack_table[IST_INDEX_DF as usize] = VirtAddr::new(df_top & !0xFu64);
+    tss.interrupt_stack_table[IST_INDEX_NMI as usize] = VirtAddr::new(nmi_top & !0xFu64);
+    tss.interrupt_stack_table[IST_INDEX_MC as usize] = VirtAddr::new(mc_top & !0xFu64);
+
+    let mut gdt = GlobalDescriptorTable::new();
+    let code_sel = gdt.add_entry(Descriptor::kernel_code_segment());
+    let data_sel = gdt.add_entry(Descriptor::kernel_data_segment());
+    // Borrow a 'static reference to the static TSS storage to satisfy API without creating a shared ref
+    static mut TSS_STATIC: TaskStateSegment = TaskStateSegment::new();
+    TSS_STATIC = tss;
+    let tss_ref: &'static TaskStateSegment = core::mem::transmute::<*const TaskStateSegment, &'static TaskStateSegment>(&raw const TSS_STATIC as *const _);
+    let tss_sel = gdt.add_entry(Descriptor::tss_segment(tss_ref));
+    GdtState { gdt, code_sel, data_sel, tss_sel }
 }
 
 /// Kernel code segment selector
@@ -93,18 +94,12 @@ pub const KERNEL_CS: u16 = 0x08;
 /// during kernel initialization when it's safe to modify these registers.
 pub unsafe fn setup_gdt() {
     // Build and load runtime GDT with TSS
-    let tss = init_tss();
-    GDT_RT = MaybeUninit::new(GlobalDescriptorTable::new());
-    let gdt_rt = unsafe { GDT_RT.assume_init_mut() };
-    let code_sel = gdt_rt.add_entry(Descriptor::kernel_code_segment());
-    let tss_sel = gdt_rt.add_entry(Descriptor::tss_segment(tss));
-    gdt_rt.load();
-    SELECTORS.call_once(|| Selectors { code: code_sel, tss: tss_sel });
+    let state = GDT_STATE.call_once(|| unsafe { build_gdt_state() });
+    state.gdt.load();
     // Reload CS and load TSS
-    CS::set_reg(code_sel);
-    load_tss(tss_sel);
-    // Also reload data segments to 0 as before
-    reload_data_segments();
+    CS::set_reg(state.code_sel);
+    load_tss(state.tss_sel);
+    reload_data_segments(state.data_sel);
 }
 
 /// Reload segment registers with new selectors
@@ -141,38 +136,13 @@ pub unsafe fn setup_gdt() {
 /// - No other code is using the segment registers concurrently
 /// - The system is in a stable state for segment register modification
 /// - This is called during proper kernel initialization sequence
-unsafe fn reload_data_segments() {
-    // Set DS to null selector (0) - null selectors are valid for data segments in long mode
-    core::arch::asm!(
-        "xor eax, eax",  // Clear EAX to 0
-        "mov ds, ax",    // Load DS with null selector
-        options(nomem, nostack, preserves_flags)
-    );
-
-    // Set ES to null selector (0)
-    core::arch::asm!(
-        "xor eax, eax",  // Clear EAX to 0
-        "mov es, ax",    // Load ES with null selector
-        options(nomem, nostack, preserves_flags)
-    );
-
-    // Set FS to null selector (0) - base address can be set via MSR later if needed
-    core::arch::asm!(
-        "xor eax, eax",  // Clear EAX to 0
-        "mov fs, ax",    // Load FS with null selector
-        options(nomem, nostack, preserves_flags)
-    );
-
-    // Set GS to null selector (0) - base address can be set via MSR later if needed
-    core::arch::asm!(
-        "xor eax, eax",  // Clear EAX to 0
-        "mov gs, ax",    // Load GS with null selector
-        options(nomem, nostack, preserves_flags)
-    );
-
-    // Skip SS (stack segment) for now as it can cause #GP in long mode if not properly configured
-    // The stack segment is typically not used in 64-bit mode
-    // core::arch::asm!("mov ss, ax", in("ax") KERNEL_DS, options(nomem, nostack, preserves_flags));
+unsafe fn reload_data_segments(data_sel: SegmentSelector) {
+    DS::set_reg(data_sel);
+    ES::set_reg(data_sel);
+    SS::set_reg(data_sel);
+    // Leave FS/GS at 0 for now; TLS via GS base MSR is configured elsewhere
+    core::arch::asm!("xor eax, eax", "mov fs, ax", options(nomem, nostack, preserves_flags));
+    core::arch::asm!("xor eax, eax", "mov gs, ax", options(nomem, nostack, preserves_flags));
 }
 
 // CS is reloaded via x86_64 crate APIs; legacy helper removed

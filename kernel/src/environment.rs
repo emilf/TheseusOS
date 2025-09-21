@@ -125,10 +125,28 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
     }
     setup_idt();
     crate::display::kernel_write_line("  IDT installed");
+    // Ensure timer vector (0x40) has a full 64-bit handler address
+    unsafe { crate::interrupts::install_timer_vector_runtime(); }
     // Explicitly verify IDT entries in high-half before continuing
     crate::display::kernel_write_line("  Verifying IDT entries (high-half)...");
     unsafe { crate::interrupts::print_idt_summary_compact(); }
     crate::display::kernel_write_line("  IDT verification (high-half) complete");
+    // Also show GDT summary to correlate selectors
+    unsafe { crate::interrupts::print_gdt_summary_basic(); }
+    // Inspect timer vector (0x40) raw entry
+    unsafe {
+        use x86_64::instructions::tables::sidt;
+        let idtr = sidt();
+        let base = idtr.base.as_u64();
+        let ent = base + (0x40 * 16) as u64; // 16-byte entries
+        let lo = core::ptr::read_unaligned(ent as *const u64);
+        let hi = core::ptr::read_unaligned((ent + 8) as *const u64);
+        crate::display::kernel_write_line("  [dbg] IDT[0x40] lo=");
+        theseus_shared::print_hex_u64_0xe9!(lo);
+        crate::display::kernel_write_line(" hi=");
+        theseus_shared::print_hex_u64_0xe9!(hi);
+        crate::display::kernel_write_line("\n");
+    }
     // Skip CPU feature detection and SSE for now to keep high-half path stable
     // Re-enable safe CR4 bits now that paging is active
     {
@@ -140,6 +158,30 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         Cr4::write(f4);
         crate::display::kernel_write_line("  [cr] CR4: re-enabled OSFXSR, OSXMMEXCPT, PAGE_GLOBAL");
     }
+    
+    // Set up basic TLS: IA32_GS_BASE MSR and enable CR4.FSGSBASE
+    use x86_64::VirtAddr;
+    use x86_64::registers::control::{Cr4, Cr4Flags};
+    
+    // Set a dummy GS base for now (we'll use this for per-CPU data later)
+    let dummy_gs_base = VirtAddr::new(0xFFFF800000000000); // Use our PHYS_OFFSET for now
+    unsafe {
+        // Use the correct MSR constant for IA32_GS_BASE
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") 0xC0000101u32,  // IA32_GS_BASE MSR
+            in("eax") (dummy_gs_base.as_u64() & 0xFFFFFFFF) as u32,
+            in("edx") (dummy_gs_base.as_u64() >> 32) as u32,
+            options(nostack, preserves_flags)
+        );
+        crate::display::kernel_write_line("  [tls] IA32_GS_BASE set");
+    }
+    
+    // Now enable CR4.FSGSBASE safely
+    let mut cr4 = Cr4::read();
+    cr4.insert(Cr4Flags::FSGSBASE);
+    unsafe { Cr4::write(cr4); }
+    crate::display::kernel_write_line("  [tls] CR4.FSGSBASE enabled");
     // Enable SSE unconditionally (AVX/MSRs remain disabled for now)
     {
         let mut f = crate::cpu::CpuFeatures::new();
@@ -152,6 +194,37 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         setup_msrs();
     }
     crate::display::kernel_write_line("  MSRs configured");
+
+    // Verify LAPIC timer delivery (one-shot hardware interrupt)
+    const ENABLE_LAPIC_TIMER_TEST: bool = true;
+    if ENABLE_LAPIC_TIMER_TEST {
+        use x86_64::instructions::interrupts;
+        crate::display::kernel_write_line("  [lapic] configuring timer");
+        crate::interrupts::lapic_timer_configure();
+        let before = crate::interrupts::timer_tick_count();
+        crate::display::kernel_write_line("  [lapic] ticks(before)=");
+        theseus_shared::print_hex_u64_0xe9!(before as u64);
+        crate::display::kernel_write_line("\n");
+        crate::display::kernel_write_line("  [lapic] arming one-shot timer");
+        // Use a smaller initial count to avoid long waits if timer is slow
+        unsafe { crate::interrupts::lapic_timer_start_oneshot(100_000); }
+        crate::display::kernel_write_line("  [lapic] enabling IF");
+        interrupts::enable();
+        let mut ok = false;
+        for _ in 0..2_000_000 {
+            if crate::interrupts::timer_tick_count() > before { ok = true; break; }
+            core::hint::spin_loop();
+        }
+        interrupts::disable();
+        crate::display::kernel_write_line("  [lapic] disabled IF");
+        let after = crate::interrupts::timer_tick_count();
+        crate::display::kernel_write_line("  [lapic] ticks(after)=");
+        theseus_shared::print_hex_u64_0xe9!(after as u64);
+        crate::display::kernel_write_line("\n");
+        if ok { crate::display::kernel_write_line("  [lapic] timer interrupt received"); }
+        else { crate::display::kernel_write_line("  [lapic] timer interrupt NOT received"); }
+        unsafe { crate::interrupts::lapic_timer_mask(); }
+    }
 
     // Initialize global allocator on a high-half VA range (mapped temp heap), then migrate to permanent heap
     {
@@ -287,6 +360,14 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64) {
         crate::display::kernel_write_line("  [vm] after new; loading CR3");
         activate_virtual_memory(mm.page_table_root());
         crate::display::kernel_write_line("  [vm] after CR3");
+
+        // Optional: probe LAPIC MMIO mapping safely (ID/Version) after paging
+        const PROBE_LAPIC_AFTER_PAGING: bool = false;
+        if PROBE_LAPIC_AFTER_PAGING {
+            crate::interrupts::mask_lapic_after_paging();
+        }
+
+        // LAPIC timer setup deferred until after IDT install (to keep boot stable)
 
         // Defer IDT installation to step 4 (pre-jump) to avoid early faults
 

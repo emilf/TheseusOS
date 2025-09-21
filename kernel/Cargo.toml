@@ -22,3 +22,6 @@ raw-cpuid = { workspace = true }
 # Release profile defined in workspace root
 
 # features removed; new_arch is now default and unconditional
+
+[lints.rust]
+warnings = "deny"
