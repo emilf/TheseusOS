@@ -10,10 +10,38 @@
 //! - Building a PML4 and mapping an identity region used during early boot
 //! - Mapping the kernel into a higher-half and establishing `PHYS_OFFSET`
 //! - Providing a `BootFrameAllocator` built from the UEFI handoff memory map
+//!   with reserved frame pool for critical kernel structures
 //! - Utilities for mapping single pages and 2MiB huge pages using frame-backed
 //!   page-table allocation helpers
 //! - A small `TemporaryWindow` API to perform single-frame temporary mappings
 //!   without relying on identity access once the PHYS_OFFSET mapping is active
+//!
+//! # Recent Improvements (Latest Session)
+//!
+//! ## Reserved Frame Pool
+//! - Added `BootFrameAllocator` with reserved frame pool (16 frames) to prevent
+//!   critical kernel structures (page tables, IST stacks) from being starved by
+//!   ephemeral allocations.
+//! - `reserve_frames()` method reserves frames from the general pool.
+//! - `allocate_reserved_frame()` provides LIFO allocation from reserved pool.
+//! - Page table allocation prefers reserved frames, falling back to general pool.
+//!
+//! ## Temporary Mapping Window
+//! - `TemporaryWindow` struct provides safe temporary mapping of arbitrary physical
+//!   frames to a fixed virtual address without relying on identity mapping.
+//! - Used for zeroing newly allocated page tables safely after PHYS_OFFSET is active.
+//! - Methods: `new()`, `map_phys_frame()`, `map_and_zero_frame()`, `unmap()`.
+//!
+//! ## PHYS_OFFSET Integration
+//! - Enhanced `zero_frame_safely()` to use PHYS_OFFSET mapping when active,
+//!   with identity fallback for early boot.
+//! - `phys_offset_is_active()` tracks when PHYS_OFFSET mapping is available.
+//! - `zero_phys_range()` performs volatile writes through PHYS_OFFSET mapping.
+//!
+//! ## Memory Map Diagnostics
+//! - Added diagnostics showing total pages and conventional pages from UEFI memory map.
+//! - Confirms allocator sees full system RAM (typically 1GB+ in QEMU).
+//! - Helps debug memory allocation issues.
 //!
 //! Safety notes:
 //! - Many functions in this module are `unsafe` because they manipulate raw
@@ -274,6 +302,9 @@ impl MemoryManager {
         let mut early_frame_alloc = BootFrameAllocator::from_handoff(handoff);
         // Reserve a small pool of frames for critical kernel structures (page
         // tables, IST stacks, etc.) so ephemeral allocations won't starve them.
+        // This ensures that essential boot-time structures always have frames
+        // available even if the general pool is temporarily exhausted during
+        // heavy mapping operations.
         const RESERVED_FOR_CRITICAL: usize = 16;
         let reserved = early_frame_alloc.reserve_frames(RESERVED_FOR_CRITICAL);
         crate::display::kernel_write_line("  [fa] reserved frames="); theseus_shared::print_hex_u64_0xe9!(reserved as u64); crate::display::kernel_write_line("\n");
@@ -620,7 +651,8 @@ unsafe fn get_or_create_page_table_alloc(entry: &mut PageTableEntry, fa: &mut Bo
         }
     } else {
         // Prefer a reserved frame if available to avoid consuming the general
-        // pool used for non-critical allocations.
+        // pool used for non-critical allocations. This ensures that page table
+        // allocation doesn't compete with ephemeral allocations for frames.
         let frame_opt = fa.allocate_reserved_frame().or_else(|| fa.allocate_frame());
         if let Some(frame) = frame_opt {
             let phys = frame.start_address().as_u64();
@@ -796,6 +828,26 @@ use x86_64::{PhysAddr, VirtAddr, structures::paging::{FrameAllocator, Mapper, Pa
 
 const UEFI_CONVENTIONAL_MEMORY: u32 = 7; // UEFI spec: conventional memory type
 
+/// Frame allocator built from UEFI memory map with reserved pool for critical structures
+///
+/// This allocator iterates through the UEFI memory map descriptors and
+/// allocates frames from `UEFI_CONVENTIONAL_MEMORY` regions. It maintains
+/// state to track the current region and position within that region.
+///
+/// The allocator skips physical frame 0 to avoid potential issues with
+/// null pointer dereferences.
+///
+/// # Reserved Frame Pool
+/// 
+/// The allocator includes a small reserved pool (16 frames) to prevent critical
+/// kernel structures from being starved by ephemeral allocations. This ensures
+/// that page tables, IST stacks, and other essential structures always have
+/// frames available even if the general pool is temporarily exhausted.
+///
+/// - `reserved`: Array storing physical addresses of reserved frames
+/// - `reserved_count`: Number of frames currently in the reserved pool
+/// - LIFO allocation: Last frame reserved is first frame allocated
+/// - Fallback behavior: If reserved pool empty, falls back to general pool
 pub struct BootFrameAllocator {
     base_ptr: *const u8,
     desc_size: usize,
@@ -823,8 +875,9 @@ impl BootFrameAllocator {
         crate::display::kernel_write_line("  [fa] base_ptr="); theseus_shared::print_hex_u64_0xe9!(base_ptr as u64);
         crate::display::kernel_write_line(" desc_size="); theseus_shared::print_hex_u64_0xe9!(desc_size as u64);
         crate::display::kernel_write_line(" count="); theseus_shared::print_hex_u64_0xe9!(count as u64); crate::display::kernel_write_line("\n");
-        // Compute simple summary statistics of the provided UEFI memory map so
-        // we can verify the allocator will see the full map at early boot.
+        // Memory map diagnostics: Compute summary statistics of the UEFI memory map
+        // to verify the allocator sees the full system RAM. This helps debug memory
+        // allocation issues and confirms we have sufficient conventional memory.
         let mut total_pages: u128 = 0;
         let mut conventional_pages: u128 = 0;
         for i in 0..count {
@@ -842,8 +895,26 @@ impl BootFrameAllocator {
     }
 
     /// Reserve up to `n` frames from the allocator and store them into the
-    /// internal reserved pool for critical kernel use. Returns the number of
-    /// frames actually reserved.
+    /// internal reserved pool for critical kernel use.
+    ///
+    /// This method allocates frames from the general pool and moves them into
+    /// the reserved pool. The reserved pool is used for critical kernel structures
+    /// like page tables and IST stacks to prevent them from being starved by
+    /// ephemeral allocations.
+    ///
+    /// # Arguments
+    /// - `n`: Maximum number of frames to reserve
+    ///
+    /// # Returns
+    /// - The number of frames actually reserved (may be less than `n` if
+    ///   insufficient frames available or reserved pool is full)
+    ///
+    /// # Example
+    /// ```rust
+    /// let mut allocator = BootFrameAllocator::from_handoff(handoff);
+    /// let reserved_count = allocator.reserve_frames(16);
+    /// println!("Reserved {} frames for critical structures", reserved_count);
+    /// ```
     pub fn reserve_frames(&mut self, mut n: usize) -> usize {
         let mut got = 0usize;
         while n > 0 && self.reserved_count < self.reserved.len() {
@@ -860,8 +931,23 @@ impl BootFrameAllocator {
         got
     }
 
-    /// Allocate a frame from the reserved pool (LIFO). Returns `None` if the
-    /// reserved pool is empty.
+    /// Allocate a frame from the reserved pool (LIFO allocation).
+    ///
+    /// This method provides frames from the reserved pool using Last In, First Out
+    /// (LIFO) allocation. This is used for critical kernel structures that need
+    /// guaranteed frame availability.
+    ///
+    /// # Returns
+    /// - `Some(PhysFrame)` if frames are available in the reserved pool
+    /// - `None` if the reserved pool is empty
+    ///
+    /// # Example
+    /// ```rust
+    /// // Try to get a reserved frame first, fall back to general pool
+    /// let frame = allocator.allocate_reserved_frame()
+    ///     .or_else(|| allocator.allocate_frame())
+    ///     .expect("No frames available");
+    /// ```
     pub fn allocate_reserved_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
         if self.reserved_count == 0 { return None; }
         self.reserved_count -= 1;
