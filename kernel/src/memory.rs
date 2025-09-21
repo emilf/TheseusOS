@@ -98,7 +98,7 @@ pub const PHYS_OFFSET: u64 = 0xFFFF800000000000;
 /// and various flags that control memory access and caching behavior.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
-pub struct PageTableEntry(u64);
+pub struct PageTableEntry(pub u64);
 
 impl PageTableEntry {
     /// Create a new page table entry
@@ -1153,3 +1153,4 @@ fn identity_map_first_1gb_x86(mapper: &mut OffsetPageTable<'static>, frame_alloc
         addr += two_mb;
     }
 }
+

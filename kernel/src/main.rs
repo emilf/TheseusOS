@@ -25,25 +25,18 @@
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
+#![feature(custom_test_frameworks)]
+#![test_runner(theseus_kernel::test_runner)]
+#![reexport_test_harness_main = "test_main"]
 
 extern crate alloc;
+extern crate theseus_kernel;
 
-// Include our modules
-mod gdt;
-mod interrupts;
-mod cpu;
-mod memory;
-mod allocator;
-mod handoff;
-mod display;
-mod environment;
-mod panic;
-
-use allocator::initialize_heap_from_handoff;
-use handoff::{set_handoff_pointers, validate_handoff};
-use display::{kernel_write_line};
-use environment::setup_kernel_environment;
-// use boot_services::exit_boot_services; // Not needed - bootloader handles this
+// Import from our library
+use theseus_kernel::{
+    initialize_heap_from_handoff, set_handoff_pointers, validate_handoff,
+    kernel_write_line, setup_kernel_environment
+};
 
 /// Main kernel entry point
 
@@ -81,7 +74,7 @@ pub extern "C" fn kernel_main(handoff_addr: u64) -> ! {
             if handoff.size > 0 {
                 kernel_write_line("Handoff structure found");
                 // Dump full handoff for debugging; set second arg to false to disable raw bytes
-                crate::display::dump_handoff(handoff, false);
+                theseus_kernel::display::dump_handoff(handoff, false);
                 // Sanity-check critical fields to fail-fast on malformed handoff
                 match validate_handoff(handoff) {
                     Ok(()) => kernel_write_line("Handoff validation passed"),
@@ -106,6 +99,10 @@ pub extern "C" fn kernel_main(handoff_addr: u64) -> ! {
         }
     }
     
+    // Run tests if we're in test mode
+    #[cfg(test)]
+    test_main();
+    
     // For now, just exit QEMU
     kernel_write_line("Kernel initialization complete");
     kernel_write_line("Exiting QEMU...");
@@ -113,4 +110,13 @@ pub extern "C" fn kernel_main(handoff_addr: u64) -> ! {
     theseus_shared::qemu_exit_ok!();
     
     loop {}
+}
+
+/// Simple test to verify the test framework is working
+#[cfg(test)]
+#[test_case]
+fn trivial_assertion() {
+    theseus_shared::qemu_print!("trivial assertion... ");
+    assert_eq!(1, 1);
+    theseus_shared::qemu_println!("[ok]");
 }

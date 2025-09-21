@@ -3,9 +3,33 @@ name = "theseus-kernel"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "theseus_kernel"
+path = "src/lib.rs"
+
 [[bin]]
 name = "kernel"
 path = "src/main.rs"
+test = true
+
+# Bare-metal tests - run immediately after bootloader handoff
+[[test]]
+name = "bare_metal_tests"
+path = "../tests/bare_metal_tests.rs"
+
+# Kernel-initialized tests - run after full kernel setup
+[[test]]
+name = "kernel_tests"
+path = "../tests/kernel_tests.rs"
+
+# Panic tests - verify panic handling works correctly
+[[test]]
+name = "should_panic"
+path = "../tests/should_panic.rs"
+harness = false
+
+[dev-dependencies]
+theseus-shared = { path = "../shared" }
 
 [dependencies]
 theseus-shared = { path = "../shared" }
