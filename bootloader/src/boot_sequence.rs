@@ -246,23 +246,17 @@ pub fn collect_system_info(verbose: bool) {
 
     // CPU Information
     write_line("Collecting CPU information...");
-    write_line("Debug: About to call collect_cpu_info");
     match collect_cpu_info() {
         Some((cpu_count, cpu_features, microcode_revision)) => {
-            write_line("Debug: collect_cpu_info returned Some");
-            write_line("Debug: About to write to HANDOFF");
             unsafe {
                 HANDOFF.cpu_count = cpu_count;
                 HANDOFF.cpu_features = cpu_features;
                 HANDOFF.microcode_revision = microcode_revision;
             }
-            write_line("Debug: HANDOFF write completed");
             write_line("✓ CPU information collected");
-            write_line("Debug: About to call display_cpu_info");
             if verbose {
                 display_cpu_info(cpu_count, cpu_features, microcode_revision);
             }
-            write_line("Debug: display_cpu_info call completed");
         }
         None => {
             write_line("✗ CPU information not available");
@@ -271,13 +265,11 @@ pub fn collect_system_info(verbose: bool) {
             }
         }
     }
-    write_line("Debug: collect_system_info completed successfully");
 }
 
 /// Collect hardware inventory
 pub fn collect_hardware_inventory_info(verbose: bool) -> bool {
     write_line("Collecting hardware inventory...");
-    write_line("Debug: About to call collect_hardware_inventory");
     match collect_hardware_inventory(verbose) {
         Some(inventory) => {
             unsafe {

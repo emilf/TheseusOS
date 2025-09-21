@@ -3,9 +3,10 @@
 //! This module provides functions to collect various system information
 //! during UEFI boot, including firmware, boot time, and CPU information.
 
-use acpi::AcpiTables;
-use crate::acpi::UefiAcpiHandler;
-use crate::drivers::manager::write_line;
+// TODO: Re-enable when ACPI parsing is fixed
+// use acpi::AcpiTables;
+// use crate::acpi::UefiAcpiHandler;
+// use crate::drivers::manager::write_line; // Not needed since we're not using write_line in this file anymore
 use uefi::table;
 use uefi::proto::loaded_image::LoadedImage;
 
@@ -141,16 +142,29 @@ pub fn collect_boot_device_path() -> Option<(u64, u32)> {
 /// 
 /// Returns (cpu_count, cpu_features, microcode_revision). Features and microcode
 /// are placeholders for now; proper CPUID/MSR probing can be added later.
-/// TODO: This is all wrong. Returns 1 processor when there are multiple processors.
+/// 
+/// # Note
+/// 
+/// ACPI parsing is currently disabled due to stability issues with the `acpi` crate
+/// in the UEFI environment. This function returns hardcoded values until the ACPI
+/// parsing can be properly debugged and fixed.
+/// This function never worked, so the commented code would even work if it wouldnt crash.
+/// 
+/// # TODO
+/// 
+/// - Fix ACPI table parsing stability issues
+/// - Implement proper CPU count detection from MADT
+/// - Add CPUID feature detection
+/// - Add microcode revision reading
 pub fn collect_cpu_info() -> Option<(u32, u64, u32)> {
-    // // We rely on a previously discovered RSDP stored in the handoff
+    // TODO: Re-enable ACPI parsing once stability issues are resolved
+    // The acpi crate causes panics during table parsing in UEFI environment
     // let rsdp = unsafe { theseus_shared::handoff::HANDOFF.acpi_rsdp };
     // if rsdp == 0 {
     //     write_line("  CPU: No RSDP available; cannot determine CPU count");
     //     return None;
     // }
-
-    // // Parse ACPI tables via the `acpi` crate
+    // 
     // let tables = match unsafe { AcpiTables::from_rsdp(UefiAcpiHandler, rsdp as usize) } {
     //     Ok(t) => t,
     //     Err(e) => {
@@ -158,7 +172,7 @@ pub fn collect_cpu_info() -> Option<(u32, u64, u32)> {
     //         return None;
     //     }
     // };
-
+    // 
     // let platform = match tables.platform_info() {
     //     Ok(p) => p,
     //     Err(e) => {
@@ -166,8 +180,7 @@ pub fn collect_cpu_info() -> Option<(u32, u64, u32)> {
     //         return None;
     //     }
     // };
-
-    // // Processor information (MADT)
+    // 
     // let proc_info = match platform.processor_info {
     //     Some(pi) => pi,
     //     None => {
@@ -175,25 +188,19 @@ pub fn collect_cpu_info() -> Option<(u32, u64, u32)> {
     //         return None;
     //     }
     // };
-
-    // // Count boot processor + application processors
+    // 
     // let mut count: u32 = 1; // BSP
     // for _ap in proc_info.application_processors.iter() {
-    //     // Count all AP entries; refine with state filtering later if needed
     //     count += 1;
     // }
-
-    // write_line(&alloc::format!("✓ CPU count determined from ACPI: {}", count));
-
-    // let cpu_features: u64 = 0; // Note: CPUID feature detection is handled in kernel
-    // let microcode_revision: u32 = 0; // Note: Microcode revision reading deferred to kernel
+    // 
+    // let cpu_features: u64 = 0; // CPUID feature detection handled in kernel
+    // let microcode_revision: u32 = 0; // Microcode revision reading deferred to kernel
     // Some((count, cpu_features, microcode_revision))
 
-    // Temporarily disable ACPI parsing to avoid the panic
-    // The issue seems to be with the ACPI crate or memory corruption
-    write_line("  CPU: Using hardcoded CPU count (ACPI parsing disabled due to panic)");
-    write_line("✓ CPU count determined from ACPI: 1");
-    
-    // Return hardcoded values
+    // Return hardcoded values for now
+    // CPU count: 1 (single-core assumption for QEMU)
+    // CPU features: 0 (handled in kernel)
+    // Microcode revision: 0 (handled in kernel)
     Some((1, 0, 0))
 }

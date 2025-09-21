@@ -41,6 +41,22 @@ use theseus_shared::handoff::{Handoff, HANDOFF};
 // Set to false for clean, minimal output suitable for AI agents and CI/CD.
 // Set to true for detailed debugging output.
 
+/// Global verbose output control
+/// 
+/// This constant is used throughout the bootloader to control debug output.
+/// When set to false, only essential information is displayed.
+/// When set to true, detailed debug information is shown including:
+/// - Complete memory maps and ACPI information
+/// - Detailed hardware inventory
+/// - Verbose boot device path information
+/// - Full system information dumps
+/// 
+/// # Usage
+/// 
+/// Pass this constant to information collection functions to control
+/// their verbosity level. All display functions check this flag before
+/// showing detailed information.
+pub const VERBOSE_OUTPUT: bool = false;
 
 // Memory Allocation Testing
 // Set to true to run memory allocation tests during boot
@@ -56,9 +72,6 @@ mod system_info;
 mod boot_sequence;
 mod qemu_exit;
 
-/// Global verbose output control
-/// This constant is used throughout the bootloader to control debug output
-pub const VERBOSE_OUTPUT: bool = false;
 
 // Use shared library
 
