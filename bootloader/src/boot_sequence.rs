@@ -31,7 +31,7 @@ pub fn initialize_uefi_environment() -> Result<(), Status> {
 
 
 /// Collect graphics output protocol information
-pub fn collect_graphics_info() -> bool {
+pub fn collect_graphics_info(verbose: bool) -> bool {
     write_line("Collecting graphics information...");
     
     let gop_info = match uefi::boot::locate_handle_buffer(
@@ -73,7 +73,9 @@ pub fn collect_graphics_info() -> bool {
     // Report GOP status
     if let Some((w, h, pf, stride, fb_base, fb_size)) = gop_info {
         write_line("✓ Graphics Output Protocol (GOP) found and initialized");
-        display_gop_info(w as u32, h as u32, pf, stride as u32, fb_base, fb_size as u64);
+        if verbose {
+            display_gop_info(w as u32, h as u32, pf, stride as u32, fb_base, fb_size as u64);
+        }
         write_line("✓ Framebuffer information collected and stored in handoff structure");
         true
     } else {
@@ -84,7 +86,7 @@ pub fn collect_graphics_info() -> bool {
 }
 
 /// Collect memory map information
-pub fn collect_memory_map() -> Option<uefi::mem::memory_map::MemoryMapOwned> {
+pub fn collect_memory_map(verbose: bool) -> Option<uefi::mem::memory_map::MemoryMapOwned> {
     write_line("Collecting memory map information...");
     
     match uefi::boot::memory_map(MemoryType::LOADER_DATA) {
@@ -105,12 +107,16 @@ pub fn collect_memory_map() -> Option<uefi::mem::memory_map::MemoryMapOwned> {
                 HANDOFF.memory_map_size = total_size;
             }
             
-            // Display the actual memory map entries
-            display_memory_map_entries(&mmap);
+            // Display the actual memory map entries (if verbose)
+            if verbose {
+                display_memory_map_entries(&mmap);
+            }
             
             write_line("✓ Memory map collected successfully");
-            unsafe {
-                display_memory_map_info(HANDOFF.memory_map_descriptor_size, HANDOFF.memory_map_descriptor_version, HANDOFF.memory_map_entries, HANDOFF.memory_map_size);
+            if verbose {
+                unsafe {
+                    display_memory_map_info(HANDOFF.memory_map_descriptor_size, HANDOFF.memory_map_descriptor_version, HANDOFF.memory_map_entries, HANDOFF.memory_map_size);
+                }
             }
             write_line("✓ Memory map information stored in handoff structure");
             
@@ -124,28 +130,36 @@ pub fn collect_memory_map() -> Option<uefi::mem::memory_map::MemoryMapOwned> {
 }
 
 /// Collect ACPI information
-pub fn collect_acpi_info() -> bool {
+pub fn collect_acpi_info(verbose: bool) -> bool {
     write_line("Locating ACPI RSDP table...");
-    write_line("  Debug: About to call find_acpi_rsdp");
-    let rsdp_address = find_acpi_rsdp().unwrap_or(0);
-    write_line("  Debug: find_acpi_rsdp returned");
+    if verbose {
+        write_line("  Debug: About to call find_acpi_rsdp");
+    }
+    let rsdp_address = find_acpi_rsdp(verbose).unwrap_or(0);
+    if verbose {
+        write_line("  Debug: find_acpi_rsdp returned");
+    }
     unsafe { HANDOFF.acpi_rsdp = rsdp_address; }
     
     if rsdp_address != 0 {
         write_line("✓ ACPI RSDP table found");
-        display_acpi_info(rsdp_address);
+        if verbose {
+            display_acpi_info(rsdp_address);
+        }
         write_line("✓ ACPI information stored in handoff structure");
         true
     } else {
         write_line("✗ ACPI RSDP table not found");
-        display_acpi_info(rsdp_address);
+        if verbose {
+            display_acpi_info(rsdp_address);
+        }
         write_line("  No ACPI support will be available to kernel");
         false
     }
 }
 
 /// Collect system information (firmware, boot time, etc.)
-pub fn collect_system_info() {
+pub fn collect_system_info(verbose: bool) {
     // UEFI System Table and Image Handle
     write_line("Collecting UEFI system table and image handle...");
     match uefi::table::system_table_raw() {
@@ -176,11 +190,15 @@ pub fn collect_system_info() {
                 HANDOFF.firmware_revision = revision;
             }
             write_line("✓ Firmware information collected");
-            display_firmware_info(vendor_ptr, vendor_len, revision);
+            if verbose {
+                display_firmware_info(vendor_ptr, vendor_len, revision);
+            }
         }
         None => {
             write_line("✗ Firmware information not available");
-            display_firmware_info(0, 0, 0);
+            if verbose {
+                display_firmware_info(0, 0, 0);
+            }
         }
     }
 
@@ -193,11 +211,15 @@ pub fn collect_system_info() {
                 HANDOFF.boot_time_nanoseconds = nanoseconds;
             }
             write_line("✓ Boot time information collected");
-            display_boot_time_info(seconds, nanoseconds);
+            if verbose {
+                display_boot_time_info(seconds, nanoseconds);
+            }
         }
         None => {
             write_line("✗ Boot time information not available");
-            display_boot_time_info(0, 0);
+            if verbose {
+                display_boot_time_info(0, 0);
+            }
         }
     }
 
@@ -210,36 +232,52 @@ pub fn collect_system_info() {
                 HANDOFF.boot_device_path_size = device_path_size;
             }
             write_line("✓ Boot device path information collected");
-            display_boot_device_path_info(device_path_ptr, device_path_size);
+            if verbose {
+                display_boot_device_path_info(device_path_ptr, device_path_size);
+            }
         }
         None => {
             write_line("✗ Boot device path information not available");
-            display_boot_device_path_info(0, 0);
+            if verbose {
+                display_boot_device_path_info(0, 0);
+            }
         }
     }
 
     // CPU Information
     write_line("Collecting CPU information...");
+    write_line("Debug: About to call collect_cpu_info");
     match collect_cpu_info() {
         Some((cpu_count, cpu_features, microcode_revision)) => {
+            write_line("Debug: collect_cpu_info returned Some");
+            write_line("Debug: About to write to HANDOFF");
             unsafe {
                 HANDOFF.cpu_count = cpu_count;
                 HANDOFF.cpu_features = cpu_features;
                 HANDOFF.microcode_revision = microcode_revision;
             }
+            write_line("Debug: HANDOFF write completed");
             write_line("✓ CPU information collected");
-            display_cpu_info(cpu_count, cpu_features, microcode_revision);
+            write_line("Debug: About to call display_cpu_info");
+            if verbose {
+                display_cpu_info(cpu_count, cpu_features, microcode_revision);
+            }
+            write_line("Debug: display_cpu_info call completed");
         }
         None => {
             write_line("✗ CPU information not available");
-            display_cpu_info(0, 0, 0);
+            if verbose {
+                display_cpu_info(0, 0, 0);
+            }
         }
     }
+    write_line("Debug: collect_system_info completed successfully");
 }
 
 /// Collect hardware inventory
 pub fn collect_hardware_inventory_info(verbose: bool) -> bool {
     write_line("Collecting hardware inventory...");
+    write_line("Debug: About to call collect_hardware_inventory");
     match collect_hardware_inventory(verbose) {
         Some(inventory) => {
             unsafe {
@@ -248,7 +286,9 @@ pub fn collect_hardware_inventory_info(verbose: bool) -> bool {
                 HANDOFF.hardware_inventory_size = inventory.total_size;
             }
             write_line("✓ Hardware inventory collected");
-            display_hardware_inventory(&inventory);
+            if verbose {
+                display_hardware_inventory(&inventory);
+            }
             true
         }
         None => {
@@ -259,7 +299,7 @@ pub fn collect_hardware_inventory_info(verbose: bool) -> bool {
 }
 
 /// Get loaded image device path
-pub fn collect_loaded_image_path() -> bool {
+pub fn collect_loaded_image_path(verbose: bool) -> bool {
     write_line("Getting loaded image device path...");
     match get_loaded_image_device_path() {
         Some((path_ptr, path_size)) => {
@@ -268,7 +308,9 @@ pub fn collect_loaded_image_path() -> bool {
                 HANDOFF.boot_device_path_size = path_size;
             }
             write_line("✓ Loaded image device path collected");
-            display_boot_device_path_info(path_ptr, path_size);
+            if verbose {
+                display_boot_device_path_info(path_ptr, path_size);
+            }
             true
         }
         None => {

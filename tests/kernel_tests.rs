@@ -72,7 +72,7 @@ pub extern "C" fn kernel_main(handoff_addr: u64) -> ! {
                 // - Interrupt handling
                 // - CPU features
                 // - All kernel services
-                theseus_kernel::setup_kernel_environment(handoff, handoff.kernel_physical_base);
+                theseus_kernel::setup_kernel_environment(handoff, handoff.kernel_physical_base, false);
                 
                 // Run tests directly (bypassing broken custom test framework)
                 // We discovered that the framework's test() call mechanism hangs

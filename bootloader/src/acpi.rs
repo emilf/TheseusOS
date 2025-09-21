@@ -60,7 +60,7 @@ impl AcpiHandler for UefiAcpiHandler {
 /// 
 /// # Arguments
 /// 
-/// * `serial_handle` - Optional handle for debug output
+/// * `verbose` - Whether to output debug information
 /// 
 /// # Returns
 /// 
@@ -71,19 +71,23 @@ impl AcpiHandler for UefiAcpiHandler {
 /// 
 /// This function accesses the UEFI system table and configuration table.
 /// It is safe to call during UEFI boot services phase.
-pub fn find_acpi_rsdp() -> Option<u64> {
+pub fn find_acpi_rsdp(verbose: bool) -> Option<u64> {
     use uefi::table::cfg::{ACPI_GUID, ACPI2_GUID, ConfigTableEntry};
     use uefi::table;
     use core::slice;
     
     // Debug: Function called
-    write_line("  Debug: find_acpi_rsdp function called");
+    if verbose {
+        write_line("  Debug: find_acpi_rsdp function called");
+    }
     
     // Get the system table
     let system_table = match table::system_table_raw() {
         Some(st) => st,
         None => {
-            write_line("  Debug: System table not available");
+            if verbose {
+                write_line("  Debug: System table not available");
+            }
             return None;
         }
     };
@@ -93,7 +97,9 @@ pub fn find_acpi_rsdp() -> Option<u64> {
     
     // Check if configuration table is available
     if st.configuration_table.is_null() || st.number_of_configuration_table_entries == 0 {
-        write_line("  Debug: Configuration table not available");
+        if verbose {
+            write_line("  Debug: Configuration table not available");
+        }
         return None;
     }
     
@@ -107,10 +113,14 @@ pub fn find_acpi_rsdp() -> Option<u64> {
     
     // Search for ACPI 2.0 RSDP first (preferred)
     for (i, entry) in config_entries.iter().enumerate() {
-        write_line(&alloc::format!("  Debug: Entry {} - GUID: {:?}", i, entry.guid));
+        if verbose {
+            write_line(&alloc::format!("  Debug: Entry {} - GUID: {:?}", i, entry.guid));
+        }
         
         if entry.guid == ACPI2_GUID {
-            write_line(&alloc::format!("  Debug: Found ACPI 2.0 RSDP at 0x{:016X}", entry.address as u64));
+            if verbose {
+                write_line(&alloc::format!("  Debug: Found ACPI 2.0 RSDP at 0x{:016X}", entry.address as u64));
+            }
             return Some(entry.address as u64);
         }
     }
@@ -118,12 +128,16 @@ pub fn find_acpi_rsdp() -> Option<u64> {
     // Fall back to ACPI 1.0 RSDP
     for entry in config_entries {
         if entry.guid == ACPI_GUID {
-            write_line(&alloc::format!("  Debug: Found ACPI 1.0 RSDP at 0x{:016X}", entry.address as u64));
+            if verbose {
+                write_line(&alloc::format!("  Debug: Found ACPI 1.0 RSDP at 0x{:016X}", entry.address as u64));
+            }
             return Some(entry.address as u64);
         }
     }
     
-    write_line("  Debug: No ACPI RSDP table found in configuration table");
+    if verbose {
+        write_line("  Debug: No ACPI RSDP table found in configuration table");
+    }
     
     // No ACPI table found
     None

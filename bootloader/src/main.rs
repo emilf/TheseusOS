@@ -35,11 +35,17 @@ use uefi::prelude::*;
 // alloc::format imported in display module
 use theseus_shared::handoff::{Handoff, HANDOFF};
 
-// Configuration Options
-// Hardware Inventory Verbose Output
-// Set to true to see detailed device enumeration with device paths (if DevicePathToText protocol available)
-// Set to false for clean, summary-only output
-const VERBOSE_HARDWARE_INVENTORY: bool = false;
+// Configuration Options for Bootloader Output
+// 
+// These constants control the verbosity of bootloader output.
+// Set to false for clean, minimal output suitable for AI agents and CI/CD.
+// Set to true for detailed debugging output.
+
+
+// Memory Allocation Testing
+// Set to true to run memory allocation tests during boot
+// Set to false to skip tests for faster boot
+const RUN_MEMORY_TESTS: bool = false;
 
 // Include our modules
 mod serial;
@@ -49,6 +55,10 @@ mod acpi;
 mod system_info;
 mod boot_sequence;
 mod qemu_exit;
+
+/// Global verbose output control
+/// This constant is used throughout the bootloader to control debug output
+pub const VERBOSE_OUTPUT: bool = false;
 
 // Use shared library
 
@@ -158,25 +168,29 @@ fn efi_main() -> Status {
     // Test panic handler (uncomment to test)
     // panic!("Testing panic handler - this should exit QEMU with error message");
     
-    // Test memory allocation functions
-    write_line("=== Testing Memory Management ===");
-    match memory::test_memory_allocation() {
-        Ok(_) => {
-            write_line("✓ Memory allocation tests passed");
-        },
-        Err(status) => {
-            write_line(&format!("✗ Memory allocation tests failed: {:?}", status));
-            return status;
+    // Test memory allocation functions (configurable)
+    if RUN_MEMORY_TESTS {
+        write_line("=== Testing Memory Management ===");
+        match memory::test_memory_allocation() {
+            Ok(_) => {
+                write_line("✓ Memory allocation tests passed");
+            },
+            Err(status) => {
+                write_line(&format!("✗ Memory allocation tests failed: {:?}", status));
+                return status;
+            }
         }
+    } else {
+        write_line("✓ Memory allocation tests skipped (disabled)");
     }
 
     // Collect all system information
-    collect_graphics_info();
-    let memory_map = collect_memory_map();
-    collect_acpi_info();
-    collect_system_info();
-    collect_hardware_inventory_info(VERBOSE_HARDWARE_INVENTORY);
-    collect_loaded_image_path();
+    collect_graphics_info(VERBOSE_OUTPUT);
+    let memory_map = collect_memory_map(VERBOSE_OUTPUT);
+    collect_acpi_info(VERBOSE_OUTPUT);
+    collect_system_info(VERBOSE_OUTPUT);
+    collect_hardware_inventory_info(VERBOSE_OUTPUT);
+    collect_loaded_image_path(VERBOSE_OUTPUT);
 
     // Allocate temporary heap for kernel
     allocate_temp_heap_for_kernel();

@@ -485,7 +485,7 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
 /// - No other code is running concurrently
 /// - The kernel physical base address is correct
 /// - UEFI boot services have been exited
-pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64) {
+pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64, _verbose: bool) {
     crate::display::kernel_write_line("=== Setting up Kernel Environment ===");
     
     // 1. Disable all interrupts first (including NMI)

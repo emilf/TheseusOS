@@ -38,6 +38,22 @@ use theseus_kernel::{
     kernel_write_line, setup_kernel_environment
 };
 
+// Configuration Options for Kernel Output
+// 
+// These constants control the verbosity of kernel output.
+// Set to false for clean, minimal output suitable for AI agents and CI/CD.
+// Set to true for detailed debugging output.
+
+// Handoff Structure Verbose Output
+// Set to true to see detailed handoff structure dump
+// Set to false for summary-only output
+const VERBOSE_HANDOFF_DUMP: bool = false;
+
+// Kernel Environment Setup Verbose Output
+// Set to true to see detailed kernel environment setup messages
+// Set to false for summary-only output
+const VERBOSE_KERNEL_SETUP: bool = false;
+
 /// Main kernel entry point
 
 // replaced by shared macros: out_char_0xe9! and print_hex_u64_0xe9!
@@ -73,8 +89,12 @@ pub extern "C" fn kernel_main(handoff_addr: u64) -> ! {
             
             if handoff.size > 0 {
                 kernel_write_line("Handoff structure found");
-                // Dump full handoff for debugging; set second arg to false to disable raw bytes
-                theseus_kernel::display::dump_handoff(handoff, false);
+                
+                // Dump handoff structure only if verbose output is enabled
+                if VERBOSE_HANDOFF_DUMP {
+                    theseus_kernel::display::dump_handoff(handoff, false);
+                }
+                
                 // Sanity-check critical fields to fail-fast on malformed handoff
                 match validate_handoff(handoff) {
                     Ok(()) => kernel_write_line("Handoff validation passed"),
@@ -89,7 +109,7 @@ pub extern "C" fn kernel_main(handoff_addr: u64) -> ! {
                 // display_handoff_info(handoff);
                 
                 // Set up complete kernel environment (boot services have been exited)
-                setup_kernel_environment(handoff, handoff.kernel_physical_base);
+                setup_kernel_environment(handoff, handoff.kernel_physical_base, VERBOSE_KERNEL_SETUP);
                 
             } else {
                 kernel_write_line("ERROR: Handoff structure has invalid size");
