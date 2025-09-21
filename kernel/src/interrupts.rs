@@ -250,6 +250,18 @@ extern "x86-interrupt" fn handler_gp(stack: InterruptStackFrame, code: u64) {
         print_str_0xe9(" TR=");
         let tr: u16; core::arch::asm!("str {0:x}", out(reg) tr, options(nomem, nostack, preserves_flags));
         print_hex_u64_0xe9(tr as u64);
+        // Dump 8 bytes at RIP and top of stack for debugging
+        print_str_0xe9(" INS=");
+        let rip = stack.instruction_pointer.as_u64();
+        let ins = core::ptr::read_volatile(rip as *const u64);
+        print_hex_u64_0xe9(ins);
+        print_str_0xe9(" STK:");
+        let rsp = stack.stack_pointer.as_u64();
+        for i in 0..4u64 {
+            let val = core::ptr::read_volatile((rsp + i*8) as *const u64);
+            out_char_0xe9(b' ');
+            print_hex_u64_0xe9(val);
+        }
         out_char_0xe9(b'\n');
         theseus_shared::qemu_exit_ok!();
     }
@@ -305,9 +317,25 @@ extern "x86-interrupt" fn handler_mc(_stack: InterruptStackFrame) -> ! {
 }
 
 extern "x86-interrupt" fn handler_timer(_stack: InterruptStackFrame) {
+    // Very small RSP diagnostic to observe stack during timer handling
+    let rsp_now: u64;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp_now, options(nomem, preserves_flags)); }
+    // Print RSP and CR3 for debugging
+    let cr3_pa: u64 = {
+        use x86_64::registers::control::Cr3;
+        let (frame, _flags) = Cr3::read();
+        frame.start_address().as_u64()
+    };
+    unsafe {
+        print_str_0xe9("[TIMER] RSP=");
+        print_hex_u64_0xe9(rsp_now);
+        print_str_0xe9(" CR3=");
+        print_hex_u64_0xe9(cr3_pa);
+        print_str_0xe9("\n");
+    }
+
     // Acknowledge LAPIC EOI first to avoid stuck-in-service
     unsafe {
-        print_str_0xe9("  [INT] Timer tick\n");
         let apic_base = get_apic_base();
         write_apic_register(apic_base, 0xB0, 0); // EOI
     }
@@ -316,7 +344,11 @@ extern "x86-interrupt" fn handler_timer(_stack: InterruptStackFrame) {
 }
 
 extern "x86-interrupt" fn handler_spurious(_stack: InterruptStackFrame) {
-    // No EOI for spurious
+    // Log spurious interrupt entry for debugging nested/extra interrupts
+    unsafe {
+        print_str_0xe9("[INT] spurious\n");
+    }
+    // return to interrupted context
 }
 
 /// Print a compact one-line summary of key IDT handler addresses
@@ -476,10 +508,34 @@ pub unsafe fn lapic_timer_start_oneshot(initial_count: u32) {
 pub unsafe fn lapic_timer_mask() {
     if !has_apic() { return; }
     let apic_base = get_apic_base();
-    let mut lvt = read_apic_register(apic_base, 0x320);
-    lvt |= 1 << 16;
-    write_apic_register(apic_base, 0x320, lvt);
+    let vbase = crate::memory::PHYS_OFFSET + (apic_base & 0xFFFFF000);
+    unsafe {
+        use x86_64::registers::control::Cr3;
+        let (frame, _f) = Cr3::read();
+        let cr3pa = frame.start_address().as_u64();
+        print_str_0xe9("[lapic_mask] apic_base="); print_hex_u64_0xe9(apic_base);
+        print_str_0xe9(" vbase="); print_hex_u64_0xe9(vbase);
+        print_str_0xe9(" CR3="); print_hex_u64_0xe9(cr3pa);
+        print_str_0xe9(" offset=0x320 addr="); print_hex_u64_0xe9(vbase + 0x320);
+        out_char_0xe9(b'\n');
+    }
+    // Read-modify-write LVT timer
+    let val = read_apic_register(apic_base, 0x320);
+    unsafe { print_str_0xe9("[lapic_mask] lvt before="); print_hex_u64_0xe9(val as u64); out_char_0xe9(b'\n'); }
+    let new = val | (1 << 16);
+    write_apic_register(apic_base, 0x320, new);
+    let val2 = read_apic_register(apic_base, 0x320);
+    unsafe {
+        print_str_0xe9("[lapic_mask] lvt after="); print_hex_u64_0xe9(val2 as u64); out_char_0xe9(b'\n');
+        use x86_64::registers::control::Cr3;
+        let (frame2, _f2) = Cr3::read();
+        print_str_0xe9("[lapic_mask] CR3 after="); print_hex_u64_0xe9(frame2.start_address().as_u64()); out_char_0xe9(b'\n');
+    }
 }
+
+/// No-op function used to test whether a simple CALL from environment causes the PF.
+#[no_mangle]
+pub extern "C" fn noop_for_test() { }
 
 #[allow(dead_code)]
 pub fn timer_tick_count() -> u32 { TIMER_TICKS.load(Ordering::Relaxed) }
@@ -562,17 +618,29 @@ unsafe fn get_apic_base() -> u64 {
 #[allow(dead_code)]
 unsafe fn read_apic_register(apic_base: u64, offset: u32) -> u32 {
     // The LAPIC MMIO is mapped at PHYS_OFFSET + physical address
-    let vbase = crate::memory::PHYS_OFFSET + (apic_base & 0xFFFFF000);
-    let addr = vbase | (offset as u64);
+    let vbase = crate::memory::phys_to_virt_pa(apic_base & 0xFFFFF000);
+    let addr = vbase + (offset as u64);
+    const APIC_MMIO_DEBUG: bool = false; // silence verbose MMIO debug during stress
+    if APIC_MMIO_DEBUG {
+        unsafe { print_str_0xe9("[lapic_mmio] READ addr="); print_hex_u64_0xe9(addr); out_char_0xe9(b'\n'); }
+    }
     // Use volatile read
-    core::ptr::read_volatile(addr as *const u32)
+    let val = core::ptr::read_volatile(addr as *const u32);
+    if APIC_MMIO_DEBUG {
+        unsafe { print_str_0xe9("[lapic_mmio] READ val="); print_hex_u64_0xe9(val as u64); out_char_0xe9(b'\n'); }
+    }
+    val
 }
 
 /// Write APIC register
 #[allow(dead_code)]
 unsafe fn write_apic_register(apic_base: u64, offset: u32, value: u32) {
-    let vbase = crate::memory::PHYS_OFFSET + (apic_base & 0xFFFFF000);
-    let addr = vbase | (offset as u64);
+    let vbase = crate::memory::phys_to_virt_pa(apic_base & 0xFFFFF000);
+    let addr = vbase + (offset as u64);
+    const APIC_MMIO_DEBUG: bool = true;
+    if APIC_MMIO_DEBUG {
+        unsafe { print_str_0xe9("[lapic_mmio] WRITE addr="); print_hex_u64_0xe9(addr); print_str_0xe9(" val="); print_hex_u64_0xe9(value as u64); out_char_0xe9(b'\n'); }
+    }
     core::ptr::write_volatile(addr as *mut u32, value);
 }
 

@@ -148,6 +148,8 @@ pub struct MemoryManager {
 }
 // Simple global virt<->phys offset model for early paging
 static mut VIRT_PHYS_OFFSET: u64 = 0;
+// Indicates that the PHYS_OFFSET linear mapping is active (so phys_to_virt_pa can be used)
+static mut PHYS_OFFSET_ACTIVE: bool = false;
 // Physical base of kernel image for page-table pool address translation
 static mut KERNEL_PHYS_BASE_FOR_POOL: u64 = 0;
 
@@ -156,10 +158,58 @@ static mut KERNEL_PHYS_BASE_FOR_POOL: u64 = 0;
 fn virt_to_phys(va: u64) -> u64 { unsafe { va.wrapping_add(VIRT_PHYS_OFFSET) } }
 
 #[allow(dead_code)]
-fn phys_to_virt(pa: u64) -> u64 { unsafe { pa.wrapping_sub(VIRT_PHYS_OFFSET) } }
+fn phys_to_virt(pa: u64) -> u64 { unsafe { pa.wrapping_add(VIRT_PHYS_OFFSET) } }
+
+/// Convert a physical address into the kernel's high-half virtual address using
+/// the fixed `PHYS_OFFSET` mapping.
+#[allow(dead_code)]
+pub fn phys_to_virt_pa(pa: u64) -> u64 { PHYS_OFFSET.wrapping_add(pa) }
+
+/// Mark the PHYS_OFFSET linear mapping as active. Call this after CR3 is loaded
+/// and the kernel's PHYS_OFFSET mapping is established.
+pub fn set_phys_offset_active() { unsafe { PHYS_OFFSET_ACTIVE = true; } }
+
+/// Query whether the PHYS_OFFSET mapping is active
+pub fn phys_offset_is_active() -> bool { unsafe { PHYS_OFFSET_ACTIVE } }
 
 #[allow(dead_code)]
 fn set_virt_phys_offset(offset: u64) { unsafe { VIRT_PHYS_OFFSET = offset; } }
+
+/// Zero a physical address range by converting to the kernel's PHYS_OFFSET-mapped virtual
+/// address and performing volatile writes. Used for zeroing page-table frames safely.
+#[allow(dead_code)]
+pub unsafe fn zero_phys_range(pa: u64, size: usize) {
+    let va = phys_to_virt_pa(pa);
+    let mut off: usize = 0;
+    // write u64 words for speed
+    while off + 8 <= size {
+        core::ptr::write_volatile((va + off as u64) as *mut u64, 0u64);
+        off += 8;
+    }
+    // tail bytes if any
+    while off < size {
+        core::ptr::write_volatile((va + off as u64) as *mut u8, 0u8);
+        off += 1;
+    }
+}
+
+/// Zero a single page/frame safely. If paging is already enabled and the
+/// PHYS_OFFSET mapping is available we use that; otherwise fall back to
+/// identity physical writes which are valid early in boot.
+#[allow(dead_code)]
+pub unsafe fn zero_frame_safely(pa: u64) {
+    // If paging is enabled, prefer the PHYS_OFFSET virtual mapping
+    // Use PHYS_OFFSET mapping only if explicitly marked active; otherwise use identity
+    if phys_offset_is_active() {
+        theseus_shared::qemu_print_bytes!(b"[TRACE:ZERO_FRAME_BRANCH=PHYS_OFFSET]\n");
+        zero_phys_range(pa, PAGE_SIZE as usize);
+        theseus_shared::qemu_print_bytes!(b"[TRACE:ZERO_FRAME_DONE=PHYS_OFFSET]\n");
+    } else {
+        theseus_shared::qemu_print_bytes!(b"[TRACE:ZERO_FRAME_BRANCH=IDENTITY]\n");
+        core::ptr::write_bytes(pa as *mut u8, 0, PAGE_SIZE);
+        theseus_shared::qemu_print_bytes!(b"[TRACE:ZERO_FRAME_DONE=IDENTITY]\n");
+    }
+}
 
 /// Expose current virt->phys offset (phys - virt)
 #[allow(dead_code)]
@@ -173,10 +223,18 @@ impl MemoryManager {
             // Make kernel phys base available (legacy var no longer used after pool removal)
             KERNEL_PHYS_BASE_FOR_POOL = handoff.kernel_physical_base;
         // Initialize early frame allocator and allocate a fresh PML4 frame
+        // Trace marker: about to allocate PML4 frame
+        theseus_shared::qemu_print_bytes!(b"[TRACE:PML4_ALLOC_BEFORE]\n");
         let mut early_frame_alloc = BootFrameAllocator::from_handoff(handoff);
         let pml4_frame = early_frame_alloc.allocate_frame().expect("Out of frames for PML4");
+        theseus_shared::qemu_print_bytes!(b"[TRACE:PML4_ALLOC_AFTER]\n");
         let pml4_phys = pml4_frame.start_address().as_u64();
-        core::ptr::write_bytes(pml4_phys as *mut u8, 0, PAGE_SIZE);
+        // Trace marker: about to zero PML4
+        theseus_shared::qemu_print_bytes!(b"[TRACE:PML4_ZERO_BEFORE]\n");
+        // Zero the new PML4 frame using a helper that picks the correct method
+        // depending on whether paging is active.
+        zero_frame_safely(pml4_phys);
+        theseus_shared::qemu_print_bytes!(b"[TRACE:PML4_ZERO_AFTER]\n");
         let pml4: &mut PageTable = &mut *(pml4_phys as *mut PageTable);
         crate::display::kernel_write_line("  [vm/new] got pml4");
 
@@ -201,9 +259,8 @@ impl MemoryManager {
             let hh_index = ((KERNEL_VIRTUAL_BASE >> 39) & 0x1FF) as usize;
             let pml4_addr = pml4 as *mut PageTable as u64;
             let entry_val = core::ptr::read_volatile((pml4_addr as *const u64).add(hh_index));
-            crate::display::kernel_write_line("  [vm/new] PML4[HH]=");
+            // PML4[HH] -- high-half mapping for kernel (debug left minimal)
             theseus_shared::print_hex_u64_0xe9!(entry_val);
-            crate::display::kernel_write_line("\n");
             if entry_val == 0 {
                 // Force-create HH PDPT so the entry is present
                 let _ = get_or_create_page_table_alloc(pml4.get_entry(hh_index), &mut early_frame_alloc);
@@ -297,7 +354,7 @@ unsafe fn map_phys_offset_1gb_2mb_alloc(pml4: &mut PageTable, fa: &mut BootFrame
     let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL;
     while offset < one_gb {
         let pa = offset;
-        let va = PHYS_OFFSET + offset;
+        let va = phys_to_virt_pa(offset);
         map_2mb_page_alloc(pml4, va, pa, flags, fa);
         offset += two_mb;
     }
@@ -507,16 +564,36 @@ unsafe fn get_or_create_page_table_alloc(entry: &mut PageTableEntry, fa: &mut Bo
 /// - The page table root address is valid and accessible
 /// - No other code is modifying CR3 concurrently
 pub unsafe fn activate_virtual_memory(page_table_root: u64) {
+    // Debug: print the page_table_root being loaded and current CR3
+    {
+        use x86_64::registers::control::Cr3;
+        crate::display::kernel_write_line("[dbg] activate_virtual_memory: loading CR3 with=");
+        theseus_shared::print_hex_u64_0xe9!(page_table_root);
+        crate::display::kernel_write_line("\n");
+        let (old, _f) = Cr3::read();
+        crate::display::kernel_write_line("[dbg] activate_virtual_memory: CR3 before=");
+        theseus_shared::print_hex_u64_0xe9!(old.start_address().as_u64());
+        crate::display::kernel_write_line("\n");
+    }
     // Load our page table root into CR3 to enable virtual memory
     core::arch::asm!(
         "mov cr3, {}",  // Load PML4 physical address into CR3 register
         in(reg) page_table_root,
         options(nomem, nostack, preserves_flags)
     );
+    // Confirm CR3 after loading
+    {
+        use x86_64::registers::control::Cr3;
+        let (new, _f2) = Cr3::read();
+        crate::display::kernel_write_line("[dbg] activate_virtual_memory: CR3 after=");
+        theseus_shared::print_hex_u64_0xe9!(new.start_address().as_u64());
+        crate::display::kernel_write_line("\n");
+    }
 }
 
 // ===================== x86_64 paging integration (gated) =====================
 use x86_64::{PhysAddr, VirtAddr, structures::paging::{FrameAllocator, Mapper, Page, PageTableFlags, PhysFrame, Size4KiB, OffsetPageTable}};
+// control registers used elsewhere; no local Cr0 flags needed here
 
 const UEFI_CONVENTIONAL_MEMORY: u32 = 7; // UEFI spec: conventional memory type
 
@@ -544,6 +621,8 @@ impl BootFrameAllocator {
         crate::display::kernel_write_line(" count="); theseus_shared::print_hex_u64_0xe9!(count as u64); crate::display::kernel_write_line("\n");
         let mut s = Self { base_ptr, desc_size, count, cur_index: 0, cur_next_addr: 0, cur_remaining_pages: 0 };
         s.advance_to_next_region();
+        // Trace marker: completed early region setup in frame allocator
+        theseus_shared::qemu_print_bytes!(b"[TRACE:FA_FROM_HANDOFF_DONE]\n");
         s
     }
 
@@ -568,8 +647,15 @@ impl BootFrameAllocator {
                 let aligned_start = phys_start & !((PAGE_SIZE as u64) - 1);
                 let adj_pages = if aligned_start > phys_start { num_pages.saturating_sub(1) } else { num_pages };
                 if adj_pages == 0 { continue; }
-                self.cur_next_addr = aligned_start;
-                self.cur_remaining_pages = adj_pages;
+                // Avoid returning physical frame 0 (page 0); skip the first page if region starts at 0
+                if aligned_start == 0 {
+                    if adj_pages <= 1 { continue; }
+                    self.cur_next_addr = aligned_start + PAGE_SIZE as u64;
+                    self.cur_remaining_pages = adj_pages.saturating_sub(1);
+                } else {
+                    self.cur_next_addr = aligned_start;
+                    self.cur_remaining_pages = adj_pages;
+                }
                 crate::display::kernel_write_line("  [fa] region start="); theseus_shared::print_hex_u64_0xe9!(self.cur_next_addr);
                 crate::display::kernel_write_line(" pages="); theseus_shared::print_hex_u64_0xe9!(self.cur_remaining_pages); crate::display::kernel_write_line("\n");
                 return;
@@ -686,6 +772,7 @@ pub fn unmap_temporary_heap_x86<M>(mapper: &mut M, handoff: &theseus_shared::han
 where
     M: Mapper<Size4KiB>,
 {
+    crate::display::kernel_write_line("[dbg] unmap_temporary_heap_x86: begin\n");
     // Trait not needed for direct calls here
     let heap_virtual = TEMP_HEAP_VIRTUAL_BASE;
     let heap_size = handoff.temp_heap_size;
@@ -697,6 +784,7 @@ where
             flush.flush();
         }
     }
+    crate::display::kernel_write_line("[dbg] unmap_temporary_heap_x86: done\n");
 }
 
 /// Unmap the identity-mapped kernel image range at low VA to catch stale low-VA uses
@@ -704,6 +792,7 @@ pub fn unmap_identity_kernel_x86<M>(mapper: &mut M, handoff: &theseus_shared::ha
 where
     M: Mapper<Size4KiB>,
 {
+    crate::display::kernel_write_line("[dbg] unmap_identity_kernel_x86: begin\n");
     // Trait not needed for direct calls here
     let phys_base = handoff.kernel_physical_base;
     let phys_size = handoff.kernel_image_size;
@@ -716,6 +805,7 @@ where
             flush.flush();
         }
     }
+    crate::display::kernel_write_line("[dbg] unmap_identity_kernel_x86: done\n");
 }
 
 /// Identity map first 1 GiB using 2 MiB pages with x86_64 API

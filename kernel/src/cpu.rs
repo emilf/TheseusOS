@@ -127,7 +127,9 @@ pub unsafe fn setup_control_registers() {
         crate::display::kernel_write_line("  [cr] CR0: begin");
         let mut f0 = Cr0::read();
         f0.insert(Cr0Flags::PROTECTED_MODE_ENABLE);
-        f0.insert(Cr0Flags::PAGING);
+        // Do NOT enable CR0.PAGING here; CR3 must be loaded and page tables prepared
+        // before setting the PAGING bit. Paging will be enabled after the new PML4
+        // is activated (CR3 load) in the environment setup.
         f0.insert(Cr0Flags::WRITE_PROTECT);
         f0.insert(Cr0Flags::ALIGNMENT_MASK);
         f0.insert(Cr0Flags::NUMERIC_ERROR);

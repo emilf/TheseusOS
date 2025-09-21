@@ -123,6 +123,8 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
             crate::display::kernel_write_line("\n");
         }
     }
+    // Ensure TSS IST pointers are correct before installing IDT
+    unsafe { crate::gdt::refresh_tss_ist(); }
     setup_idt();
     crate::display::kernel_write_line("  IDT installed");
     // Ensure high-half runtime stacks are mapped explicitly before enabling more subsystems
@@ -166,6 +168,13 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
     }
     // Ensure timer vector (0x40) has a full 64-bit handler address
     unsafe { crate::interrupts::install_timer_vector_runtime(); }
+    // Debug: print PF IST pointer
+    {
+        let pf_ist = crate::gdt::get_pf_ist_top();
+        crate::display::kernel_write_line("  [dbg] PF IST=");
+        theseus_shared::print_hex_u64_0xe9!(pf_ist);
+        crate::display::kernel_write_line("\n");
+    }
     // Explicitly verify IDT entries in high-half before continuing (toggle for noise control)
     const DEBUG_VERIFY_IDT_GDT: bool = false;
     if DEBUG_VERIFY_IDT_GDT {
@@ -247,9 +256,24 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         crate::interrupts::lapic_timer_configure();
         let before = crate::interrupts::timer_tick_count();
         crate::display::kernel_write_line("  [lapic] arming one-shot timer");
+        // Place a small stack canary near the top of the kernel stack to detect
+        // whether an interrupt/handler corrupts the stack.
+        let ks_base = core::ptr::addr_of!(KERNEL_STACK) as u64;
+        let ks_size = core::mem::size_of::<[u8; 64 * 1024]>() as u64;
+        let ks_top = ks_base.wrapping_add(ks_size);
+        const STACK_CANARY: u64 = 0xDEADBEEFCAFEBABEu64;
+        unsafe { core::ptr::write_volatile((ks_top - 8) as *mut u64, STACK_CANARY); }
         // Use a smaller initial count to avoid long waits if timer is slow
         unsafe { crate::interrupts::lapic_timer_start_oneshot(100_000); }
         crate::display::kernel_write_line("  [lapic] enabling IF");
+        // Print CR3 before enabling interrupts
+        {
+            use x86_64::registers::control::Cr3;
+            let (frame_before, _f) = Cr3::read();
+            crate::display::kernel_write_line("  [dbg] CR3 before IF=");
+            theseus_shared::print_hex_u64_0xe9!(frame_before.start_address().as_u64());
+            crate::display::kernel_write_line("\n");
+        }
         interrupts::enable();
         let mut _ok = false;
         for _ in 0..2_000_000 {
@@ -257,6 +281,14 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
             core::hint::spin_loop();
         }
         interrupts::disable();
+        // Print CR3 after disabling interrupts
+        {
+            use x86_64::registers::control::Cr3;
+            let (frame_after, _f) = Cr3::read();
+            crate::display::kernel_write_line("  [dbg] CR3 after disable=");
+            theseus_shared::print_hex_u64_0xe9!(frame_after.start_address().as_u64());
+            crate::display::kernel_write_line("\n");
+        }
         crate::display::kernel_write_line("  [lapic] disabled IF");
         let after = crate::interrupts::timer_tick_count();
         crate::display::kernel_write_line("  [lapic] ticks(before/after)=");
@@ -266,8 +298,69 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         crate::display::kernel_write_line("\n");
         if after > before { crate::display::kernel_write_line("  [lapic] timer interrupt received"); }
         else { crate::display::kernel_write_line("  [lapic] timer interrupt NOT received"); }
-        // Mask timer later while debugging post-timer faults
-        // unsafe { crate::interrupts::lapic_timer_mask(); }
+        // Optionally mask the timer post-tick; enable to reproduce PF and test whether
+        // the CALL to lapic_timer_mask() is the culprit. We perform an inline MMIO
+        // write here to avoid calling into another function (which may change the
+        // stack or registers) and to isolate whether the CALL itself triggers the PF.
+        // Disable masking after tick while we continue debugging root cause
+        const DO_MASK_AFTER_TICK: bool = false;
+        if DO_MASK_AFTER_TICK {
+            let rsp_before: u64;
+            unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp_before, options(nomem, preserves_flags)); }
+            crate::display::kernel_write_line("  [lapic] rsp(before mask)=");
+            theseus_shared::print_hex_u64_0xe9!(rsp_before);
+            crate::display::kernel_write_line("\n");
+
+            // Call the real mask function to reproduce the PF (if present)
+            unsafe { crate::interrupts::lapic_timer_mask(); }
+
+        let rsp_after: u64;
+        unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp_after, options(nomem, preserves_flags)); }
+        crate::display::kernel_write_line("  [lapic] rsp(after mask)=");
+        theseus_shared::print_hex_u64_0xe9!(rsp_after);
+        crate::display::kernel_write_line("\n");
+
+        // Check stack canary
+        let canary_read: u64 = unsafe { core::ptr::read_volatile((ks_top - 8) as *const u64) };
+        if canary_read != STACK_CANARY {
+            crate::display::kernel_write_line("  [lapic] STACK CANARY CORRUPTED\n");
+            theseus_shared::print_hex_u64_0xe9!(canary_read);
+            crate::display::kernel_write_line("\n");
+            theseus_shared::qemu_exit_error!();
+        } else {
+            crate::display::kernel_write_line("  [lapic] stack canary intact\n");
+        }
+        }
+        // Stress test: repeatedly arm the LAPIC one-shot timer to exercise IRQ handling
+        const STRESS_TIMER: bool = true;
+        if STRESS_TIMER {
+            use x86_64::instructions::interrupts;
+            crate::display::kernel_write_line("  [lapic] starting stress test");
+            let ticks_before = crate::interrupts::timer_tick_count();
+            const STRESS_ITER: usize = 500; // number of re-arms
+            for i in 0..STRESS_ITER {
+                // small count to make test quick
+                unsafe { crate::interrupts::lapic_timer_start_oneshot(50_000); }
+                interrupts::enable();
+                // wait for tick or timeout
+                let start = crate::interrupts::timer_tick_count();
+                let mut waited = 0usize;
+                while crate::interrupts::timer_tick_count() == start && waited < 5_000_000 { waited += 1; core::hint::spin_loop(); }
+                interrupts::disable();
+                if i % 100 == 0 {
+                    crate::display::kernel_write_line("  [lapic] stress progress: ");
+                    theseus_shared::print_hex_u64_0xe9!(i as u64);
+                    crate::display::kernel_write_line("\n");
+                }
+            }
+            let ticks_after = crate::interrupts::timer_tick_count();
+            crate::display::kernel_write_line("  [lapic] stress done ticks(before/after)=");
+            theseus_shared::print_hex_u64_0xe9!(ticks_before as u64);
+            crate::display::kernel_write_line("/");
+            theseus_shared::print_hex_u64_0xe9!(ticks_after as u64);
+            crate::display::kernel_write_line("\n");
+            crate::display::kernel_write_line("  [lapic] stress test complete\n");
+        }
     }
 
     // Validate current RSP lies within our high-half kernel stack to catch bogus stack usage
@@ -328,8 +421,9 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
             crate::display::kernel_write_line("  [perm] PML4 pa=");
             theseus_shared::print_hex_u64_0xe9!(pml4_pa);
             crate::display::kernel_write_line("\n");
-            let l4: &mut X86PageTable = unsafe { &mut *(pml4_pa as *mut X86PageTable) };
-            let mut mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(0)) };
+            let l4_va = crate::memory::phys_to_virt_pa(pml4_pa) as *mut X86PageTable;
+            let l4: &mut X86PageTable = unsafe { &mut *l4_va };
+            let mut mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(crate::memory::PHYS_OFFSET)) };
             crate::display::kernel_write_line("  [perm] mapper ready");
             crate::display::kernel_write_line("  [perm] map kernel heap...");
             map_kernel_heap_x86(&mut mapper, &mut frame_alloc);
@@ -348,8 +442,9 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         if UNMAP_TEMP_HEAP {
             let (_frame, _flags) = Cr3::read();
             let pml4_pa = _frame.start_address().as_u64();
-            let l4: &mut X86PageTable = unsafe { &mut *(pml4_pa as *mut X86PageTable) };
-            let mut mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(0)) };
+            let l4_va = (crate::memory::PHYS_OFFSET + pml4_pa) as *mut X86PageTable;
+            let l4: &mut X86PageTable = unsafe { &mut *l4_va };
+            let mut mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(crate::memory::PHYS_OFFSET)) };
             unmap_temporary_heap_x86(&mut mapper, h);
             crate::display::kernel_write_line("  Temporary heap unmapped");
             // Also unmap identity of kernel image to catch stale low-VA code/data
@@ -417,9 +512,34 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64) {
     unsafe {
         crate::display::kernel_write_line("  [vm] before new");
         let mm = MemoryManager::new(_handoff);
+        crate::display::kernel_write_line("  [dbg] mm returned from MemoryManager::new");
         // Load CR3 earlier using the PML4 phys from the new manager
         crate::display::kernel_write_line("  [vm] after new; loading CR3");
+        // Sanity-check the memory manager returned values before loading CR3
+        {
+            let pml4_pa = mm.page_table_root();
+            crate::display::kernel_write_line("  [chk] mm.page_table_root="); theseus_shared::print_hex_u64_0xe9!(pml4_pa); crate::display::kernel_write_line("\n");
+            if pml4_pa == 0 {
+                crate::display::kernel_write_line("  [ERR] mm.page_table_root == 0; aborting\n");
+                theseus_shared::qemu_exit_error!();
+            }
+            let pml4_va = crate::memory::phys_to_virt_pa(pml4_pa);
+            crate::display::kernel_write_line("  [chk] mm.pml4_va="); theseus_shared::print_hex_u64_0xe9!(pml4_va); crate::display::kernel_write_line("\n");
+            if (pml4_va as *const u8).is_null() {
+                crate::display::kernel_write_line("  [ERR] pml4_va is null; aborting\n");
+                theseus_shared::qemu_exit_error!();
+            }
+        }
+        // Debug: print mm internals before loading CR3
+        // minimal debug: pml4 physical
+        theseus_shared::print_hex_u64_0xe9!(mm.page_table_root());
+        // Trace marker: before CR3 load
+        theseus_shared::qemu_print_bytes!(b"[TRACE:BEFORE_CR3_LOAD]\n");
         activate_virtual_memory(mm.page_table_root());
+        // Mark PHYS_OFFSET mapping active for later helpers
+        crate::memory::set_phys_offset_active();
+        // Trace marker: after CR3 load
+        theseus_shared::qemu_print_bytes!(b"[TRACE:AFTER_CR3_LOAD]\n");
         crate::display::kernel_write_line("  [vm] after CR3");
 
         // Optional: probe LAPIC MMIO mapping safely (ID/Version) after paging

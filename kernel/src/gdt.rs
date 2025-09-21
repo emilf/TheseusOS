@@ -59,6 +59,9 @@ pub const IST_INDEX_PF: u16 = 3; // IST4 - Page Fault
 /// # Safety
 /// 
 /// This function is safe to call during kernel initialization.
+// Expose TSS storage so we can refresh IST pointers at runtime if needed
+static mut TSS_STATIC: TaskStateSegment = TaskStateSegment::new();
+
 unsafe fn build_gdt_state() -> GdtState {
     // Create TSS and set IST stack pointers to top of stacks (16-byte aligned)
     let mut tss = TaskStateSegment::new();
@@ -74,8 +77,6 @@ unsafe fn build_gdt_state() -> GdtState {
     let mut gdt = GlobalDescriptorTable::new();
     let code_sel = gdt.add_entry(Descriptor::kernel_code_segment());
     let data_sel = gdt.add_entry(Descriptor::kernel_data_segment());
-    // Borrow a 'static reference to the static TSS storage to satisfy API without creating a shared ref
-    static mut TSS_STATIC: TaskStateSegment = TaskStateSegment::new();
     TSS_STATIC = tss;
     let tss_ref: &'static TaskStateSegment = core::mem::transmute::<*const TaskStateSegment, &'static TaskStateSegment>(&raw const TSS_STATIC as *const _);
     let tss_sel = gdt.add_entry(Descriptor::tss_segment(tss_ref));
@@ -116,6 +117,26 @@ pub unsafe fn setup_gdt() {
     CS::set_reg(state.code_sel);
     load_tss(state.tss_sel);
     reload_data_segments(state.data_sel);
+}
+
+/// Refresh TSS IST pointers and reload TSS
+///
+/// Useful to ensure PF/DF/NMI/MC IST pointers are correct after relocation.
+pub unsafe fn refresh_tss_ist() {
+    let df_top = (core::ptr::addr_of!(IST_DF_STACK) as u64) + (16 * 4096) as u64;
+    let nmi_top = (core::ptr::addr_of!(IST_NMI_STACK) as u64) + (16 * 4096) as u64;
+    let mc_top = (core::ptr::addr_of!(IST_MC_STACK) as u64) + (16 * 4096) as u64;
+    let pf_top = (core::ptr::addr_of!(IST_PF_STACK) as u64) + (16 * 4096) as u64;
+    TSS_STATIC.interrupt_stack_table[IST_INDEX_DF as usize] = VirtAddr::new(df_top & !0xFu64);
+    TSS_STATIC.interrupt_stack_table[IST_INDEX_NMI as usize] = VirtAddr::new(nmi_top & !0xFu64);
+    TSS_STATIC.interrupt_stack_table[IST_INDEX_MC as usize] = VirtAddr::new(mc_top & !0xFu64);
+    TSS_STATIC.interrupt_stack_table[IST_INDEX_PF as usize] = VirtAddr::new(pf_top & !0xFu64);
+    let _ = GDT_STATE.get();
+}
+
+/// Read current PF IST pointer from TSS
+pub fn get_pf_ist_top() -> u64 {
+    unsafe { TSS_STATIC.interrupt_stack_table[IST_INDEX_PF as usize].as_u64() }
 }
 
 /// Reload segment registers with new selectors
