@@ -89,24 +89,29 @@ unsafe extern "C" fn after_high_half_entry() -> ! {
 /// - The kernel stack is properly set up
 /// - No other code is modifying system state concurrently
 pub(super) unsafe fn continue_after_stack_switch() -> ! {
+    // Get verbose setting from the global constant
+    const VERBOSE: bool = false; // TODO: Make this configurable
     // Reinstall IDT and continue setup now that we're in high-half
-    crate::display::kernel_write_line("  [hh] entered high-half");
+    if VERBOSE {
+        crate::display::kernel_write_line("  [hh] entered high-half");
+    }
     // Debug: Verify we're running in the correct code segment and IDT is properly set up
-    {
-        // Read current code segment selector to verify we're using the kernel CS
-        let cs_val: u16; 
-        unsafe { 
-            core::arch::asm!(
-                "mov {0:x}, cs",  // Read code segment register
-                out(reg) cs_val, 
-                options(nomem, nostack, preserves_flags)
-            ); 
-        }
-        crate::display::kernel_write_line("  [dbg] CS="); 
-        theseus_shared::print_hex_u64_0xe9!(cs_val as u64); 
-        crate::display::kernel_write_line(" expected="); 
-        theseus_shared::print_hex_u64_0xe9!(crate::gdt::KERNEL_CS as u64); 
-        crate::display::kernel_write_line("\n");
+    if VERBOSE {
+        {
+            // Read current code segment selector to verify we're using the kernel CS
+            let cs_val: u16; 
+            unsafe { 
+                core::arch::asm!(
+                    "mov {0:x}, cs",  // Read code segment register
+                    out(reg) cs_val, 
+                    options(nomem, nostack, preserves_flags)
+                ); 
+            }
+            crate::display::kernel_write_line("  [dbg] CS="); 
+            theseus_shared::print_hex_u64_0xe9!(cs_val as u64); 
+            crate::display::kernel_write_line(" expected="); 
+            theseus_shared::print_hex_u64_0xe9!(crate::gdt::KERNEL_CS as u64); 
+            crate::display::kernel_write_line("\n");
         
         // Verify IDT entry 14 (Page Fault) is properly configured
         unsafe {
@@ -122,11 +127,14 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
             theseus_shared::print_hex_u64_0xe9!(ty); 
             crate::display::kernel_write_line("\n");
         }
+        }
     }
     // Ensure TSS IST pointers are correct before installing IDT
     unsafe { crate::gdt::refresh_tss_ist(); }
     setup_idt();
-    crate::display::kernel_write_line("  IDT installed");
+    if VERBOSE {
+        crate::display::kernel_write_line("  IDT installed");
+    }
     // Ensure high-half runtime stacks are mapped explicitly before enabling more subsystems
     {
         use x86_64::registers::control::Cr3;
@@ -169,11 +177,13 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
     // Ensure timer vector (0x40) has a full 64-bit handler address
     unsafe { crate::interrupts::install_timer_vector_runtime(); }
     // Debug: print PF IST pointer
-    {
-        let pf_ist = crate::gdt::get_pf_ist_top();
-        crate::display::kernel_write_line("  [dbg] PF IST=");
-        theseus_shared::print_hex_u64_0xe9!(pf_ist);
-        crate::display::kernel_write_line("\n");
+    if VERBOSE {
+        {
+            let pf_ist = crate::gdt::get_pf_ist_top();
+            crate::display::kernel_write_line("  [dbg] PF IST=");
+            theseus_shared::print_hex_u64_0xe9!(pf_ist);
+            crate::display::kernel_write_line("\n");
+        }
     }
     // Explicitly verify IDT entries in high-half before continuing (toggle for noise control)
     const DEBUG_VERIFY_IDT_GDT: bool = false;
@@ -207,7 +217,9 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         f4.insert(Cr4Flags::OSXMMEXCPT_ENABLE);
         f4.insert(Cr4Flags::PAGE_GLOBAL);
         Cr4::write(f4);
-        crate::display::kernel_write_line("  [cr] CR4: re-enabled OSFXSR, OSXMMEXCPT, PAGE_GLOBAL");
+        if VERBOSE {
+            crate::display::kernel_write_line("  [cr] CR4: re-enabled OSFXSR, OSXMMEXCPT, PAGE_GLOBAL");
+        }
     }
     
     // Set up basic TLS: IA32_GS_BASE MSR and enable CR4.FSGSBASE
@@ -240,22 +252,30 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         let mut f = crate::cpu::CpuFeatures::new();
         f.sse = true;
         unsafe { setup_floating_point(&f); }
-        crate::display::kernel_write_line("  SSE enabled");
+        if VERBOSE {
+            crate::display::kernel_write_line("  SSE enabled");
+        }
     }
     // Configure MSRs that are safe to enable now (e.g., EFER.SCE)
     unsafe {
     setup_msrs();
     }
-    crate::display::kernel_write_line("  MSRs configured");
+    if VERBOSE {
+        crate::display::kernel_write_line("  MSRs configured");
+    }
 
     // Verify LAPIC timer delivery (later test)
     const ENABLE_LAPIC_TIMER_TEST: bool = true;
     if ENABLE_LAPIC_TIMER_TEST {
         use x86_64::instructions::interrupts;
-        crate::display::kernel_write_line("  [lapic] configuring timer");
+        if VERBOSE {
+            crate::display::kernel_write_line("  [lapic] configuring timer");
+        }
         crate::interrupts::lapic_timer_configure();
         let before = crate::interrupts::timer_tick_count();
-        crate::display::kernel_write_line("  [lapic] arming one-shot timer");
+        if VERBOSE {
+            crate::display::kernel_write_line("  [lapic] arming one-shot timer");
+        }
         // Place a small stack canary near the top of the kernel stack to detect
         // whether an interrupt/handler corrupts the stack.
         let ks_base = core::ptr::addr_of!(KERNEL_STACK) as u64;
@@ -265,14 +285,18 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         unsafe { core::ptr::write_volatile((ks_top - 8) as *mut u64, STACK_CANARY); }
         // Use a smaller initial count to avoid long waits if timer is slow
         unsafe { crate::interrupts::lapic_timer_start_oneshot(100_000); }
-        crate::display::kernel_write_line("  [lapic] enabling IF");
+        if VERBOSE {
+            crate::display::kernel_write_line("  [lapic] enabling IF");
+        }
         // Print CR3 before enabling interrupts
-        {
-            use x86_64::registers::control::Cr3;
-            let (frame_before, _f) = Cr3::read();
-            crate::display::kernel_write_line("  [dbg] CR3 before IF=");
-            theseus_shared::print_hex_u64_0xe9!(frame_before.start_address().as_u64());
-            crate::display::kernel_write_line("\n");
+        if VERBOSE {
+            {
+                use x86_64::registers::control::Cr3;
+                let (frame_before, _f) = Cr3::read();
+                crate::display::kernel_write_line("  [dbg] CR3 before IF=");
+                theseus_shared::print_hex_u64_0xe9!(frame_before.start_address().as_u64());
+                crate::display::kernel_write_line("\n");
+            }
         }
         interrupts::enable();
         let mut _ok = false;
@@ -282,22 +306,26 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         }
         interrupts::disable();
         // Print CR3 after disabling interrupts
-        {
-            use x86_64::registers::control::Cr3;
-            let (frame_after, _f) = Cr3::read();
-            crate::display::kernel_write_line("  [dbg] CR3 after disable=");
-            theseus_shared::print_hex_u64_0xe9!(frame_after.start_address().as_u64());
-            crate::display::kernel_write_line("\n");
+        if VERBOSE {
+            {
+                use x86_64::registers::control::Cr3;
+                let (frame_after, _f) = Cr3::read();
+                crate::display::kernel_write_line("  [dbg] CR3 after disable=");
+                theseus_shared::print_hex_u64_0xe9!(frame_after.start_address().as_u64());
+                crate::display::kernel_write_line("\n");
+            }
         }
-        crate::display::kernel_write_line("  [lapic] disabled IF");
-        let after = crate::interrupts::timer_tick_count();
-        crate::display::kernel_write_line("  [lapic] ticks(before/after)=");
-        theseus_shared::print_hex_u64_0xe9!(before as u64);
-        crate::display::kernel_write_line("/");
-        theseus_shared::print_hex_u64_0xe9!(after as u64);
-        crate::display::kernel_write_line("\n");
-        if after > before { crate::display::kernel_write_line("  [lapic] timer interrupt received"); }
-        else { crate::display::kernel_write_line("  [lapic] timer interrupt NOT received"); }
+        if VERBOSE {
+            crate::display::kernel_write_line("  [lapic] disabled IF");
+            let after = crate::interrupts::timer_tick_count();
+            crate::display::kernel_write_line("  [lapic] ticks(before/after)=");
+            theseus_shared::print_hex_u64_0xe9!(before as u64);
+            crate::display::kernel_write_line("/");
+            theseus_shared::print_hex_u64_0xe9!(after as u64);
+            crate::display::kernel_write_line("\n");
+            if after > before { crate::display::kernel_write_line("  [lapic] timer interrupt received"); }
+            else { crate::display::kernel_write_line("  [lapic] timer interrupt NOT received"); }
+        }
         // Optionally mask the timer post-tick; enable to reproduce PF and test whether
         // the CALL to lapic_timer_mask() is the culprit. We perform an inline MMIO
         // write here to avoid calling into another function (which may change the
@@ -389,18 +417,22 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
             let base = TEMP_HEAP_VIRTUAL_BASE as *mut u8;
             let size = h.temp_heap_size as usize;
             unsafe { crate::allocator::ALLOCATOR_LINKED.lock().init(base, size); }
-            crate::display::kernel_write_line("  High-half heap initialized");
-            // Quick allocation probe to validate the heap works before heavier use
-            {
-                use alloc::boxed::Box;
-                let bx = Box::new(0xDEADBEEFu64);
-                crate::display::kernel_write_line("  [alloc] Box<u64> at ");
-                theseus_shared::print_hex_u64_0xe9!((&*bx as *const u64) as u64);
-                crate::display::kernel_write_line("\n");
-                core::mem::drop(bx);
+            if VERBOSE {
+                crate::display::kernel_write_line("  High-half heap initialized");
+                // Quick allocation probe to validate the heap works before heavier use
+                {
+                    use alloc::boxed::Box;
+                    let bx = Box::new(0xDEADBEEFu64);
+                    crate::display::kernel_write_line("  [alloc] Box<u64> at ");
+                    theseus_shared::print_hex_u64_0xe9!((&*bx as *const u64) as u64);
+                    crate::display::kernel_write_line("\n");
+                    core::mem::drop(bx);
+                }
             }
         } else {
-            crate::display::kernel_write_line("  No temp heap available for high-half allocator");
+            if VERBOSE {
+                crate::display::kernel_write_line("  No temp heap available for high-half allocator");
+            }
         }
     }
 
@@ -411,31 +443,47 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         use crate::handoff::handoff_phys_ptr;
         let h = unsafe { &*(handoff_phys_ptr() as *const Handoff) };
         // Build a frame allocator from the handoff and map the permanent heap first
-        crate::display::kernel_write_line("  [perm] begin");
+        if VERBOSE {
+            crate::display::kernel_write_line("  [perm] begin");
+        }
         {
-            crate::display::kernel_write_line("  [perm] frame_alloc from handoff...");
+            if VERBOSE {
+                crate::display::kernel_write_line("  [perm] frame_alloc from handoff...");
+            }
             let mut frame_alloc = unsafe { BootFrameAllocator::from_handoff(h) };
-            crate::display::kernel_write_line("  [perm] frame_alloc ready");
+            if VERBOSE {
+                crate::display::kernel_write_line("  [perm] frame_alloc ready");
+            }
             let (_frame, _flags) = Cr3::read();
             let pml4_pa = _frame.start_address().as_u64();
-            crate::display::kernel_write_line("  [perm] PML4 pa=");
-            theseus_shared::print_hex_u64_0xe9!(pml4_pa);
-            crate::display::kernel_write_line("\n");
+            if VERBOSE {
+                crate::display::kernel_write_line("  [perm] PML4 pa=");
+                theseus_shared::print_hex_u64_0xe9!(pml4_pa);
+                crate::display::kernel_write_line("\n");
+            }
             let l4_va = crate::memory::phys_to_virt_pa(pml4_pa) as *mut X86PageTable;
             let l4: &mut X86PageTable = unsafe { &mut *l4_va };
             let mut mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(crate::memory::PHYS_OFFSET)) };
-            crate::display::kernel_write_line("  [perm] mapper ready");
-            crate::display::kernel_write_line("  [perm] map kernel heap...");
+            if VERBOSE {
+                crate::display::kernel_write_line("  [perm] mapper ready");
+                crate::display::kernel_write_line("  [perm] map kernel heap...");
+            }
             map_kernel_heap_x86(&mut mapper, &mut frame_alloc);
-            crate::display::kernel_write_line("  [perm] map kernel heap done");
+            if VERBOSE {
+                crate::display::kernel_write_line("  [perm] map kernel heap done");
+            }
             // frame_alloc drops here while the allocator still points to temp heap → safe
         }
-        crate::display::kernel_write_line("  [perm] switching allocator to permanent heap...");
+        if VERBOSE {
+            crate::display::kernel_write_line("  [perm] switching allocator to permanent heap...");
+        }
         // Now switch the global allocator to the permanent heap
         let perm_base = crate::memory::KERNEL_HEAP_BASE as *mut u8;
         let perm_size = crate::memory::KERNEL_HEAP_SIZE as usize;
         unsafe { crate::allocator::ALLOCATOR_LINKED.lock().init(perm_base, perm_size); }
-        crate::display::kernel_write_line("  Permanent kernel heap initialized");
+        if VERBOSE {
+            crate::display::kernel_write_line("  Permanent kernel heap initialized");
+        }
 
         // Optionally unmap the temporary heap to catch stale references
         const UNMAP_TEMP_HEAP: bool = true;
@@ -446,10 +494,14 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
             let l4: &mut X86PageTable = unsafe { &mut *l4_va };
             let mut mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(crate::memory::PHYS_OFFSET)) };
             unmap_temporary_heap_x86(&mut mapper, h);
-            crate::display::kernel_write_line("  Temporary heap unmapped");
+            if VERBOSE {
+                crate::display::kernel_write_line("  Temporary heap unmapped");
+            }
             // Also unmap identity of kernel image to catch stale low-VA code/data
             unmap_identity_kernel_x86(&mut mapper, h);
-            crate::display::kernel_write_line("  Identity-mapped kernel image unmapped");
+            if VERBOSE {
+                crate::display::kernel_write_line("  Identity-mapped kernel image unmapped");
+            }
         }
     }
     
@@ -485,60 +537,92 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
 /// - No other code is running concurrently
 /// - The kernel physical base address is correct
 /// - UEFI boot services have been exited
-pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64, _verbose: bool) {
+pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64, verbose: bool) {
     crate::display::kernel_write_line("=== Setting up Kernel Environment ===");
     
     // 1. Disable all interrupts first (including NMI)
-    crate::display::kernel_write_line("1. Disabling all interrupts...");
+    if verbose {
+        crate::display::kernel_write_line("1. Disabling all interrupts...");
+    }
     unsafe {
         disable_all_interrupts();
     }
-    crate::display::kernel_write_line("  ✓ All interrupts disabled");
+    if verbose {
+        crate::display::kernel_write_line("  ✓ All interrupts disabled");
+    }
     
     // 2. Set up GDT and TSS
-    crate::display::kernel_write_line("2. Setting up GDT...");
+    if verbose {
+        crate::display::kernel_write_line("2. Setting up GDT...");
+    }
     unsafe {
         setup_gdt();
     }
-    crate::display::kernel_write_line("  ✓ GDT loaded and segments reloaded");
+    if verbose {
+        crate::display::kernel_write_line("  ✓ GDT loaded and segments reloaded");
+    }
     
     // 3. Configure control registers (PAE etc.)
-    crate::display::kernel_write_line("3. Configuring control registers...");
+    if verbose {
+        crate::display::kernel_write_line("3. Configuring control registers...");
+    }
     unsafe { setup_control_registers(); }
-    crate::display::kernel_write_line("  ✓ Control registers configured");
+    if verbose {
+        crate::display::kernel_write_line("  ✓ Control registers configured");
+    }
 
     // 3.5 Set up paging (identity map + high-half kernel) and load CR3
-    crate::display::kernel_write_line("3.5. Setting up paging...");
+    if verbose {
+        crate::display::kernel_write_line("3.5. Setting up paging...");
+    }
     unsafe {
-        crate::display::kernel_write_line("  [vm] before new");
+        if verbose {
+            crate::display::kernel_write_line("  [vm] before new");
+        }
         let mm = MemoryManager::new(_handoff);
-        crate::display::kernel_write_line("  [dbg] mm returned from MemoryManager::new");
+        if verbose {
+            crate::display::kernel_write_line("  [dbg] mm returned from MemoryManager::new");
+        }
         // Load CR3 earlier using the PML4 phys from the new manager
-        crate::display::kernel_write_line("  [vm] after new; loading CR3");
+        if verbose {
+            crate::display::kernel_write_line("  [vm] after new; loading CR3");
+        }
         // Sanity-check the memory manager returned values before loading CR3
         {
             let pml4_pa = mm.page_table_root();
-            crate::display::kernel_write_line("  [chk] mm.page_table_root="); theseus_shared::print_hex_u64_0xe9!(pml4_pa); crate::display::kernel_write_line("\n");
+            if verbose {
+                crate::display::kernel_write_line("  [chk] mm.page_table_root="); 
+                theseus_shared::print_hex_u64_0xe9!(pml4_pa); 
+                crate::display::kernel_write_line("\n");
+            }
             if pml4_pa == 0 {
                 crate::display::kernel_write_line("  [ERR] mm.page_table_root == 0; aborting\n");
                 theseus_shared::qemu_exit_error!();
             }
             let pml4_va = crate::memory::phys_to_virt_pa(pml4_pa);
-            crate::display::kernel_write_line("  [chk] mm.pml4_va="); theseus_shared::print_hex_u64_0xe9!(pml4_va); crate::display::kernel_write_line("\n");
+            if verbose {
+                crate::display::kernel_write_line("  [chk] mm.pml4_va="); 
+                theseus_shared::print_hex_u64_0xe9!(pml4_va); 
+                crate::display::kernel_write_line("\n");
+            }
             if (pml4_va as *const u8).is_null() {
                 crate::display::kernel_write_line("  [ERR] pml4_va is null; aborting\n");
                 theseus_shared::qemu_exit_error!();
             }
         }
         // Debug: print mm internals before loading CR3
-        // minimal debug: pml4 physical
-        theseus_shared::print_hex_u64_0xe9!(mm.page_table_root());
+        if verbose {
+            // minimal debug: pml4 physical
+            theseus_shared::print_hex_u64_0xe9!(mm.page_table_root());
+        }
         activate_virtual_memory(mm.page_table_root());
         // Mark PHYS_OFFSET mapping active for later helpers
         crate::memory::set_phys_offset_active();
 
         // (temporary smoke test removed to avoid consuming early frames)
-        crate::display::kernel_write_line("  [vm] after CR3");
+        if verbose {
+            crate::display::kernel_write_line("  [vm] after CR3");
+        }
 
         // Optional: probe LAPIC MMIO mapping safely (ID/Version) after paging
         const PROBE_LAPIC_AFTER_PAGING: bool = false;
@@ -558,14 +642,22 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64, _
             let _ = mapper.translate_addr(VirtAddr::new(KERNEL_VIRTUAL_BASE));
         }
     }
-    crate::display::kernel_write_line("  ✓ Paging enabled (identity + high-half kernel)");
+    if verbose {
+        crate::display::kernel_write_line("  ✓ Paging enabled (identity + high-half kernel)");
+    }
     
     // 4. Install low-half IDT, then jump to high-half, then reinstall IDT and continue
-    crate::display::kernel_write_line("4. Setting up CPU features...");
+    if verbose {
+        crate::display::kernel_write_line("4. Setting up CPU features...");
+    }
     // Install low-half IDT and proceed directly to high-half
     unsafe { setup_idt(); }
-    crate::display::kernel_write_line("  IDT (low-half) installed");
-    crate::display::kernel_write_line("  [hh] preparing jump to high-half...");
+    if verbose {
+        crate::display::kernel_write_line("  IDT (low-half) installed");
+    }
+    if verbose {
+        crate::display::kernel_write_line("  [hh] preparing jump to high-half...");
+    }
     // Prepare for high-half transition: compute addresses and verify mappings
     let virt_base: u64 = KERNEL_VIRTUAL_BASE;
     let phys_base: u64 = kernel_physical_base;
@@ -581,7 +673,9 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64, _
     }
     
     if rip_now >= virt_base {
-        crate::display::kernel_write_line("  [hh] already in high-half, skipping jump\n");
+        if verbose {
+            crate::display::kernel_write_line("  [hh] already in high-half, skipping jump\n");
+        }
     } else {
         // Calculate the virtual address of our high-half entry point
         // Formula: (physical_symbol - physical_base) + virtual_base
@@ -590,17 +684,19 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64, _
         let offset = rip_now.wrapping_sub(phys_base);
         
         // Debug output: show address translation details
-        crate::display::kernel_write_line("  hh dbg: phys_base="); 
-        theseus_shared::print_hex_u64_0xe9!(phys_base);
-        crate::display::kernel_write_line(" low_rip="); 
-        theseus_shared::print_hex_u64_0xe9!(rip_now);
-        crate::display::kernel_write_line(" offset="); 
-        theseus_shared::print_hex_u64_0xe9!(offset);
-        crate::display::kernel_write_line(" virt_base="); 
-        theseus_shared::print_hex_u64_0xe9!(virt_base);
-        crate::display::kernel_write_line(" target="); 
-        theseus_shared::print_hex_u64_0xe9!(target); 
-        crate::display::kernel_write_line("\n");
+        if verbose {
+            crate::display::kernel_write_line("  hh dbg: phys_base="); 
+            theseus_shared::print_hex_u64_0xe9!(phys_base);
+            crate::display::kernel_write_line(" low_rip="); 
+            theseus_shared::print_hex_u64_0xe9!(rip_now);
+            crate::display::kernel_write_line(" offset="); 
+            theseus_shared::print_hex_u64_0xe9!(offset);
+            crate::display::kernel_write_line(" virt_base="); 
+            theseus_shared::print_hex_u64_0xe9!(virt_base);
+            crate::display::kernel_write_line(" target="); 
+            theseus_shared::print_hex_u64_0xe9!(target); 
+            crate::display::kernel_write_line("\n");
+        }
         
         {
             // Verify that the target virtual address is properly mapped before jumping
@@ -611,24 +707,28 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64, _
             let mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(crate::memory::PHYS_OFFSET)) };
             
             // Debug: Check PML4 entry for high-half region (bits 47:39 of virtual address)
-            let hh_index = ((KERNEL_VIRTUAL_BASE >> 39) & 0x1FF) as usize;
-            let pml4_entry_val = unsafe { core::ptr::read_volatile((pml4_pa as *const u64).add(hh_index)) };
-            crate::display::kernel_write_line("  [hh] PML4[HH]=");
-            theseus_shared::print_hex_u64_0xe9!(pml4_entry_val);
-            crate::display::kernel_write_line("\n");
-            
-            // Verify the target address translates to a valid physical address
-            let phys = mapper.translate_addr(VirtAddr::new(target));
-            crate::display::kernel_write_line("  [hh] target phys=");
-            if let Some(pa) = phys { 
-                theseus_shared::print_hex_u64_0xe9!(pa.as_u64()); 
-        } else {
-                theseus_shared::qemu_println!("NONE"); 
+            if verbose {
+                let hh_index = ((KERNEL_VIRTUAL_BASE >> 39) & 0x1FF) as usize;
+                let pml4_entry_val = unsafe { core::ptr::read_volatile((pml4_pa as *const u64).add(hh_index)) };
+                crate::display::kernel_write_line("  [hh] PML4[HH]=");
+                theseus_shared::print_hex_u64_0xe9!(pml4_entry_val);
+                crate::display::kernel_write_line("\n");
+                
+                // Verify the target address translates to a valid physical address
+                let phys = mapper.translate_addr(VirtAddr::new(target));
+                crate::display::kernel_write_line("  [hh] target phys=");
+                if let Some(pa) = phys { 
+                    theseus_shared::print_hex_u64_0xe9!(pa.as_u64()); 
+            } else {
+                    theseus_shared::qemu_println!("NONE"); 
+                }
+                crate::display::kernel_write_line("\n");
             }
-            crate::display::kernel_write_line("\n");
             
             // Perform the jump to high-half virtual address
-            crate::display::kernel_write_line("  [hh] jumping to high-half (via virt_off)");
+            if verbose {
+                crate::display::kernel_write_line("  [hh] jumping to high-half (via virt_off)");
+            }
             unsafe { 
                 core::arch::asm!(
                     "jmp rax",  // Jump to the calculated virtual address

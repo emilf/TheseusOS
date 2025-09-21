@@ -38,21 +38,23 @@ use theseus_kernel::{
     kernel_write_line, setup_kernel_environment
 };
 
-// Configuration Options for Kernel Output
-// 
-// These constants control the verbosity of kernel output.
-// Set to false for clean, minimal output suitable for AI agents and CI/CD.
-// Set to true for detailed debugging output.
-
-// Handoff Structure Verbose Output
-// Set to true to see detailed handoff structure dump
-// Set to false for summary-only output
-const VERBOSE_HANDOFF_DUMP: bool = false;
-
-// Kernel Environment Setup Verbose Output
-// Set to true to see detailed kernel environment setup messages
-// Set to false for summary-only output
-const VERBOSE_KERNEL_SETUP: bool = false;
+/// Global verbose output control for the kernel
+/// 
+/// This constant controls the verbosity of kernel debug output.
+/// When set to false, only essential information is displayed.
+/// When set to true, detailed debug information is shown including:
+/// - Memory management debug output
+/// - CPU feature detection details
+/// - Interrupt handling debug information
+/// - LAPIC timer configuration details
+/// - Stack and register debugging
+/// 
+/// # Usage
+/// 
+/// This constant is used throughout the kernel to control debug output.
+/// Set to false for clean, minimal output suitable for AI agents and CI/CD.
+/// Set to true for detailed debugging output during development.
+pub const VERBOSE_KERNEL_OUTPUT: bool = false;
 
 /// Main kernel entry point
 
@@ -91,7 +93,7 @@ pub extern "C" fn kernel_main(handoff_addr: u64) -> ! {
                 kernel_write_line("Handoff structure found");
                 
                 // Dump handoff structure only if verbose output is enabled
-                if VERBOSE_HANDOFF_DUMP {
+                if VERBOSE_KERNEL_OUTPUT {
                     theseus_kernel::display::dump_handoff(handoff, false);
                 }
                 
@@ -109,7 +111,7 @@ pub extern "C" fn kernel_main(handoff_addr: u64) -> ! {
                 // display_handoff_info(handoff);
                 
                 // Set up complete kernel environment (boot services have been exited)
-                setup_kernel_environment(handoff, handoff.kernel_physical_base, VERBOSE_KERNEL_SETUP);
+                setup_kernel_environment(handoff, handoff.kernel_physical_base, VERBOSE_KERNEL_OUTPUT);
                 
             } else {
                 kernel_write_line("ERROR: Handoff structure has invalid size");

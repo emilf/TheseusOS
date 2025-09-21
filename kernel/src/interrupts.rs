@@ -317,22 +317,21 @@ extern "x86-interrupt" fn handler_mc(_stack: InterruptStackFrame) -> ! {
 }
 
 extern "x86-interrupt" fn handler_timer(_stack: InterruptStackFrame) {
-    // Very small RSP diagnostic to observe stack during timer handling
-    let rsp_now: u64;
-    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp_now, options(nomem, preserves_flags)); }
-    // Print RSP and CR3 for debugging
-    let cr3_pa: u64 = {
-        use x86_64::registers::control::Cr3;
-        let (frame, _flags) = Cr3::read();
-        frame.start_address().as_u64()
-    };
-    unsafe {
-        print_str_0xe9("[TIMER] RSP=");
-        print_hex_u64_0xe9(rsp_now);
-        print_str_0xe9(" CR3=");
-        print_hex_u64_0xe9(cr3_pa);
-        print_str_0xe9("\n");
-    }
+    // Timer handler - debug output disabled for clean kernel output
+    // let rsp_now: u64;
+    // unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp_now, options(nomem, preserves_flags)); }
+    // let cr3_pa: u64 = {
+    //     use x86_64::registers::control::Cr3;
+    //     let (frame, _flags) = Cr3::read();
+    //     frame.start_address().as_u64()
+    // };
+    // unsafe {
+    //     print_str_0xe9("[TIMER] RSP=");
+    //     print_hex_u64_0xe9(rsp_now);
+    //     print_str_0xe9(" CR3=");
+    //     print_hex_u64_0xe9(cr3_pa);
+    //     print_str_0xe9("\n");
+    // }
 
     // Acknowledge LAPIC EOI first to avoid stuck-in-service
     unsafe {
@@ -637,7 +636,7 @@ unsafe fn read_apic_register(apic_base: u64, offset: u32) -> u32 {
 unsafe fn write_apic_register(apic_base: u64, offset: u32, value: u32) {
     let vbase = crate::memory::phys_to_virt_pa(apic_base & 0xFFFFF000);
     let addr = vbase + (offset as u64);
-    const APIC_MMIO_DEBUG: bool = true;
+    const APIC_MMIO_DEBUG: bool = false;
     if APIC_MMIO_DEBUG {
         unsafe { print_str_0xe9("[lapic_mmio] WRITE addr="); print_hex_u64_0xe9(addr); print_str_0xe9(" val="); print_hex_u64_0xe9(value as u64); out_char_0xe9(b'\n'); }
     }
