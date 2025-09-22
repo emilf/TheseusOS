@@ -507,12 +507,55 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
     
     crate::display::kernel_write_line("=== Kernel environment setup complete ===");
     crate::display::kernel_write_line("Kernel environment test completed successfully");
-    // Small delay to ensure all debug bytes are emitted before exit
+    
+    // Set up framebuffer drawing and timer
+    crate::display::kernel_write_line("Setting up framebuffer drawing...");
+    crate::framebuffer::init_framebuffer_drawing();
+    
+    // Draw initial heart pattern
+    unsafe {
+        // Get handoff from the global static that was set in main
+        if let Some(handoff) = crate::interrupts::get_handoff_for_timer() {
+            crate::framebuffer::draw_initial_heart(handoff, VERBOSE);
+        }
+    }
+    
+    // Configure and start the APIC timer for heart animation
+    crate::display::kernel_write_line("Configuring APIC timer for heart animation...");
+    unsafe {
+        crate::interrupts::lapic_timer_configure();
+        // Set timer to fire every ~10ms (100Hz) for smooth animation
+        crate::interrupts::lapic_timer_start_periodic(100_000);
+    }
+    
+    // Enable interrupts to start the timer
+    x86_64::instructions::interrupts::enable();
+    
+    crate::display::kernel_write_line("Timer configured and interrupts enabled");
+    
+    // Small delay to ensure all debug bytes are emitted
     for _ in 0..1_000_00 { core::hint::spin_loop(); }
     
-    // Exit QEMU for now; replace with scheduler/idle loop later
-    theseus_shared::qemu_exit_ok!();
-    loop {}
+    // Choose behavior based on global constant from main.rs
+    const KERNEL_SHOULD_IDLE: bool = true;
+    
+    crate::display::kernel_write_line("Kernel initialization complete");
+    
+    if KERNEL_SHOULD_IDLE {
+        crate::display::kernel_write_line("Entering idle loop - heart animation active");
+        crate::display::kernel_write_line("Kill QEMU to stop the kernel");
+        
+        // Idle loop - the timer interrupt will handle the heart animation
+        loop {
+            // Use halt instruction to reduce CPU usage while waiting for interrupts
+            x86_64::instructions::hlt();
+        }
+    } else {
+        crate::display::kernel_write_line("Exiting QEMU immediately...");
+        theseus_shared::qemu_exit_ok!();
+        
+        loop {}
+    }
 }
 
 /// Set up complete kernel environment (correct order)

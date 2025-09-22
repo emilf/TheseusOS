@@ -47,6 +47,9 @@ const APIC_TIMER_VECTOR: u8 = 0x40; // 64
 const APIC_ERROR_VECTOR: u8 = 0xFE; // APIC error interrupts
 static TIMER_TICKS: AtomicU32 = AtomicU32::new(0);
 
+/// Global handoff pointer for timer interrupt access
+static mut HANDOFF_FOR_TIMER: Option<&'static theseus_shared::handoff::Handoff> = None;
+
 // Legacy inline assembly ISR stubs removed in favor of x86-interrupt handlers
 
 // legacy ISR symbols removed
@@ -317,29 +320,21 @@ extern "x86-interrupt" fn handler_mc(_stack: InterruptStackFrame) -> ! {
 }
 
 extern "x86-interrupt" fn handler_timer(_stack: InterruptStackFrame) {
-    // Timer handler - debug output disabled for clean kernel output
-    // let rsp_now: u64;
-    // unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp_now, options(nomem, preserves_flags)); }
-    // let cr3_pa: u64 = {
-    //     use x86_64::registers::control::Cr3;
-    //     let (frame, _flags) = Cr3::read();
-    //     frame.start_address().as_u64()
-    // };
-    // unsafe {
-    //     print_str_0xe9("[TIMER] RSP=");
-    //     print_hex_u64_0xe9(rsp_now);
-    //     print_str_0xe9(" CR3=");
-    //     print_hex_u64_0xe9(cr3_pa);
-    //     print_str_0xe9("\n");
-    // }
-
     // Acknowledge LAPIC EOI first to avoid stuck-in-service
     unsafe {
         let apic_base = get_apic_base();
         write_apic_register(apic_base, 0xB0, 0); // EOI
     }
+    
     // Record the tick
     TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
+    
+    // Update heart animation if handoff is available
+    unsafe {
+        if let Some(handoff) = get_handoff_for_timer() {
+            crate::framebuffer::update_heart_animation(handoff);
+        }
+    }
 }
 
 extern "x86-interrupt" fn handler_spurious(_stack: InterruptStackFrame) {
@@ -500,6 +495,17 @@ pub unsafe fn lapic_timer_start_oneshot(initial_count: u32) {
     // Debug: read current count right after arming
     let cur = read_apic_register(apic_base, 0x390);
     print_str_0xe9("  [lapic] current="); print_hex_u64_0xe9(cur as u64); out_char_0xe9(b'\n');
+}
+
+/// Start LAPIC timer in periodic mode with given initial count
+pub unsafe fn lapic_timer_start_periodic(initial_count: u32) {
+    let apic_base = get_apic_base();
+    // Set periodic mode (bit 17) and unmask timer (clear bit 16)
+    let mut lvt = read_apic_register(apic_base, 0x320);
+    lvt |= 1 << 17;  // Set periodic mode
+    lvt &= !(1 << 16); // Unmask timer
+    write_apic_register(apic_base, 0x320, lvt);
+    write_apic_register(apic_base, 0x380, initial_count);
 }
 
 /// Stop/mask LAPIC timer
@@ -684,4 +690,24 @@ pub fn interrupts_enabled() -> bool {
         );
     }
     (flags & 0x200) != 0 // Check bit 9 (IF flag) in RFLAGS
+}
+
+/// Set the handoff pointer for timer interrupt access
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it modifies a global static. It should only
+/// be called once during kernel initialization with a valid handoff pointer.
+pub unsafe fn set_handoff_for_timer(handoff: &'static theseus_shared::handoff::Handoff) {
+    HANDOFF_FOR_TIMER = Some(handoff);
+}
+
+/// Get the handoff pointer for timer interrupt access
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it accesses a global static. The returned
+/// reference is only valid if the handoff was previously set and remains valid.
+pub unsafe fn get_handoff_for_timer() -> Option<&'static theseus_shared::handoff::Handoff> {
+    HANDOFF_FOR_TIMER
 }

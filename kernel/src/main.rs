@@ -56,6 +56,16 @@ use theseus_kernel::{
 /// Set to true for detailed debugging output during development.
 pub const VERBOSE_KERNEL_OUTPUT: bool = false;
 
+/// Global behavior control for kernel completion
+/// 
+/// This constant controls what the kernel does after initialization:
+/// - `true`: Kernel will idle indefinitely, showing the heart animation
+/// - `false`: Kernel will exit QEMU immediately after initialization
+/// 
+/// Set to `true` to see the heart animation in action.
+/// Set to `false` for automated testing or quick boot sequences.
+pub const KERNEL_SHOULD_IDLE: bool = true;
+
 /// Main kernel entry point
 
 // replaced by shared macros: out_char_0xe9! and print_hex_u64_0xe9!
@@ -110,7 +120,11 @@ pub extern "C" fn kernel_main(handoff_addr: u64) -> ! {
                 // Display system information from handoff (kept optional)
                 // display_handoff_info(handoff);
                 
+                // Set up handoff for timer interrupt access
+                theseus_kernel::interrupts::set_handoff_for_timer(handoff);
+                
                 // Set up complete kernel environment (boot services have been exited)
+                // This function will handle framebuffer setup and idle loop
                 setup_kernel_environment(handoff, handoff.kernel_physical_base, VERBOSE_KERNEL_OUTPUT);
                 
             } else {
@@ -125,10 +139,8 @@ pub extern "C" fn kernel_main(handoff_addr: u64) -> ! {
     #[cfg(test)]
     test_main();
     
-    // For now, just exit QEMU
-    kernel_write_line("Kernel initialization complete");
-    kernel_write_line("Exiting QEMU...");
-    
+    // If we reach here, it means setup_kernel_environment returned (which shouldn't happen)
+    kernel_write_line("ERROR: setup_kernel_environment returned unexpectedly");
     theseus_shared::qemu_exit_ok!();
     
     loop {}
