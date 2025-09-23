@@ -126,6 +126,19 @@ fn phys_to_virt(pa: u64) -> u64 { unsafe { pa.wrapping_add(VIRT_PHYS_OFFSET) } }
 #[allow(dead_code)]
 pub fn phys_to_virt_pa(pa: u64) -> u64 { PHYS_OFFSET.wrapping_add(pa) }
 
+/// Convert a physical address into the kernel's PHYS_OFFSET-mapped virtual address.
+///
+/// # Examples
+///
+/// Basic translation math (pure computation):
+///
+/// ```
+/// let pa: u64 = 0x1234;
+/// let va = 0xFFFF800000000000u64.wrapping_add(pa);
+/// assert_eq!(crate::memory::phys_to_virt_pa(pa), va);
+/// ```
+
+
 /// Mark the PHYS_OFFSET linear mapping as active. Call this after CR3 is loaded
 /// and the kernel's PHYS_OFFSET mapping is established.
 pub fn set_phys_offset_active() { unsafe { PHYS_OFFSET_ACTIVE = true; } }
@@ -317,32 +330,65 @@ impl MemoryManager {
         use x86_64::{VirtAddr, registers::control::Cr3, structures::paging::{OffsetPageTable, PageTable as X86PageTable, Translate}};
 
         let virt_base: u64 = KERNEL_VIRTUAL_BASE;
+        let verbose = crate::config::VERBOSE_KERNEL_OUTPUT;
 
         // Get current RIP to determine whether we are already running in HH
         let rip_now: u64;
         core::arch::asm!("lea {}, [rip + 0]", out(reg) rip_now, options(nostack));
 
         if rip_now >= virt_base {
-            // Already in high-half; no jump required — continue
-            // Note: return never; to keep signature consistent, panic here.
-            crate::display::kernel_write_line("  [hh] already in high-half, skipping jump\n");
-            panic!("jump_to_high_half called while already in high-half");
+            if verbose {
+                crate::display::kernel_write_line("  [hh] already in high-half, skipping jump\n");
+            }
+            // Safety: caller shouldn't call this when already in high-half; abort
+            theseus_shared::qemu_println!("PANIC: jump_to_high_half invoked while already in high-half");
+            theseus_shared::qemu_exit_error!();
+            panic!("jump_to_high_half invoked while already in high-half");
         }
 
         // Compute target virtual address of the provided entry symbol
         let sym: u64 = entry as usize as u64;
         let target: u64 = sym.wrapping_sub(phys_base).wrapping_add(KERNEL_VIRTUAL_BASE);
 
+        if verbose {
+            crate::display::kernel_write_line("  [hh] jump info: ");
+            crate::display::kernel_write_line(" phys_base="); theseus_shared::print_hex_u64_0xe9!(phys_base);
+            crate::display::kernel_write_line(" rip_now="); theseus_shared::print_hex_u64_0xe9!(rip_now);
+            crate::display::kernel_write_line(" sym="); theseus_shared::print_hex_u64_0xe9!(sym);
+            crate::display::kernel_write_line(" target="); theseus_shared::print_hex_u64_0xe9!(target);
+            crate::display::kernel_write_line("\n");
+        }
+
         // Verify mapping for target before performing jump
         let (_frame, _flags) = Cr3::read();
         let pml4_pa = _frame.start_address().as_u64();
-        let l4: &mut X86PageTable = &mut *(pml4_pa as *mut X86PageTable);
-        let mapper = OffsetPageTable::new(l4, VirtAddr::new(PHYS_OFFSET));
+        let l4: &mut X86PageTable = unsafe { &mut *(pml4_pa as *mut X86PageTable) };
+        let mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(PHYS_OFFSET)) };
 
-        if mapper.translate_addr(VirtAddr::new(target)).is_none() {
-            crate::display::kernel_write_line("PANIC: high-half target not mapped\n");
+        // Check PML4 entry for high-half
+        let hh_index = ((KERNEL_VIRTUAL_BASE >> 39) & 0x1FF) as usize;
+        let pml4_entry_val = unsafe { core::ptr::read_volatile((pml4_pa as *const u64).add(hh_index)) };
+        if pml4_entry_val == 0 {
+            theseus_shared::qemu_println!("PANIC: PML4[HH] entry is zero; high-half may not be mapped");
+            crate::display::kernel_write_line("PML4 physical="); theseus_shared::print_hex_u64_0xe9!(pml4_pa); crate::display::kernel_write_line("\n");
+            theseus_shared::qemu_exit_error!();
+            panic!("PML4[HH] entry is zero");
+        }
+
+        let phys = mapper.translate_addr(VirtAddr::new(target));
+        if let Some(pa) = phys {
+            if verbose {
+                crate::display::kernel_write_line("  [hh] target physical="); theseus_shared::print_hex_u64_0xe9!(pa.as_u64()); crate::display::kernel_write_line("\n");
+            }
+        } else {
+            theseus_shared::qemu_println!("PANIC: high-half target translation returned NONE");
+            crate::display::kernel_write_line("target virtual="); theseus_shared::print_hex_u64_0xe9!(target); crate::display::kernel_write_line("\n");
             theseus_shared::qemu_exit_error!();
             panic!("high-half target not mapped");
+        }
+
+        if verbose {
+            crate::display::kernel_write_line("  [hh] jumping to high-half (verified)");
         }
 
         // Perform the non-returning jump into high-half
