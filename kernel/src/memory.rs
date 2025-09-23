@@ -307,6 +307,51 @@ impl MemoryManager {
     
     /// Get the page table root (CR3 value)
     pub fn page_table_root(&self) -> u64 { self.pml4_phys }
+
+    /// Compute and perform the high-half jump to `entry`.
+    ///
+    /// Safety: caller must ensure that paging is active and the high-half
+    /// mappings for the kernel image are present. This function performs a
+    /// non-returning jump into the high-half virtual address of `entry`.
+    pub unsafe fn jump_to_high_half(&self, phys_base: u64, entry: extern "C" fn() -> !) -> ! {
+        use x86_64::{VirtAddr, registers::control::Cr3, structures::paging::{OffsetPageTable, PageTable as X86PageTable, Translate}};
+
+        let virt_base: u64 = KERNEL_VIRTUAL_BASE;
+
+        // Get current RIP to determine whether we are already running in HH
+        let rip_now: u64;
+        core::arch::asm!("lea {}, [rip + 0]", out(reg) rip_now, options(nostack));
+
+        if rip_now >= virt_base {
+            // Already in high-half; no jump required — continue
+            // Note: return never; to keep signature consistent, panic here.
+            crate::display::kernel_write_line("  [hh] already in high-half, skipping jump\n");
+            panic!("jump_to_high_half called while already in high-half");
+        }
+
+        // Compute target virtual address of the provided entry symbol
+        let sym: u64 = entry as usize as u64;
+        let target: u64 = sym.wrapping_sub(phys_base).wrapping_add(KERNEL_VIRTUAL_BASE);
+
+        // Verify mapping for target before performing jump
+        let (_frame, _flags) = Cr3::read();
+        let pml4_pa = _frame.start_address().as_u64();
+        let l4: &mut X86PageTable = &mut *(pml4_pa as *mut X86PageTable);
+        let mapper = OffsetPageTable::new(l4, VirtAddr::new(PHYS_OFFSET));
+
+        if mapper.translate_addr(VirtAddr::new(target)).is_none() {
+            crate::display::kernel_write_line("PANIC: high-half target not mapped\n");
+            theseus_shared::qemu_exit_error!();
+            panic!("high-half target not mapped");
+        }
+
+        // Perform the non-returning jump into high-half
+        core::arch::asm!(
+            "jmp rax",
+            in("rax") target,
+            options(noreturn)
+        );
+    }
 }
 
 mod mapping;

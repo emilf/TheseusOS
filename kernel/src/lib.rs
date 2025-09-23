@@ -23,6 +23,7 @@ pub mod panic;
 pub mod framebuffer;
 pub mod acpi;
 pub mod config;
+pub mod stack;
 
 // Re-export commonly used types and functions
 pub use allocator::initialize_heap_from_handoff;

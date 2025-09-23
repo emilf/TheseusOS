@@ -34,20 +34,7 @@ static mut KERNEL_STACK: [u8; 64 * 1024] = [0; 64 * 1024];
 /// - The stack memory is accessible and not corrupted
 /// - The high-half continuation function is valid and properly mapped
 /// - No other code is using the stack during the transition
-#[inline(never)]
-unsafe fn switch_to_high_stack_and_continue() -> ! {
-    extern "C" fn high_stack_main() -> ! { unsafe { continue_after_stack_switch() } }
-    let base = core::ptr::addr_of!(KERNEL_STACK) as u64;
-    let size = core::mem::size_of::<[u8; 64 * 1024]>() as u64;
-    let top_aligned = (base + size) & !0xFu64;
-    core::arch::asm!(
-        "mov rsp, {stack_top}",  // Set stack pointer to top of kernel stack
-        "jmp {cont}",            // Jump to high-half continuation function
-        stack_top = in(reg) top_aligned,
-        cont = sym high_stack_main,
-        options(noreturn)
-    );
-}
+// Stack switching is centralized in `crate::stack::switch_to_kernel_stack_and_jump`
 
 /// High-half entry point function
 /// 
@@ -65,9 +52,14 @@ unsafe fn switch_to_high_stack_and_continue() -> ! {
 /// - Virtual memory is properly configured
 /// - High-half mappings are active
 /// - The kernel stack is accessible in high-half space
-unsafe extern "C" fn after_high_half_entry() -> ! {
-    // Switch stack immediately to a high-half kernel stack
-    switch_to_high_stack_and_continue();
+extern "C" fn after_high_half_entry() -> ! {
+    // Switch stack immediately to a high-half kernel stack using the
+    // centralized stack helper. Build the stack top address and jump to
+    // `continue_after_stack_switch` there.
+    let base = core::ptr::addr_of!(KERNEL_STACK) as u64;
+    let size = core::mem::size_of::<[u8; 64 * 1024]>() as u64;
+    let top_aligned = (base + size) & !0xFu64;
+    unsafe { crate::stack::switch_to_kernel_stack_and_jump(top_aligned, continue_after_stack_switch as usize as u64) }
 }
 
 /// Continue kernel setup after switching to high-half stack
@@ -741,11 +733,13 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64, v
     if verbose {
         crate::display::kernel_write_line("3.5. Setting up paging...");
     }
+    // Create the MemoryManager (unsafe) in an outer scope so we can use it
+    // later when performing the high-half jump.
+    let mm = unsafe { MemoryManager::new(_handoff) };
     unsafe {
         if verbose {
             crate::display::kernel_write_line("  [vm] before new");
         }
-        let mm = MemoryManager::new(_handoff);
         if verbose {
             crate::display::kernel_write_line("  [dbg] mm returned from MemoryManager::new");
         }
@@ -843,66 +837,8 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64, v
             crate::display::kernel_write_line("  [hh] already in high-half, skipping jump\n");
         }
     } else {
-        // Calculate the virtual address of our high-half entry point
-        // Formula: (physical_symbol - physical_base) + virtual_base
-        let sym: u64 = after_high_half_entry as usize as u64;
-        let target: u64 = sym.wrapping_sub(phys_base).wrapping_add(KERNEL_VIRTUAL_BASE);
-        let offset = rip_now.wrapping_sub(phys_base);
-        
-        // Debug output: show address translation details
-        if verbose {
-            crate::display::kernel_write_line("  hh dbg: phys_base="); 
-            theseus_shared::print_hex_u64_0xe9!(phys_base);
-            crate::display::kernel_write_line(" low_rip="); 
-            theseus_shared::print_hex_u64_0xe9!(rip_now);
-            crate::display::kernel_write_line(" offset="); 
-            theseus_shared::print_hex_u64_0xe9!(offset);
-            crate::display::kernel_write_line(" virt_base="); 
-            theseus_shared::print_hex_u64_0xe9!(virt_base);
-            crate::display::kernel_write_line(" target="); 
-            theseus_shared::print_hex_u64_0xe9!(target); 
-            crate::display::kernel_write_line("\n");
-        }
-        
-        {
-            // Verify that the target virtual address is properly mapped before jumping
-            use x86_64::{VirtAddr, registers::control::Cr3, structures::paging::{OffsetPageTable, PageTable as X86PageTable, Translate}};
-            let (_frame, _flags) = Cr3::read();
-            let pml4_pa = _frame.start_address().as_u64();
-            let l4: &mut X86PageTable = unsafe { &mut *(pml4_pa as *mut X86PageTable) };
-            let mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(crate::memory::PHYS_OFFSET)) };
-            
-            // Debug: Check PML4 entry for high-half region (bits 47:39 of virtual address)
-            if verbose {
-                let hh_index = ((KERNEL_VIRTUAL_BASE >> 39) & 0x1FF) as usize;
-                let pml4_entry_val = unsafe { core::ptr::read_volatile((pml4_pa as *const u64).add(hh_index)) };
-                crate::display::kernel_write_line("  [hh] PML4[HH]=");
-                theseus_shared::print_hex_u64_0xe9!(pml4_entry_val);
-                crate::display::kernel_write_line("\n");
-                
-                // Verify the target address translates to a valid physical address
-                let phys = mapper.translate_addr(VirtAddr::new(target));
-                crate::display::kernel_write_line("  [hh] target phys=");
-                if let Some(pa) = phys { 
-                    theseus_shared::print_hex_u64_0xe9!(pa.as_u64()); 
-            } else {
-                    theseus_shared::qemu_println!("NONE"); 
-                }
-                crate::display::kernel_write_line("\n");
-            }
-            
-            // Perform the jump to high-half virtual address
-            if verbose {
-                crate::display::kernel_write_line("  [hh] jumping to high-half (via virt_off)");
-            }
-            unsafe { 
-                core::arch::asm!(
-                    "jmp rax",  // Jump to the calculated virtual address
-                    in("rax") target, 
-                    options(noreturn)
-                ); 
-            }
-        }
+        // Delegate the translation/verification/jump to the memory subsystem.
+        unsafe { mm.jump_to_high_half(phys_base, after_high_half_entry); }
     }
 
     // Unreachable if jump succeeds; if we get here, panic to avoid continuing in low-half
