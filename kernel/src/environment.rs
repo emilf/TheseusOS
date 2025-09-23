@@ -9,6 +9,31 @@ use crate::gdt::setup_gdt;
 use crate::cpu::{setup_control_registers, setup_floating_point, setup_msrs};
 use crate::memory::{MemoryManager, activate_virtual_memory, KERNEL_VIRTUAL_BASE, TEMP_HEAP_VIRTUAL_BASE};
 
+// Small helpers to keep unsafe/asm in tiny, reviewable boundaries.
+#[allow(dead_code)]
+#[inline]
+fn current_rip() -> u64 {
+    let rip: u64;
+    unsafe { core::arch::asm!("lea {}, [rip + 0]", out(reg) rip, options(nostack)) }
+    rip
+}
+
+#[allow(dead_code)]
+#[inline]
+fn read_pml4_pa() -> u64 {
+    use x86_64::registers::control::Cr3;
+    let (frame, _flags) = Cr3::read();
+    frame.start_address().as_u64()
+}
+
+#[allow(dead_code)]
+#[inline(never)]
+fn abort_boot(msg: &str) -> ! {
+    crate::display::kernel_write_line(msg);
+    theseus_shared::qemu_exit_error!();
+    panic!("BOOT ABORT: {}", msg);
+}
+
 #[link_section = ".bss.stack"]
 static mut KERNEL_STACK: [u8; 64 * 1024] = [0; 64 * 1024];
 
@@ -81,14 +106,14 @@ extern "C" fn after_high_half_entry() -> ! {
 /// - The kernel stack is properly set up
 /// - No other code is modifying system state concurrently
 pub(super) unsafe fn continue_after_stack_switch() -> ! {
-    // Get verbose setting from the global constant
-    const VERBOSE: bool = false; // TODO: Make this configurable
+    // Get verbose setting from the centralized kernel config
+    let verbose = crate::config::VERBOSE_KERNEL_OUTPUT;
     // Reinstall IDT and continue setup now that we're in high-half
-    if VERBOSE {
+    if verbose {
         crate::display::kernel_write_line("  [hh] entered high-half");
     }
     // Debug: Verify we're running in the correct code segment and IDT is properly set up
-    if VERBOSE {
+    if verbose {
         {
             // Read current code segment selector to verify we're using the kernel CS
             let cs_val: u16; 
@@ -124,7 +149,7 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
     // Ensure TSS IST pointers are correct before installing IDT
     unsafe { crate::gdt::refresh_tss_ist(); }
     setup_idt();
-    if VERBOSE {
+    if verbose {
         crate::display::kernel_write_line("  IDT installed");
     }
     // Ensure high-half runtime stacks are mapped explicitly before enabling more subsystems
@@ -169,7 +194,7 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
     // Ensure timer vector (0x40) has a full 64-bit handler address
     unsafe { crate::interrupts::install_timer_vector_runtime(); }
     // Debug: print PF IST pointer
-    if VERBOSE {
+    if verbose {
         {
             let pf_ist = crate::gdt::get_pf_ist_top();
             crate::display::kernel_write_line("  [dbg] PF IST=");
@@ -209,7 +234,7 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         f4.insert(Cr4Flags::OSXMMEXCPT_ENABLE);
         f4.insert(Cr4Flags::PAGE_GLOBAL);
         Cr4::write(f4);
-        if VERBOSE {
+        if verbose {
             crate::display::kernel_write_line("  [cr] CR4: re-enabled OSFXSR, OSXMMEXCPT, PAGE_GLOBAL");
         }
     }
@@ -244,7 +269,7 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         let mut f = crate::cpu::CpuFeatures::new();
         f.sse = true;
         unsafe { setup_floating_point(&f); }
-        if VERBOSE {
+        if verbose {
             crate::display::kernel_write_line("  SSE enabled");
         }
     }
@@ -252,7 +277,7 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
     unsafe {
     setup_msrs();
     }
-    if VERBOSE {
+    if verbose {
         crate::display::kernel_write_line("  MSRs configured");
     }
 
@@ -260,12 +285,12 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
     const ENABLE_LAPIC_TIMER_TEST: bool = true;
     if ENABLE_LAPIC_TIMER_TEST {
         use x86_64::instructions::interrupts;
-        if VERBOSE {
+        if verbose {
             crate::display::kernel_write_line("  [lapic] configuring timer");
         }
         crate::interrupts::lapic_timer_configure();
         let before = crate::interrupts::timer_tick_count();
-        if VERBOSE {
+        if verbose {
             crate::display::kernel_write_line("  [lapic] arming one-shot timer");
         }
         // Place a small stack canary near the top of the kernel stack to detect
@@ -277,11 +302,11 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         unsafe { core::ptr::write_volatile((ks_top - 8) as *mut u64, STACK_CANARY); }
         // Use a smaller initial count to avoid long waits if timer is slow
         unsafe { crate::interrupts::lapic_timer_start_oneshot(100_000); }
-        if VERBOSE {
+    if verbose {
             crate::display::kernel_write_line("  [lapic] enabling IF");
         }
         // Print CR3 before enabling interrupts
-        if VERBOSE {
+        if verbose {
             {
                 use x86_64::registers::control::Cr3;
                 let (frame_before, _f) = Cr3::read();
@@ -298,7 +323,7 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         }
         interrupts::disable();
         // Print CR3 after disabling interrupts
-        if VERBOSE {
+        if verbose {
             {
                 use x86_64::registers::control::Cr3;
                 let (frame_after, _f) = Cr3::read();
@@ -307,7 +332,7 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
                 crate::display::kernel_write_line("\n");
             }
         }
-        if VERBOSE {
+        if verbose {
             crate::display::kernel_write_line("  [lapic] disabled IF");
             let after = crate::interrupts::timer_tick_count();
             crate::display::kernel_write_line("  [lapic] ticks(before/after)=");
@@ -409,7 +434,7 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
             let base = TEMP_HEAP_VIRTUAL_BASE as *mut u8;
             let size = h.temp_heap_size as usize;
             unsafe { crate::allocator::ALLOCATOR_LINKED.lock().init(base, size); }
-            if VERBOSE {
+            if verbose {
                 crate::display::kernel_write_line("  High-half heap initialized");
                 // Quick allocation probe to validate the heap works before heavier use
                 {
@@ -514,8 +539,8 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
 
                 crate::display::kernel_write_line("  [debug] All custom formatting tests completed successfully!");
             }
-        } else {
-            if VERBOSE {
+                } else {
+            if verbose {
                 crate::display::kernel_write_line("  No temp heap available for high-half allocator");
             }
         }
@@ -528,20 +553,20 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         use crate::handoff::handoff_phys_ptr;
         let h = unsafe { &*(handoff_phys_ptr() as *const Handoff) };
         // Build a frame allocator from the handoff and map the permanent heap first
-        if VERBOSE {
+        if verbose {
             crate::display::kernel_write_line("  [perm] begin");
         }
         {
-            if VERBOSE {
+            if verbose {
                 crate::display::kernel_write_line("  [perm] frame_alloc from handoff...");
             }
             let mut frame_alloc = unsafe { BootFrameAllocator::from_handoff(h) };
-            if VERBOSE {
+            if verbose {
                 crate::display::kernel_write_line("  [perm] frame_alloc ready");
             }
             let (_frame, _flags) = Cr3::read();
             let pml4_pa = _frame.start_address().as_u64();
-            if VERBOSE {
+            if verbose {
                 crate::display::kernel_write_line("  [perm] PML4 pa=");
                 theseus_shared::print_hex_u64_0xe9!(pml4_pa);
                 crate::display::kernel_write_line("\n");
@@ -549,24 +574,24 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
             let l4_va = crate::memory::phys_to_virt_pa(pml4_pa) as *mut X86PageTable;
             let l4: &mut X86PageTable = unsafe { &mut *l4_va };
             let mut mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(crate::memory::PHYS_OFFSET)) };
-            if VERBOSE {
+            if verbose {
                 crate::display::kernel_write_line("  [perm] mapper ready");
                 crate::display::kernel_write_line("  [perm] map kernel heap...");
             }
             map_kernel_heap_x86(&mut mapper, &mut frame_alloc);
-            if VERBOSE {
+            if verbose {
                 crate::display::kernel_write_line("  [perm] map kernel heap done");
             }
             // frame_alloc drops here while the allocator still points to temp heap → safe
         }
-        if VERBOSE {
+        if verbose {
             crate::display::kernel_write_line("  [perm] switching allocator to permanent heap...");
         }
         // Now switch the global allocator to the permanent heap
         let perm_base = crate::memory::KERNEL_HEAP_BASE as *mut u8;
         let perm_size = crate::memory::KERNEL_HEAP_SIZE as usize;
         unsafe { crate::allocator::ALLOCATOR_LINKED.lock().init(perm_base, perm_size); }
-        if VERBOSE {
+        if verbose {
             crate::display::kernel_write_line("  Permanent kernel heap initialized");
         }
 
@@ -579,12 +604,12 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
             let l4: &mut X86PageTable = unsafe { &mut *l4_va };
             let mut mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(crate::memory::PHYS_OFFSET)) };
             unmap_temporary_heap_x86(&mut mapper, h);
-            if VERBOSE {
+            if verbose {
                 crate::display::kernel_write_line("  Temporary heap unmapped");
             }
             // Also unmap identity of kernel image to catch stale low-VA code/data
             unmap_identity_kernel_x86(&mut mapper, h);
-            if VERBOSE {
+            if verbose {
                 crate::display::kernel_write_line("  Identity-mapped kernel image unmapped");
             }
         }
@@ -632,8 +657,8 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
     // Draw initial heart pattern
     unsafe {
         // Get handoff from the global static that was set in main
-        if let Some(handoff) = crate::interrupts::get_handoff_for_timer() {
-            crate::framebuffer::draw_initial_heart(handoff, VERBOSE);
+                if let Some(handoff) = crate::interrupts::get_handoff_for_timer() {
+            crate::framebuffer::draw_initial_heart(handoff, verbose);
         }
     }
     
