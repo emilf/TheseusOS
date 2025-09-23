@@ -26,13 +26,7 @@ fn read_pml4_pa() -> u64 {
     frame.start_address().as_u64()
 }
 
-#[allow(dead_code)]
-#[inline(never)]
-fn abort_boot(msg: &str) -> ! {
-    crate::display::kernel_write_line(msg);
-    theseus_shared::qemu_exit_error!();
-    panic!("BOOT ABORT: {}", msg);
-}
+// Use centralized abort helper in `crate::boot`.
 
 #[link_section = ".bss.stack"]
 static mut KERNEL_STACK: [u8; 64 * 1024] = [0; 64 * 1024];
@@ -84,6 +78,18 @@ extern "C" fn after_high_half_entry() -> ! {
     let base = core::ptr::addr_of!(KERNEL_STACK) as u64;
     let size = core::mem::size_of::<[u8; 64 * 1024]>() as u64;
     let top_aligned = (base + size) & !0xFu64;
+
+    // Sanity-check: ensure the kernel stack and IST stacks are mapped in high-half
+    use crate::memory::{PTE_PRESENT, PTE_WRITABLE};
+        if !crate::memory::virt_range_has_flags(base, size as usize, PTE_PRESENT | PTE_WRITABLE) {
+        crate::boot::abort_with_context("PANIC: kernel stack region not mapped or not writable in high-half", file!(), line!(), Some(base));
+    }
+    for (ist_base, ist_size) in crate::gdt::ist_stack_ranges().iter().copied() {
+        if !crate::memory::virt_range_has_flags(ist_base, ist_size as usize, PTE_PRESENT | PTE_WRITABLE) {
+            crate::boot::abort_with_context("PANIC: IST stack region not mapped or not writable in high-half", file!(), line!(), Some(ist_base));
+        }
+    }
+
     unsafe { crate::stack::switch_to_kernel_stack_and_jump(top_aligned, continue_after_stack_switch as usize as u64) }
 }
 

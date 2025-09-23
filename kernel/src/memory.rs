@@ -400,6 +400,79 @@ impl MemoryManager {
     }
 }
 
+/// Check whether a virtual address is currently mapped by the active page tables.
+/// Uses the current CR3 and the `PHYS_OFFSET` linear mapping to build a mapper.
+pub fn virt_addr_is_mapped(va: u64) -> bool {
+    use x86_64::{VirtAddr, registers::control::Cr3, structures::paging::{OffsetPageTable, PageTable as X86PageTable, Translate}};
+    let (_frame, _flags) = Cr3::read();
+    let pml4_pa = _frame.start_address().as_u64();
+    let l4: &mut X86PageTable = unsafe { &mut *(pml4_pa as *mut X86PageTable) };
+    let mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(PHYS_OFFSET)) };
+    mapper.translate_addr(VirtAddr::new(va)).is_some()
+}
+
+/// Check whether a virtual address is mapped and has the requested page-table flags.
+/// `flags_mask` is compared against the final page-table entry flags (PTE bits).
+pub fn virt_addr_has_flags(va: u64, flags_mask: u64) -> bool {
+    use x86_64::registers::control::Cr3;
+    // Read CR3
+    let (frame, _f) = Cr3::read();
+    let mut table_pa = frame.start_address().as_u64();
+
+    // Helper to read an entry at given table physical address and index
+    unsafe fn read_entry(table_pa: u64, index: usize) -> u64 {
+        let entry_pa = table_pa + (index * 8) as u64;
+        let entry_va = phys_to_virt_pa(entry_pa) as *const u64;
+        core::ptr::read_volatile(entry_va)
+    }
+
+    // Extract indices
+    let pml4_index = ((va >> 39) & 0x1FF) as usize;
+    let pdpt_index = ((va >> 30) & 0x1FF) as usize;
+    let pd_index   = ((va >> 21) & 0x1FF) as usize;
+    let pt_index   = ((va >> 12) & 0x1FF) as usize;
+
+    // Walk PML4
+    let pml4e = unsafe { read_entry(table_pa, pml4_index) };
+    if pml4e & PTE_PRESENT == 0 { return false; }
+    // Next level
+    table_pa = pml4e & 0x000ffffffffff000u64;
+
+    let pdpte = unsafe { read_entry(table_pa, pdpt_index) };
+    if pdpte & PTE_PRESENT == 0 { return false; }
+    // Check PS (1GiB) at PDPT
+    if pdpte & PTE_PS != 0 {
+        return (pdpte & flags_mask) == flags_mask;
+    }
+    table_pa = pdpte & 0x000ffffffffff000u64;
+
+    let pde = unsafe { read_entry(table_pa, pd_index) };
+    if pde & PTE_PRESENT == 0 { return false; }
+    // Check PS (2MiB) at PD
+    if pde & PTE_PS != 0 {
+        return (pde & flags_mask) == flags_mask;
+    }
+    table_pa = pde & 0x000ffffffffff000u64;
+
+    let pte = unsafe { read_entry(table_pa, pt_index) };
+    if pte & PTE_PRESENT == 0 { return false; }
+    (pte & flags_mask) == flags_mask
+}
+
+/// Check whether a full virtual range `[va, va+size)` is mapped and each page
+/// has the requested `flags_mask` bits set. Returns `true` only if every page
+/// in the range passes the flags check.
+pub fn virt_range_has_flags(mut va: u64, size: usize, flags_mask: u64) -> bool {
+    if size == 0 { return true; }
+    let page_size: u64 = PAGE_SIZE as u64;
+    let end = va.wrapping_add(size as u64);
+    while va < end {
+        if !virt_addr_has_flags(va, flags_mask) { return false; }
+        va = va.wrapping_add(page_size);
+    }
+    true
+}
+
 mod mapping;
 pub use mapping::map_page_alloc;
 pub use mapping::map_2mb_page_alloc;
