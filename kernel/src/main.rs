@@ -35,7 +35,7 @@ extern crate theseus_kernel;
 // Import from our library
 use theseus_kernel::{
     initialize_heap_from_handoff, set_handoff_pointers, validate_handoff,
-    kernel_write_line, setup_kernel_environment
+    kernel_write_line, setup_kernel_environment, config
 };
 
 /// Global verbose output control for the kernel
@@ -49,22 +49,8 @@ use theseus_kernel::{
 /// - LAPIC timer configuration details
 /// - Stack and register debugging
 /// 
-/// # Usage
-/// 
-/// This constant is used throughout the kernel to control debug output.
-/// Set to false for clean, minimal output suitable for AI agents and CI/CD.
-/// Set to true for detailed debugging output during development.
-pub const VERBOSE_KERNEL_OUTPUT: bool = false;
-
-/// Global behavior control for kernel completion
-/// 
-/// This constant controls what the kernel does after initialization:
-/// - `true`: Kernel will idle indefinitely, showing the heart animation
-/// - `false`: Kernel will exit QEMU immediately after initialization
-/// 
-/// Set to `true` to see the heart animation in action.
-/// Set to `false` for automated testing or quick boot sequences.
-pub const KERNEL_SHOULD_IDLE: bool = true;
+// Use centralized configuration from `theseus_kernel::config`
+use config::VERBOSE_KERNEL_OUTPUT;
 
 /// Main kernel entry point
 

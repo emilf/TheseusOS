@@ -428,6 +428,99 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
                     crate::display::kernel_write_line("\n");
                     core::mem::drop(bx);
                 }
+
+                // DEBUG: Systematic alloc::format! debugging
+                crate::display::kernel_write_line("  [debug] Starting alloc::format! debugging...");
+
+                // Test 1: Simple string literal
+                crate::display::kernel_write_line("  [debug] Test 1: String literal...");
+                crate::display::kernel_write_line("  [debug] About to call String::from...");
+
+                // Check if we're in an interrupt context
+                let flags: u64;
+                unsafe { core::arch::asm!("pushfq; pop {}", out(reg) flags); }
+                let interrupts_enabled = (flags & 0x200) != 0;
+                crate::display::kernel_write_line("  [debug] Interrupts enabled: ");
+                if interrupts_enabled {
+                    crate::display::kernel_write_line("true");
+                } else {
+                    crate::display::kernel_write_line("false");
+                }
+                crate::display::kernel_write_line("\n");
+
+                // Enable interrupts before calling String::from
+                crate::display::kernel_write_line("  [debug] Enabling interrupts before String::from...");
+                unsafe { core::arch::asm!("sti"); }
+
+                // Test with a much simpler allocation first
+                crate::display::kernel_write_line("  [debug] Testing simple Vec allocation...");
+                let simple_vec = alloc::vec![1u8, 2u8, 3u8];
+                crate::display::kernel_write_line("  [debug] Simple Vec allocation OK");
+                drop(simple_vec);
+
+                crate::display::kernel_write_line("  [debug] Testing String::new()...");
+                let empty_string = alloc::string::String::new();
+                crate::display::kernel_write_line("  [debug] String::new() OK");
+                drop(empty_string);
+
+                crate::display::kernel_write_line("  [debug] Testing String::with_capacity...");
+                let cap_string = alloc::string::String::with_capacity(10);
+                crate::display::kernel_write_line("  [debug] String::with_capacity OK");
+                drop(cap_string);
+
+                crate::display::kernel_write_line("  [debug] Now testing String::from...");
+                let test1 = alloc::string::String::from("Hello");
+                crate::display::kernel_write_line("  [debug] String::from completed");
+                crate::display::kernel_write_line("  [debug] About to drop string...");
+                drop(test1);
+                crate::display::kernel_write_line("  [debug] String dropped");
+                crate::display::kernel_write_line("  [debug] Test 1: OK");
+
+                // Test 2: String with push_str using with_capacity
+                crate::display::kernel_write_line("  [debug] Test 2: String push_str...");
+                let mut test2 = alloc::string::String::with_capacity(10);
+                crate::display::kernel_write_line("  [debug] Test 2: String with_capacity created, about to push_str...");
+                test2.push_str("W");
+                crate::display::kernel_write_line("  [debug] Test 2: push_str completed");
+                crate::display::kernel_write_line("  [debug] Test 2: OK");
+                drop(test2);
+
+                // Test 3: Custom formatting instead of alloc::format!
+                crate::display::kernel_write_line("  [debug] Test 3: Custom formatting...");
+                let mut test3 = alloc::string::String::new();
+                test3.push_str("Hello");
+                crate::display::kernel_write_line("  [debug] Test 3: OK");
+                drop(test3);
+
+                // Test 4: Custom formatting with number
+                crate::display::kernel_write_line("  [debug] Test 4: Custom formatting with number...");
+                let mut test4 = alloc::string::String::new();
+                test4.push_str("Value: ");
+                test4.push_str("42");
+                crate::display::kernel_write_line("  [debug] Test 4: OK");
+                drop(test4);
+
+                // Test 5: Custom hex formatting
+                crate::display::kernel_write_line("  [debug] Test 5: Custom hex formatting...");
+                let mut test5 = alloc::string::String::new();
+                test5.push_str("Hex: 0x1234");
+                crate::display::kernel_write_line("  [debug] Test 5: OK");
+                drop(test5);
+
+                // Test 6: Custom formatting with long hex
+                crate::display::kernel_write_line("  [debug] Test 6: Custom formatting with long hex...");
+                let mut test6 = alloc::string::String::new();
+                test6.push_str("Test: 0x123456789ABCDEF0");
+                crate::display::kernel_write_line("  [debug] Test 6: OK");
+                drop(test6);
+
+                crate::display::kernel_write_line( alloc::format!("Test 7: {}", 42).as_str());
+                crate::display::kernel_write_line( alloc::format!("Test 7: {}", 42).as_str());
+                crate::display::kernel_write_line( alloc::format!("Test 7: {}", 42).as_str());
+                crate::display::kernel_write_line( alloc::format!("Test 7: {}", 42).as_str());
+
+
+                crate::display::kernel_write_line("  [debug] All custom formatting tests completed successfully!");
             }
         } else {
             if VERBOSE {
@@ -505,6 +598,38 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         }
     }
     
+
+    // Initialize ACPI parsing
+    // {
+    //     use crate::handoff::handoff_phys_ptr;
+    //     use crate::display::kernel_write_line;
+        
+    //     kernel_write_line("Initializing ACPI parsing...");
+        
+    //     let h = unsafe { &*(handoff_phys_ptr() as *const Handoff) };
+        
+    //     if h.acpi_rsdp != 0 {
+    //         match crate::acpi::initialize_acpi(h.acpi_rsdp) {
+    //             Ok(platform_info) => {
+    //                 kernel_write_line("  Platform: ");
+    //                 theseus_shared::print_hex_u64_0xe9!(platform_info.cpu_count as u64);
+    //                 kernel_write_line(" CPUs, ");
+    //                 theseus_shared::print_hex_u64_0xe9!(platform_info.io_apic_count as u64);
+    //                 kernel_write_line(" IO APICs");
+    //                 kernel_write_line("  Local APIC address: 0x");
+    //                 theseus_shared::print_hex_u64_0xe9!(platform_info.local_apic_address);
+    //                 kernel_write_line("");
+    //             }
+    //             Err(e) => {
+    //                 kernel_write_line("  ACPI parsing failed: ");
+    //                 kernel_write_line(e);
+    //             }
+    //         }
+    //     } else {
+    //         kernel_write_line("  No ACPI RSDP found in handoff");
+    //     }
+    // }
+
     crate::display::kernel_write_line("=== Kernel environment setup complete ===");
     crate::display::kernel_write_line("Kernel environment test completed successfully");
     
@@ -536,12 +661,10 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
     // Small delay to ensure all debug bytes are emitted
     for _ in 0..1_000_00 { core::hint::spin_loop(); }
     
-    // Choose behavior based on global constant from main.rs
-    const KERNEL_SHOULD_IDLE: bool = true;
-    
+    // Choose behavior based on centralized kernel configuration
     crate::display::kernel_write_line("Kernel initialization complete");
     
-    if KERNEL_SHOULD_IDLE {
+    if crate::config::KERNEL_SHOULD_IDLE {
         crate::display::kernel_write_line("Entering idle loop - heart animation active");
         crate::display::kernel_write_line("Kill QEMU to stop the kernel");
         
