@@ -81,6 +81,7 @@ pub const KERNEL_HEAP_SIZE: usize = 0x100000; // 1MB
 pub const TEMP_HEAP_VIRTUAL_BASE: u64 = 0xFFFFFFFFA0000000;
 /// Physical memory linear mapping base (maps [0..N) -> [PHYS_OFFSET..PHYS_OFFSET+N))
 pub const PHYS_OFFSET: u64 = 0xFFFF800000000000;
+const HANDOFF_MEMMAP_WINDOW_BASE: u64 = 0xFFFF_FF88_0000_0000;
 
 /// Convert a physical address into the kernel's high-half virtual address using
 /// the fixed `PHYS_OFFSET` mapping.
@@ -313,14 +314,40 @@ impl MemoryManager {
             }
             crate::display::kernel_write_line("  [vm/new] map fb/heap done");
         }
-        // Map a linear physical mapping for first 1 GiB at PHYS_OFFSET
-        {
+        if crate::config::MAP_LEGACY_PHYS_OFFSET_1GIB {
             crate::display::kernel_write_line("  [vm/new] map phys_offset 1GiB begin");
             mapping::map_phys_offset_1gb_2mb_alloc(pml4, &mut early_frame_alloc);
             crate::display::kernel_write_line("  [vm/new] map phys_offset 1GiB done");
-            crate::display::kernel_write_line(
-                "  [TODO] tighten PHYS_OFFSET mapping once ACPI tables are mirrored in HH",
+        } else {
+            crate::display::kernel_write_line("  [vm/new] map phys_offset 64MiB begin");
+            mapping::map_phys_offset_range_2mb_alloc(
+                pml4,
+                &mut early_frame_alloc,
+                64 * 1024 * 1024,
             );
+            crate::display::kernel_write_line("  [vm/new] map phys_offset 64MiB done");
+            let memmap_len = handoff.memory_map_size as usize;
+            if memmap_len > 0 {
+                let page_size = PAGE_SIZE as u64;
+                let phys_base = handoff.memory_map_buffer_ptr & !(page_size - 1);
+                let offset = handoff.memory_map_buffer_ptr - phys_base;
+                let size_aligned =
+                    ((offset + memmap_len as u64 + page_size - 1) / page_size) * page_size;
+                mapping::map_range_with_policy(
+                    pml4,
+                    HANDOFF_MEMMAP_WINDOW_BASE,
+                    phys_base,
+                    size_aligned,
+                    PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_NO_EXEC,
+                    &mut early_frame_alloc,
+                );
+                let new_ptr = HANDOFF_MEMMAP_WINDOW_BASE + offset;
+                let handoff_mut: *mut theseus_shared::handoff::Handoff =
+                    handoff as *const _ as *mut _;
+                unsafe {
+                    (*handoff_mut).memory_map_buffer_ptr = new_ptr;
+                }
+            }
         }
 
         // Map LAPIC MMIO region (0xFEE00000-0xFEEFFFFF)

@@ -15,7 +15,9 @@ use spin::Mutex;
 
 /// ACPI submodule exports
 pub use madt::MadtInfo;
-static PHYS_OFFSET_LOCK: Mutex<()> = Mutex::new(());
+const ACPI_WINDOW_BASE: u64 = 0xFFFF_FF80_0000_0000;
+static ACPI_MAPPING_LOCK: Mutex<()> = Mutex::new(());
+
 /// ACPI Handler for kernel environment
 ///
 /// This implements the AcpiHandler trait to allow the acpi crate to map physical memory
@@ -40,8 +42,8 @@ impl AcpiHandler for KernelAcpiHandler {
         physical_address: usize,
         size: usize,
     ) -> PhysicalMapping<Self, T> {
-        let virt_range = ensure_phys_offset_mapping(physical_address as u64, size as u64);
-        let virtual_address = virt_range as *mut T;
+        let virt_addr = ensure_acpi_virtual_mapping(physical_address as u64, size as usize);
+        let virtual_address = virt_addr as *mut T;
         let non_null_virtual_address =
             NonNull::new(virtual_address).expect("Physical address should be valid");
 
@@ -57,40 +59,43 @@ impl AcpiHandler for KernelAcpiHandler {
     }
 }
 
-fn ensure_phys_offset_mapping(phys_addr: u64, size: u64) -> u64 {
-    let virt_start = PHYS_OFFSET + phys_addr;
-
+fn ensure_acpi_virtual_mapping(phys_addr: u64, size: usize) -> u64 {
     if !crate::memory::phys_offset_is_active() {
-        return virt_start;
+        return PHYS_OFFSET + phys_addr;
     }
 
-    if crate::memory::virt_range_has_flags(virt_start, size as usize, PTE_PRESENT | PTE_WRITABLE) {
-        return virt_start;
+    let page_size = crate::memory::PAGE_SIZE as u64;
+    let phys_base = phys_addr & !(page_size - 1);
+    let offset = phys_addr - phys_base;
+    let size_aligned = ((offset + size as u64 + page_size - 1) / page_size) * page_size;
+    let virt_base = ACPI_WINDOW_BASE + phys_base;
+
+    if crate::memory::virt_range_has_flags(virt_base, size_aligned as usize, PTE_PRESENT) {
+        return virt_base + offset;
     }
 
-    let _guard = PHYS_OFFSET_LOCK.lock();
-    if crate::memory::virt_range_has_flags(virt_start, size as usize, PTE_PRESENT | PTE_WRITABLE) {
-        return virt_start;
+    let _guard = ACPI_MAPPING_LOCK.lock();
+    if crate::memory::virt_range_has_flags(virt_base, size_aligned as usize, PTE_PRESENT) {
+        return virt_base + offset;
     }
 
     unsafe {
         let handoff = &*(handoff_phys_ptr() as *const theseus_shared::handoff::Handoff);
+        let mut temp_alloc = BootFrameAllocator::from_handoff(handoff);
         let pml4_pa = current_pml4_phys();
         let pml4_ptr = phys_to_virt_pa(pml4_pa) as *mut PageTable;
         let pml4 = &mut *pml4_ptr;
-        let mut temp_alloc = BootFrameAllocator::from_handoff(handoff);
-
         map_range_with_policy(
             pml4,
-            virt_start,
-            phys_addr,
-            size,
+            virt_base,
+            phys_base,
+            size_aligned,
             PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_NO_EXEC,
             &mut temp_alloc,
         );
     }
 
-    virt_start
+    virt_base + offset
 }
 
 /// Simple ACPI platform information
@@ -157,7 +162,6 @@ pub fn initialize_acpi(acpi_rsdp: u64) -> Result<PlatformInfo, &'static str> {
     let handler = KernelAcpiHandler;
 
     kernel_write_line("  [driver/acpi] parsing tables");
-    kernel_write_line("  [driver/acpi] mapping RSDP region");
     let tables = match unsafe { AcpiTables::from_rsdp(handler, acpi_rsdp as usize) } {
         Ok(t) => t,
         Err(_e) => {
@@ -169,6 +173,8 @@ pub fn initialize_acpi(acpi_rsdp: u64) -> Result<PlatformInfo, &'static str> {
             return Err("Failed to parse ACPI tables");
         }
     };
+    // TODO(map-ACPI): tables currently rely on PHYS_OFFSET identity. Mirror key tables into
+    // dedicated high-half regions and tighten PHYS_OFFSET coverage afterwards.
 
     kernel_write_line("  [driver/acpi] tables parsed");
 
