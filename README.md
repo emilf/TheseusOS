@@ -62,6 +62,21 @@ make all
 ./startQemu.sh
 ```
 
+### Build system (short)
+
+This project uses a `Makefile` wrapper around `cargo` to build the UEFI bootloader and kernel, create an EFI System Partition (ESP) disk image, and run QEMU. By default the Makefile builds the `release` profile. To produce a debug build and include it in the disk image, set `PROFILE=debug` when invoking `make`:
+
+```bash
+make PROFILE=debug build esp    # builds debug artifacts and creates the disk image
+make PROFILE=debug debug       # builds then starts QEMU paused with GDB stub
+```
+
+The Makefile maps `PROFILE` to the appropriate `cargo` flags so debug builds go into `target/<target>/debug` and release builds into `target/<target>/release`.
+
+See `BUILD.md` for detailed build instructions and platform-specific notes — I will update `BUILD.md` with expanded, up-to-date documentation as part of the next change.
+
+Run `make help` to see quick usage examples for `PROFILE`, `FEATURES`, and `TIMEOUT`.
+
 ### Build System Features:
 - **Multi-crate workspace**: Bootloader, kernel, and shared libraries
 - **Automated BIOS setup**: Automatically copies and configures OVMF firmware

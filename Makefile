@@ -2,7 +2,7 @@ BOOTLOADER_PROJECT := theseus-bootloader
 KERNEL_PROJECT := theseus-kernel
 BOOTLOADER_TARGET := x86_64-unknown-uefi
 KERNEL_TARGET := x86_64-unknown-none
-PROFILE := release
+PROFILE ?= release
 BOOTLOADER_BUILD_DIR := target/$(BOOTLOADER_TARGET)/$(PROFILE)
 KERNEL_BUILD_DIR := target/$(KERNEL_TARGET)/$(PROFILE)
 EFI_DIR := build/EFI/BOOT
@@ -15,7 +15,15 @@ OVMF_CODE := $(OVMF_DIR)/OVMF_CODE.fd
 OVMF_VARS_ORIG := $(OVMF_DIR)/OVMF_VARS.fd
 OVMF_VARS_RW := $(ESP_DIR)/OVMF_VARS.fd
 
-.PHONY: all clean clean-all run build-bootloader build-kernel build esp bios test test-all test-bare-metal test-kernel test-panic test-help debug
+# Map PROFILE to the correct cargo flag. Cargo uses `--release` for release
+# builds and no flag for debug builds. Set `PROFILE=debug` to build debug.
+ifeq ($(PROFILE),release)
+CARGO_PROFILE_FLAG := --release
+else
+CARGO_PROFILE_FLAG :=
+endif
+
+.PHONY: all clean clean-all run build-bootloader build-kernel build esp bios test test-all test-bare-metal test-kernel test-panic test-help debug help debug-build
 TIMEOUT ?= 20
 
 all: build esp bios
@@ -23,10 +31,10 @@ all: build esp bios
 build: build-bootloader build-kernel
 
 build-bootloader:
-	cargo build --package $(BOOTLOADER_PROJECT) --target $(BOOTLOADER_TARGET) --$(PROFILE) $(if $(FEATURES),--features $(FEATURES),)
+	cargo build --package $(BOOTLOADER_PROJECT) --target $(BOOTLOADER_TARGET) $(CARGO_PROFILE_FLAG) $(if $(FEATURES),--features $(FEATURES),)
 
 build-kernel:
-	cargo build --package $(KERNEL_PROJECT) --target $(KERNEL_TARGET) --$(PROFILE) $(if $(FEATURES),--features $(FEATURES),)
+	cargo build --package $(KERNEL_PROJECT) --target $(KERNEL_TARGET) $(CARGO_PROFILE_FLAG) $(if $(FEATURES),--features $(FEATURES),)
 
 esp: $(EFI_OUTPUT)
 
@@ -140,6 +148,28 @@ debug: all
 	@echo "Starting QEMU paused with GDB on :1234 and monitor on 127.0.0.1:55555"
 	QEMU_OPTS="-S -s" ./startQemu.sh headless
 
+# Print a short help message describing common targets and how to set PROFILE
+.PHONY: help
+help:
+	@echo "Usage: make [target] [VARIABLE=value]"
+	@echo "Common targets: build, esp, run, run-headed, debug, debug-build, test-bare-metal, test-kernel, test-panic"
+	@echo "Default PROFILE is 'release'. To build debug artifacts and include them in the disk image, set PROFILE=debug:" \
+		&& echo "  make PROFILE=debug build esp" \
+		&& echo "Or to build and start QEMU paused for GDB:" \
+		&& echo "  make PROFILE=debug debug" \
+		&& echo "" \
+		&& echo "FEATURES example (pass cargo features):" \
+		&& echo "  make FEATURES=foo build" \
+		&& echo "" \
+		&& echo "TIMEOUT example (change test timeout in seconds):" \
+		&& echo "  make TIMEOUT=60 test-bare-metal"
+
+# Convenience target that runs a debug build and creates the ESP disk image
+.PHONY: debug-build
+debug-build:
+	@echo "Running debug build and creating ESP image..."
+	$(MAKE) PROFILE=debug build esp
+
 # =============================================================================
 # TEST TARGETS
 # =============================================================================
@@ -166,9 +196,8 @@ test-help:
 	@echo "  test             - Run bare-metal tests (default)"
 
 # Bare-metal tests - run immediately after bootloader handoff
-test-bare-metal: build-bootloader
 	@echo "🧪 Building and running bare-metal tests..."
-	@cargo build --package $(KERNEL_PROJECT) --target $(KERNEL_TARGET) --$(PROFILE) --test bare_metal_tests
+	@cargo build --package $(KERNEL_PROJECT) --target $(KERNEL_TARGET) $(CARGO_PROFILE_FLAG) --test bare_metal_tests
 	@echo "📦 Creating bare-metal test disk image..."
 	@$(call create_test_disk,bare_metal_tests,bare_metal_tests)
 	@echo "🚀 Running bare-metal tests in QEMU..."
@@ -176,9 +205,8 @@ test-bare-metal: build-bootloader
 	@echo "✅ Bare-metal tests PASSED"
 
 # Kernel-initialized tests - run after full kernel setup
-test-kernel: build-bootloader
 	@echo "🧪 Building and running kernel-initialized tests..."
-	@cargo build --package $(KERNEL_PROJECT) --target $(KERNEL_TARGET) --$(PROFILE) --test kernel_tests
+	@cargo build --package $(KERNEL_PROJECT) --target $(KERNEL_TARGET) $(CARGO_PROFILE_FLAG) --test kernel_tests
 	@echo "📦 Creating kernel test disk image..."
 	@$(call create_test_disk,kernel_tests,kernel_tests)
 	@echo "🚀 Running kernel tests in QEMU..."
@@ -186,9 +214,8 @@ test-kernel: build-bootloader
 	@echo "✅ Kernel tests PASSED"
 
 # Panic tests - verify panic handling works correctly
-test-panic: build-bootloader
 	@echo "🧪 Building and running panic tests..."
-	@cargo build --package $(KERNEL_PROJECT) --target $(KERNEL_TARGET) --$(PROFILE) --test should_panic
+	@cargo build --package $(KERNEL_PROJECT) --target $(KERNEL_TARGET) $(CARGO_PROFILE_FLAG) --test should_panic
 	@echo "📦 Creating panic test disk image..."
 	@$(call create_test_disk,should_panic,should_panic)
 	@echo "🚀 Running panic tests in QEMU..."
