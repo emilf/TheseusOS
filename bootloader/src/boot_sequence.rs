@@ -1,22 +1,24 @@
 //! Boot sequence orchestration
-//! 
+//!
 //! This module contains the main boot sequence logic that orchestrates
 //! the collection of system information and preparation of the handoff structure.
 
-use uefi::Identify;
+use uefi::boot::{MemoryType, SearchType};
+use uefi::mem::memory_map::MemoryMap;
 use uefi::proto::console::gop::GraphicsOutput;
 use uefi::proto::console::gop::PixelFormat as UefiPixelFormat;
-use uefi::boot::{SearchType, MemoryType};
-use uefi::mem::memory_map::MemoryMap;
+use uefi::Identify;
 use uefi::Status;
 
-use theseus_shared::handoff::{Handoff, HANDOFF};
-use crate::display::*;
-use crate::hardware::{collect_hardware_inventory, get_loaded_image_device_path, display_hardware_inventory};
-use crate::system_info::*;
 use crate::acpi::find_acpi_rsdp;
+use crate::display::*;
 use crate::drivers::manager::write_line;
+use crate::hardware::{
+    collect_hardware_inventory, display_hardware_inventory, get_loaded_image_device_path,
+};
+use crate::system_info::*;
 use alloc::format;
+use theseus_shared::handoff::{Handoff, HANDOFF};
 
 /// Initialize the UEFI environment and output driver
 pub fn initialize_uefi_environment() -> Result<(), Status> {
@@ -24,57 +26,73 @@ pub fn initialize_uefi_environment() -> Result<(), Status> {
     uefi::helpers::init().unwrap();
 
     // Set handoff size
-    unsafe { HANDOFF.size = core::mem::size_of::<Handoff>() as u32; }
+    unsafe {
+        HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
+    }
 
     Ok(())
 }
 
-
 /// Collect graphics output protocol information
 pub fn collect_graphics_info(verbose: bool) -> bool {
     write_line("Collecting graphics information...");
-    
-    let gop_info = match uefi::boot::locate_handle_buffer(
-        SearchType::ByProtocol(&GraphicsOutput::GUID)
-    ) {
-        Ok(gop_handles) => {
-            if let Some(&handle) = gop_handles.first() {
-                if let Ok(mut gop) = uefi::boot::open_protocol_exclusive::<GraphicsOutput>(handle) {
-                    let mode = gop.current_mode_info();
-                    let res = mode.resolution();
-                    let pf = mode.pixel_format();
-                    let mut fb = gop.frame_buffer();
-                    
-                    // Store GOP information in handoff structure
-                    unsafe {
-                        HANDOFF.gop_fb_base = fb.as_mut_ptr() as u64;
-                        HANDOFF.gop_fb_size = fb.size() as u64;
-                        HANDOFF.gop_width = res.0 as u32;
-                        HANDOFF.gop_height = res.1 as u32;
-                        HANDOFF.gop_stride = mode.stride() as u32;
-                        HANDOFF.gop_pixel_format = match pf {
-                            UefiPixelFormat::Rgb => 0,
-                            UefiPixelFormat::Bgr => 1,
-                            UefiPixelFormat::Bitmask => 2,
-                            UefiPixelFormat::BltOnly => 3,
-                        };
+
+    let gop_info =
+        match uefi::boot::locate_handle_buffer(SearchType::ByProtocol(&GraphicsOutput::GUID)) {
+            Ok(gop_handles) => {
+                if let Some(&handle) = gop_handles.first() {
+                    if let Ok(mut gop) =
+                        uefi::boot::open_protocol_exclusive::<GraphicsOutput>(handle)
+                    {
+                        let mode = gop.current_mode_info();
+                        let res = mode.resolution();
+                        let pf = mode.pixel_format();
+                        let mut fb = gop.frame_buffer();
+
+                        // Store GOP information in handoff structure
+                        unsafe {
+                            HANDOFF.gop_fb_base = fb.as_mut_ptr() as u64;
+                            HANDOFF.gop_fb_size = fb.size() as u64;
+                            HANDOFF.gop_width = res.0 as u32;
+                            HANDOFF.gop_height = res.1 as u32;
+                            HANDOFF.gop_stride = mode.stride() as u32;
+                            HANDOFF.gop_pixel_format = match pf {
+                                UefiPixelFormat::Rgb => 0,
+                                UefiPixelFormat::Bgr => 1,
+                                UefiPixelFormat::Bitmask => 2,
+                                UefiPixelFormat::BltOnly => 3,
+                            };
+                        }
+                        Some((
+                            res.0,
+                            res.1,
+                            pf,
+                            mode.stride(),
+                            fb.as_mut_ptr() as u64,
+                            fb.size(),
+                        ))
+                    } else {
+                        None
                     }
-                    Some((res.0, res.1, pf, mode.stride(), fb.as_mut_ptr() as u64, fb.size()))
                 } else {
                     None
                 }
-            } else {
-                None
             }
-        }
-        Err(_) => None,
-    };
+            Err(_) => None,
+        };
 
     // Report GOP status
     if let Some((w, h, pf, stride, fb_base, fb_size)) = gop_info {
         write_line("✓ Graphics Output Protocol (GOP) found and initialized");
         if verbose {
-            display_gop_info(w as u32, h as u32, pf, stride as u32, fb_base, fb_size as u64);
+            display_gop_info(
+                w as u32,
+                h as u32,
+                pf,
+                stride as u32,
+                fb_base,
+                fb_size as u64,
+            );
         }
         write_line("✓ Framebuffer information collected and stored in handoff structure");
         true
@@ -88,7 +106,7 @@ pub fn collect_graphics_info(verbose: bool) -> bool {
 /// Collect memory map information
 pub fn collect_memory_map(verbose: bool) -> Option<uefi::mem::memory_map::MemoryMapOwned> {
     write_line("Collecting memory map information...");
-    
+
     match uefi::boot::memory_map(MemoryType::LOADER_DATA) {
         Ok(mmap) => {
             // Get memory map information using the correct UEFI 0.35 API
@@ -97,7 +115,7 @@ pub fn collect_memory_map(verbose: bool) -> Option<uefi::mem::memory_map::Memory
             let descriptor_version = meta.desc_version as u32;
             let entries_count = mmap.len() as u32;
             let total_size = meta.map_size as u32;
-            
+
             // Store memory map information in handoff structure
             unsafe {
                 HANDOFF.memory_map_buffer_ptr = mmap.buffer().as_ptr() as u64;
@@ -106,20 +124,25 @@ pub fn collect_memory_map(verbose: bool) -> Option<uefi::mem::memory_map::Memory
                 HANDOFF.memory_map_entries = entries_count;
                 HANDOFF.memory_map_size = total_size;
             }
-            
+
             // Display the actual memory map entries (if verbose)
             if verbose {
                 display_memory_map_entries(&mmap);
             }
-            
+
             write_line("✓ Memory map collected successfully");
             if verbose {
                 unsafe {
-                    display_memory_map_info(HANDOFF.memory_map_descriptor_size, HANDOFF.memory_map_descriptor_version, HANDOFF.memory_map_entries, HANDOFF.memory_map_size);
+                    display_memory_map_info(
+                        HANDOFF.memory_map_descriptor_size,
+                        HANDOFF.memory_map_descriptor_version,
+                        HANDOFF.memory_map_entries,
+                        HANDOFF.memory_map_size,
+                    );
                 }
             }
             write_line("✓ Memory map information stored in handoff structure");
-            
+
             Some(mmap)
         }
         Err(_) => {
@@ -139,8 +162,10 @@ pub fn collect_acpi_info(verbose: bool) -> bool {
     if verbose {
         write_line("  Debug: find_acpi_rsdp returned");
     }
-    unsafe { HANDOFF.acpi_rsdp = rsdp_address; }
-    
+    unsafe {
+        HANDOFF.acpi_rsdp = rsdp_address;
+    }
+
     if rsdp_address != 0 {
         write_line("✓ ACPI RSDP table found");
         if verbose {
@@ -319,48 +344,47 @@ pub fn finalize_handoff_structure() {
         // No fallback defaults here; kernel relies on accurate values
         HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
     }
-    write_line(&format!("✓ Handoff structure size: {} bytes", core::mem::size_of::<Handoff>()));
+    write_line(&format!(
+        "✓ Handoff structure size: {} bytes",
+        core::mem::size_of::<Handoff>()
+    ));
     write_line("✓ All system information collected and stored");
 }
 
-
-
-
 /// Load the kernel binary (simplified version)
-/// 
+///
 /// This function allocates memory for the kernel and creates a placeholder binary.
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `memory_map` - The UEFI memory map
 /// * `output_driver` - Output driver for logging
-/// 
+///
 /// # Returns
-/// 
+///
 /// * `Ok((physical_address, entry_point))` - Physical address and entry point where kernel was loaded
 /// * `Err(status)` - Error loading kernel
 
 /// Jump to the kernel entry point
-/// 
+///
 /// This function performs the final handoff from bootloader to kernel.
 /// It sets up the kernel environment and jumps to the kernel entry point.
-/// 
+///
 /// # Safety
-/// 
+///
 /// This function is unsafe because it:
 /// - Jumps to arbitrary code (kernel entry point)
 /// - Assumes the kernel is properly loaded at the expected address
 /// - Performs operations that cannot be undone
 
-
 /// Jump to the kernel entry point with persistent handoff structure
-/// 
+///
 /// This function performs the final handoff from bootloader to kernel after
 /// exiting boot services. It passes the persistent handoff structure address
 /// to the kernel.
-/// 
+///
 /// # Safety
-/// 
+///
 /// This function is unsafe because it:
 /// - Jumps to arbitrary code (kernel entry point)
 /// - Assumes the kernel is properly loaded at the expected address
@@ -369,8 +393,12 @@ pub fn finalize_handoff_structure() {
 pub unsafe fn jump_to_kernel_with_handoff(physical_entry_point: u64, handoff_ptr: *const Handoff) {
     // Copy handoff into a persistent LOADER_DATA buffer and pass its physical address
     let handoff_size = core::mem::size_of::<Handoff>() as u64;
-    write_line(&format!("Allocating persistent handoff buffer, size {} (0x{:x})", handoff_size, handoff_size));
-    let handoff_region = match crate::memory::allocate_memory(handoff_size, MemoryType::LOADER_DATA) {
+    write_line(&format!(
+        "Allocating persistent handoff buffer, size {} (0x{:x})",
+        handoff_size, handoff_size
+    ));
+    let handoff_region = match crate::memory::allocate_memory(handoff_size, MemoryType::LOADER_DATA)
+    {
         Ok(r) => r,
         Err(e) => {
             write_line(&format!("✗ Failed to allocate handoff buffer: {:?}", e));
@@ -378,21 +406,36 @@ pub unsafe fn jump_to_kernel_with_handoff(physical_entry_point: u64, handoff_ptr
         }
     };
     let handoff_phys = handoff_region.physical_address;
-    write_line(&format!("Allocated handoff buffer at phys 0x{:016x}", handoff_phys));
+    write_line(&format!(
+        "Allocated handoff buffer at phys 0x{:016x}",
+        handoff_phys
+    ));
 
-    write_line(&format!("Copying handoff from src {:p} to phys 0x{:016x}", handoff_ptr, handoff_phys));
-    core::ptr::copy_nonoverlapping(handoff_ptr as *const u8, handoff_phys as *mut u8, handoff_size as usize);
+    write_line(&format!(
+        "Copying handoff from src {:p} to phys 0x{:016x}",
+        handoff_ptr, handoff_phys
+    ));
+    core::ptr::copy_nonoverlapping(
+        handoff_ptr as *const u8,
+        handoff_phys as *mut u8,
+        handoff_size as usize,
+    );
 
     // Debug: read back size field from the freshly copied structure
     let copied_size = unsafe { *(handoff_phys as *const u32) };
-    write_line(&format!("Copied HANDOFF.size readback: {} (0x{:08x})", copied_size, copied_size));
+    write_line(&format!(
+        "Copied HANDOFF.size readback: {} (0x{:08x})",
+        copied_size, copied_size
+    ));
 
     // Exit boot services before transferring control to the kernel
     write_line("Exiting boot services before kernel handoff...");
     let _memory_map = unsafe { uefi::boot::exit_boot_services(None) };
 
     // Mark boot services exited in the copied handoff
-    unsafe { (*(handoff_phys as *mut Handoff)).boot_services_exited = 1; }
+    unsafe {
+        (*(handoff_phys as *mut Handoff)).boot_services_exited = 1;
+    }
 
     // Do NOT log after ExitBootServices; firmware services are gone
     // Jump to the kernel entry point using System V ABI: first argument in RDI
@@ -406,5 +449,3 @@ pub unsafe fn jump_to_kernel_with_handoff(physical_entry_point: u64, handoff_ptr
         );
     }
 }
-
-

@@ -1,9 +1,9 @@
 //! Raw Serial Driver
-//! 
+//!
 //! Direct hardware access to serial ports. Fallback option when other drivers fail.
 
+use theseus_shared::constants::{hardware, io_ports::com1};
 use x86_64::instructions::port::Port;
-use theseus_shared::constants::{io_ports::com1, hardware};
 
 /// Raw Serial driver implementation
 pub struct RawSerialDriver;
@@ -13,7 +13,7 @@ impl RawSerialDriver {
     pub fn new() -> Self {
         Self
     }
-    
+
     /// Initialize the serial port
     pub fn init(&self) -> bool {
         unsafe {
@@ -31,13 +31,13 @@ impl RawSerialDriver {
         }
         true
     }
-    
+
     /// Check if this driver is available
     pub fn is_available(&self) -> bool {
         // Try to initialize and see if it works
         self.init()
     }
-    
+
     /// Write a single character to serial port
     fn write_char(&self, ch: u8) {
         unsafe {
@@ -48,7 +48,7 @@ impl RawSerialDriver {
             data.write(ch);
         }
     }
-    
+
     /// Write a string to serial port
     fn write_string(&self, s: &str) {
         for &byte in s.as_bytes() {
@@ -62,17 +62,17 @@ impl crate::drivers::manager::Driver for RawSerialDriver {
         if !self.is_available() {
             return false;
         }
-        
+
         self.write_string(message);
         self.write_char(b'\r'); // Carriage return
         self.write_char(b'\n'); // Line feed
         true
     }
-    
+
     fn is_available(&self) -> bool {
         self.is_available()
     }
-    
+
     fn name(&self) -> &'static str {
         "Raw Serial"
     }

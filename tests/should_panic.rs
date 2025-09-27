@@ -12,7 +12,7 @@ extern crate theseus_shared;
 use core::panic::PanicInfo;
 
 /// Panic handler for panic tests
-/// 
+///
 /// This is a special panic handler that indicates SUCCESS when a panic occurs.
 /// This is because panic tests are designed to panic (e.g., via assert_eq!(0, 1))
 /// and we want to verify that:
@@ -23,16 +23,16 @@ use core::panic::PanicInfo;
 fn panic(_info: &PanicInfo) -> ! {
     // Print success marker - panic occurred as expected
     theseus_shared::qemu_println!("[ok]");
-    
+
     // Exit with success code (0) - panic was expected
     theseus_shared::qemu_exit_ok!();
-    
+
     // Infinite loop - should never be reached due to QEMU exit
     loop {}
 }
 
 /// Panic test entry point
-/// 
+///
 /// This test is designed to fail by calling a function that contains
 /// an assertion that will always fail (assert_eq!(0, 1)). This verifies:
 /// 1. Assertions work correctly
@@ -42,17 +42,17 @@ fn panic(_info: &PanicInfo) -> ! {
 pub extern "C" fn kernel_main(_handoff_addr: u64) -> ! {
     // Call a function that will panic
     should_fail();
-    
+
     // If we reach here, the panic didn't occur, which is a test failure
     theseus_shared::qemu_println!("[test did not panic]");
     theseus_shared::qemu_exit_error!();
-    
+
     // Infinite loop - should never be reached due to QEMU exit
     loop {}
 }
 
 /// Function designed to panic
-/// 
+///
 /// This function contains an assertion that will always fail.
 /// It's used to test that:
 /// 1. assert_eq! macro works correctly
@@ -60,7 +60,7 @@ pub extern "C" fn kernel_main(_handoff_addr: u64) -> ! {
 /// 3. The panic handler is called
 fn should_fail() {
     theseus_shared::qemu_print!("should_panic::should_fail... ");
-    
+
     // This assertion will always fail: 0 != 1
     // This should trigger a panic, which will call our panic handler
     assert_eq!(0, 1);

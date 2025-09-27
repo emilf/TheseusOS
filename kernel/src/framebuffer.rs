@@ -1,9 +1,9 @@
 //! Framebuffer drawing utilities
-//! 
+//!
 //! This module provides functions for drawing to the framebuffer, including
 //! pixel manipulation and simple graphics primitives.
 
-use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use theseus_shared::handoff::Handoff;
 
 /// Virtual address where the framebuffer is mapped
@@ -55,7 +55,7 @@ const ANIMATION_TICK_INTERVAL: u32 = 1000; // Toggle every 1000 ticks for ~1 sec
 
 /// Heart positioning constants
 const HEART_MARGIN_RIGHT: usize = 5; // Pixels from right edge
-const HEART_MARGIN_TOP: usize = 5;   // Pixels from top edge
+const HEART_MARGIN_TOP: usize = 5; // Pixels from top edge
 
 /// Color constants for simple color mapping
 const COLOR_RED: u8 = 0x00;
@@ -76,7 +76,8 @@ fn create_bgra_color(b: u8, g: u8, r: u8, a: u8) -> u32 {
 fn get_pixel_offset(x: usize, y: usize, _width: usize, stride: usize) -> usize {
     // If stride equals width, it's pixels per scanline, not bytes
     // If stride > width, it's bytes per scanline
-    if stride == 1280 { // Same as width, so it's pixels per scanline
+    if stride == 1280 {
+        // Same as width, so it's pixels per scanline
         y * stride * 4 + (x * 4) // 4 bytes per pixel
     } else {
         y * stride + (x * 4) // Stride is already in bytes
@@ -84,9 +85,22 @@ fn get_pixel_offset(x: usize, y: usize, _width: usize, stride: usize) -> usize {
 }
 
 /// Draw a pixel at the specified coordinates with BGRA color
-unsafe fn draw_pixel_bgra(x: usize, y: usize, width: usize, height: usize, stride: usize, bgra_color: u32, verbose: bool) {
+unsafe fn draw_pixel_bgra(
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    stride: usize,
+    bgra_color: u32,
+    verbose: bool,
+) {
     // Debug: Print pixel calculations for specific coordinates (only if verbose)
-    if verbose && ((x == 100 && y == 50) || (x == 200 && y == 50) || (x == 300 && y == 50) || (x == 400 && y == 50)) {
+    if verbose
+        && ((x == 100 && y == 50)
+            || (x == 200 && y == 50)
+            || (x == 300 && y == 50)
+            || (x == 400 && y == 50))
+    {
         theseus_shared::qemu_print!("Pixel (");
         theseus_shared::print_hex_u64_0xe9!(x as u64);
         theseus_shared::qemu_print!(",");
@@ -101,16 +115,20 @@ unsafe fn draw_pixel_bgra(x: usize, y: usize, width: usize, height: usize, strid
         theseus_shared::print_hex_u64_0xe9!(bgra_color as u64);
         theseus_shared::qemu_println!("");
     }
-    
+
     if x >= width || y >= height {
         return; // Out of bounds
     }
-    
+
     let offset = get_pixel_offset(x, y, width, stride);
     let fb_ptr = get_framebuffer_ptr();
-    
+
     // Debug: Print pixel calculations for specific coordinates
-    if (x == 100 && y == 50) || (x == 200 && y == 50) || (x == 300 && y == 50) || (x == 400 && y == 50) {
+    if (x == 100 && y == 50)
+        || (x == 200 && y == 50)
+        || (x == 300 && y == 50)
+        || (x == 400 && y == 50)
+    {
         theseus_shared::qemu_print!("Pixel (");
         theseus_shared::print_hex_u64_0xe9!(x as u64);
         theseus_shared::qemu_print!(",");
@@ -125,26 +143,43 @@ unsafe fn draw_pixel_bgra(x: usize, y: usize, width: usize, height: usize, strid
         theseus_shared::print_hex_u64_0xe9!(bgra_color as u64);
         theseus_shared::qemu_println!("");
     }
-    
+
     core::ptr::write_unaligned(fb_ptr.add(offset) as *mut u32, bgra_color);
 }
 
 /// Draw a pixel at the specified coordinates with simple color
-unsafe fn draw_pixel(x: usize, y: usize, width: usize, height: usize, stride: usize, color: u8, verbose: bool) {
+unsafe fn draw_pixel(
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    stride: usize,
+    color: u8,
+    verbose: bool,
+) {
     // Convert simple color to BGRA (Blue-Green-Red-Alpha)
     let bgra_color = match color {
         COLOR_BLACK => create_bgra_color(0x00, 0x00, 0x00, 0xFF), // Black (B=00, G=00, R=00, A=FF)
         COLOR_RED => create_bgra_color(0x00, 0x00, 0xFF, 0xFF),   // Red (B=00, G=00, R=FF, A=FF)
-        COLOR_GRAY => create_bgra_color(0x80, 0x80, 0x80, 0xFF), // Gray (B=80, G=80, R=80, A=FF)
-        _ => create_bgra_color(color, color, color, 0xFF),       // Grayscale
+        COLOR_GRAY => create_bgra_color(0x80, 0x80, 0x80, 0xFF),  // Gray (B=80, G=80, R=80, A=FF)
+        _ => create_bgra_color(color, color, color, 0xFF),        // Grayscale
     };
     draw_pixel_bgra(x, y, width, height, stride, bgra_color, verbose);
 }
 
 /// Clear a rectangular area
 #[allow(dead_code)]
-unsafe fn clear_area(x: usize, y: usize, width: usize, height: usize, 
-                    fb_width: usize, fb_height: usize, fb_stride: usize, color: u8, verbose: bool) {
+unsafe fn clear_area(
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    fb_width: usize,
+    fb_height: usize,
+    fb_stride: usize,
+    color: u8,
+    verbose: bool,
+) {
     if verbose {
         theseus_shared::qemu_print!("clear_area called: (");
         theseus_shared::print_hex_u64_0xe9!(x as u64);
@@ -158,17 +193,33 @@ unsafe fn clear_area(x: usize, y: usize, width: usize, height: usize,
         theseus_shared::print_hex_u64_0xe9!(color as u64);
         theseus_shared::qemu_println!("");
     }
-    
+
     for dy in 0..height {
         for dx in 0..width {
-            draw_pixel(x + dx, y + dy, fb_width, fb_height, fb_stride, color, verbose);
+            draw_pixel(
+                x + dx,
+                y + dy,
+                fb_width,
+                fb_height,
+                fb_stride,
+                color,
+                verbose,
+            );
         }
     }
 }
 
 /// Draw the heart pattern at the specified position
 #[allow(dead_code)]
-unsafe fn draw_heart(x: usize, y: usize, width: usize, height: usize, stride: usize, color: u8, verbose: bool) {
+unsafe fn draw_heart(
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    stride: usize,
+    color: u8,
+    verbose: bool,
+) {
     for row in 0..HEART_SIZE {
         let pattern_row = HEART_PATTERN[row];
         for col in 0..HEART_SIZE {
@@ -185,26 +236,36 @@ pub unsafe fn update_heart_animation(handoff: &Handoff) {
     if handoff.gop_fb_base == 0 || handoff.gop_width == 0 || handoff.gop_height == 0 {
         return;
     }
-    
+
     let width = handoff.gop_width as usize;
     let height = handoff.gop_height as usize;
     let stride = handoff.gop_stride as usize;
-    
+
     // Position heart in upper right corner using constants
     let heart_x = width - HEART_SIZE - HEART_MARGIN_RIGHT;
     let heart_y = HEART_MARGIN_TOP;
-    
+
     // Increment animation tick
     let ticks = ANIMATION_TICKS.fetch_add(1, Ordering::Relaxed);
-    
+
     // Toggle heart visibility every ANIMATION_TICK_INTERVAL ticks
     if ticks % ANIMATION_TICK_INTERVAL == 0 {
         let visible = HEART_VISIBLE.load(Ordering::Relaxed);
         HEART_VISIBLE.store(!visible, Ordering::Relaxed);
-        
+
         // Clear the heart area first with black background
-        clear_area(heart_x, heart_y, HEART_SIZE, HEART_SIZE, width, height, stride, COLOR_BLACK, false);
-        
+        clear_area(
+            heart_x,
+            heart_y,
+            HEART_SIZE,
+            HEART_SIZE,
+            width,
+            height,
+            stride,
+            COLOR_BLACK,
+            false,
+        );
+
         // Draw heart if visible
         if !visible {
             draw_heart(heart_x, heart_y, width, height, stride, COLOR_RED, false);
@@ -226,7 +287,7 @@ pub unsafe fn draw_initial_heart(handoff: &Handoff, verbose: bool) {
         }
         return;
     }
-    
+
     // Get framebuffer info from handoff struct
     let width = handoff.gop_width as usize;
     let height = handoff.gop_height as usize;
@@ -234,7 +295,7 @@ pub unsafe fn draw_initial_heart(handoff: &Handoff, verbose: bool) {
     let pixel_format = handoff.gop_pixel_format;
     let fb_base = handoff.gop_fb_base;
     let fb_size = handoff.gop_fb_size;
-    
+
     if verbose {
         theseus_shared::qemu_print!("Framebuffer: ");
         theseus_shared::print_hex_u64_0xe9!(width as u64);
@@ -249,18 +310,18 @@ pub unsafe fn draw_initial_heart(handoff: &Handoff, verbose: bool) {
         theseus_shared::qemu_print!(", size: ");
         theseus_shared::print_hex_u64_0xe9!(fb_size);
         theseus_shared::qemu_println!("");
-        
+
         // Calculate bytes per pixel from handoff data
         let bytes_per_pixel = stride / width;
         theseus_shared::qemu_print!("Bytes per pixel: ");
         theseus_shared::print_hex_u64_0xe9!(bytes_per_pixel as u64);
         theseus_shared::qemu_println!("");
     }
-    
+
     // Position heart in upper right corner using constants
     let heart_x = width - HEART_SIZE - HEART_MARGIN_RIGHT;
     let heart_y = HEART_MARGIN_TOP;
-    
+
     if verbose {
         theseus_shared::qemu_print!("Heart at (");
         theseus_shared::print_hex_u64_0xe9!(heart_x as u64);
@@ -268,7 +329,7 @@ pub unsafe fn draw_initial_heart(handoff: &Handoff, verbose: bool) {
         theseus_shared::print_hex_u64_0xe9!(heart_y as u64);
         theseus_shared::qemu_println!(") size 16x16");
     }
-    
+
     // Draw the initial heart in the upper right corner
     draw_heart(heart_x, heart_y, width, height, stride, COLOR_RED, verbose);
 }

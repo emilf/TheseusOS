@@ -1,5 +1,5 @@
 //! Display and output module
-//! 
+//!
 //! This module provides functions for displaying kernel information and debug output.
 //! It handles formatted output to the QEMU debug port and provides utilities for
 //! displaying handoff structure contents in a readable format.
@@ -7,21 +7,21 @@
 use theseus_shared::handoff::Handoff;
 
 /// Simple kernel output function that writes directly to QEMU debug port
-/// 
+///
 /// This function provides a simple way to output text from the kernel to the
 /// QEMU debug port (0xE9). It's used for kernel logging and debug output.
-/// 
+///
 /// # Parameters
-/// 
+///
 /// * `message` - The message string to output
-pub fn kernel_write_line(message: &str) { 
-    theseus_shared::qemu_println!(message); 
+pub fn kernel_write_line(message: &str) {
+    theseus_shared::qemu_println!(message);
 }
 
 /// Print key/value pair with hex value
-/// 
+///
 /// # Parameters
-/// 
+///
 /// * `name` - The field name to display
 /// * `value` - The 64-bit value to display in hex
 fn print_kv_u64(name: &str, value: u64) {
@@ -33,20 +33,22 @@ fn print_kv_u64(name: &str, value: u64) {
 }
 
 /// Print key/value pair with hex value (32-bit version)
-/// 
+///
 /// # Parameters
-/// 
+///
 /// * `name` - The field name to display
 /// * `value` - The 32-bit value to display in hex
-fn print_kv_u32(name: &str, value: u32) { print_kv_u64(name, value as u64); }
+fn print_kv_u32(name: &str, value: u32) {
+    print_kv_u64(name, value as u64);
+}
 
 /// Pretty print the Handoff structure with optional raw byte dump
-/// 
+///
 /// This function displays the contents of the handoff structure in a formatted
 /// table, showing all the system information passed from the bootloader to the kernel.
-/// 
+///
 /// # Parameters
-/// 
+///
 /// * `h` - Reference to the handoff structure to display
 /// * `dump_bytes` - If true, also dump the raw bytes of the structure
 pub fn dump_handoff(h: &Handoff, dump_bytes: bool) {
@@ -69,7 +71,10 @@ pub fn dump_handoff(h: &Handoff, dump_bytes: bool) {
     kernel_write_line("│ Memory Map");
     print_kv_u64("memory_map_buffer_ptr", h.memory_map_buffer_ptr);
     print_kv_u32("memory_map_descriptor_size", h.memory_map_descriptor_size);
-    print_kv_u32("memory_map_descriptor_version", h.memory_map_descriptor_version);
+    print_kv_u32(
+        "memory_map_descriptor_version",
+        h.memory_map_descriptor_version,
+    );
     print_kv_u32("memory_map_entries", h.memory_map_entries);
     print_kv_u32("memory_map_size", h.memory_map_size);
 
@@ -115,22 +120,25 @@ pub fn dump_handoff(h: &Handoff, dump_bytes: bool) {
     kernel_write_line("└─────────────────────────────────────────────────────────┘");
 
     if dump_bytes {
-        dump_handoff_bytes(h as *const Handoff as *const u8, core::mem::size_of::<Handoff>());
+        dump_handoff_bytes(
+            h as *const Handoff as *const u8,
+            core::mem::size_of::<Handoff>(),
+        );
     }
 }
 
 /// Dump raw bytes of the handoff in a hex table (16 bytes per row)
-/// 
+///
 /// This function displays the raw memory contents of the handoff structure
 /// in a hexadecimal format, useful for debugging memory layout issues.
-/// 
+///
 /// # Parameters
-/// 
+///
 /// * `ptr` - Pointer to the start of the memory to dump
 /// * `size` - Number of bytes to dump
-/// 
+///
 /// # Safety
-/// 
+///
 /// The caller must ensure that the memory pointed to by `ptr` is valid
 /// and readable for `size` bytes.
 pub fn dump_handoff_bytes(ptr: *const u8, size: usize) {
@@ -145,11 +153,19 @@ pub fn dump_handoff_bytes(ptr: *const u8, size: usize) {
         let mut i = 0;
         while i < 16 && (offset + i) < size {
             let b = unsafe { core::ptr::read_volatile(ptr.add(offset + i)) } as u64;
-            if i > 0 { theseus_shared::qemu_print!(" "); }
+            if i > 0 {
+                theseus_shared::qemu_print!(" ");
+            }
             // two hex digits
             let hi = ((b >> 4) & 0xF) as u8;
             let lo = (b & 0xF) as u8;
-            let to_ch = |n: u8| -> u8 { if n < 10 { b'0' + n } else { b'A' + (n - 10) } };
+            let to_ch = |n: u8| -> u8 {
+                if n < 10 {
+                    b'0' + n
+                } else {
+                    b'A' + (n - 10)
+                }
+            };
             theseus_shared::out_char_0xe9!(to_ch(hi));
             theseus_shared::out_char_0xe9!(to_ch(lo));
             i += 1;

@@ -69,40 +69,73 @@ fn dump_registers() {
     let cr3 = cr3_frame.start_address().as_u64();
 
     crate::display::kernel_write_line("  registers:\n");
-    crate::display::kernel_write_line("   RIP="); theseus_shared::print_hex_u64_0xe9!(rip); crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   RSP="); theseus_shared::print_hex_u64_0xe9!(rsp); crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   RBP="); theseus_shared::print_hex_u64_0xe9!(rbp); crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   RAX="); theseus_shared::print_hex_u64_0xe9!(rax); crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   RBX="); theseus_shared::print_hex_u64_0xe9!(rbx); crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   RCX="); theseus_shared::print_hex_u64_0xe9!(rcx); crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   RDX="); theseus_shared::print_hex_u64_0xe9!(rdx); crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   RSI="); theseus_shared::print_hex_u64_0xe9!(rsi); crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   RDI="); theseus_shared::print_hex_u64_0xe9!(rdi); crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   RFLAGS="); theseus_shared::print_hex_u64_0xe9!(flags); crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   CR3="); theseus_shared::print_hex_u64_0xe9!(cr3); crate::display::kernel_write_line("\n");
+    crate::display::kernel_write_line("   RIP=");
+    theseus_shared::print_hex_u64_0xe9!(rip);
+    crate::display::kernel_write_line("\n");
+    crate::display::kernel_write_line("   RSP=");
+    theseus_shared::print_hex_u64_0xe9!(rsp);
+    crate::display::kernel_write_line("\n");
+    crate::display::kernel_write_line("   RBP=");
+    theseus_shared::print_hex_u64_0xe9!(rbp);
+    crate::display::kernel_write_line("\n");
+    crate::display::kernel_write_line("   RAX=");
+    theseus_shared::print_hex_u64_0xe9!(rax);
+    crate::display::kernel_write_line("\n");
+    crate::display::kernel_write_line("   RBX=");
+    theseus_shared::print_hex_u64_0xe9!(rbx);
+    crate::display::kernel_write_line("\n");
+    crate::display::kernel_write_line("   RCX=");
+    theseus_shared::print_hex_u64_0xe9!(rcx);
+    crate::display::kernel_write_line("\n");
+    crate::display::kernel_write_line("   RDX=");
+    theseus_shared::print_hex_u64_0xe9!(rdx);
+    crate::display::kernel_write_line("\n");
+    crate::display::kernel_write_line("   RSI=");
+    theseus_shared::print_hex_u64_0xe9!(rsi);
+    crate::display::kernel_write_line("\n");
+    crate::display::kernel_write_line("   RDI=");
+    theseus_shared::print_hex_u64_0xe9!(rdi);
+    crate::display::kernel_write_line("\n");
+    crate::display::kernel_write_line("   RFLAGS=");
+    theseus_shared::print_hex_u64_0xe9!(flags);
+    crate::display::kernel_write_line("\n");
+    crate::display::kernel_write_line("   CR3=");
+    theseus_shared::print_hex_u64_0xe9!(cr3);
+    crate::display::kernel_write_line("\n");
 }
 
 fn dump_backtrace(max_frames: usize) {
     crate::display::kernel_write_line("  backtrace:\n");
     // Get initial RBP
     let mut rbp: u64;
-    unsafe { core::arch::asm!("mov {}, rbp", out(reg) rbp, options(nomem, preserves_flags)); }
+    unsafe {
+        core::arch::asm!("mov {}, rbp", out(reg) rbp, options(nomem, preserves_flags));
+    }
     for i in 0..max_frames {
-        if rbp == 0 { break; }
+        if rbp == 0 {
+            break;
+        }
         // saved return address is at [rbp + 8]
         let ret: u64 = unsafe { core::ptr::read_volatile((rbp + 8) as *const u64) };
-        crate::display::kernel_write_line("    #"); crate::display::kernel_write_line(&alloc::format!("{} ", i)); theseus_shared::print_hex_u64_0xe9!(ret); crate::display::kernel_write_line("\n");
+        crate::display::kernel_write_line("    #");
+        crate::display::kernel_write_line(&alloc::format!("{} ", i));
+        theseus_shared::print_hex_u64_0xe9!(ret);
+        crate::display::kernel_write_line("\n");
         // next rbp is at [rbp]
         let next = unsafe { core::ptr::read_volatile(rbp as *const u64) };
-        if next == rbp { break; }
+        if next == rbp {
+            break;
+        }
         rbp = next;
     }
 }
 
 #[macro_export]
 macro_rules! boot_abort {
-    ($msg:expr) => { $crate::boot::abort_with_context($msg, file!(), line!(), None) };
-    ($msg:expr, $addr:expr) => { $crate::boot::abort_with_context($msg, file!(), line!(), Some($addr as u64)) };
+    ($msg:expr) => {
+        $crate::boot::abort_with_context($msg, file!(), line!(), None)
+    };
+    ($msg:expr, $addr:expr) => {
+        $crate::boot::abort_with_context($msg, file!(), line!(), Some($addr as u64))
+    };
 }
-
-

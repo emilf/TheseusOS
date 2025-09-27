@@ -64,7 +64,7 @@ Virtual Address Range      | Physical Mapping      | Purpose
 ---------------------------|----------------------|----------------------------------
 0xFFFFFFFF80000000        | 0x000000003E129000   | Kernel code/data segments
 0xFFFFFFFF80010000        | 0x000000003E180000   | Temporary heap
-0xFFFFFFFF80020000        | 0x000000003E190000   | Kernel heap (permanent)
+0xFFFFFFFFB0000000        | 0x000000003E190000   | Kernel heap (permanent)
 0xFFFFFFFF80030000        | 0x000000003E1A0000   | IST stacks (DF, NMI, MC, PF)
 0xFFFFFFFF80040000        | 0x000000003E1B0000   | Kernel stack (64KB)
 0xFFFFFFFFA0000000        | 0x000000003E180000   | Temporary heap (alternative mapping)
@@ -319,7 +319,7 @@ unsafe fn zero_frame_safely(pa: u64) {
 0x0000000000000000 - 0x000000003FFFFFFF  Identity mapping (1GB)
 0xFFFFFFFF80000000 - 0xFFFFFFFF8003FFFF  Kernel image (256KB)
 0xFFFFFFFF80010000 - 0xFFFFFFFF8001FFFF  Temporary heap (64KB)
-0xFFFFFFFF80020000 - 0xFFFFFFFF8002FFFF  Permanent heap (64KB)
+0xFFFFFFFFB0000000 - 0xFFFFFFFFB000FFFF  Permanent heap (64KB)
 0xFFFFFFFF80030000 - 0xFFFFFFFF80033FFF  IST stacks (16KB)
 0xFFFFFFFF80040000 - 0xFFFFFFFF8004FFFF  Kernel stack (64KB)
 0xFFFFFFFFA0000000 - 0xFFFFFFFFA00FFFFF  Temp heap alt mapping (1MB)

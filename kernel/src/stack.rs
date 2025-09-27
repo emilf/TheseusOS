@@ -15,5 +15,3 @@ pub unsafe fn switch_to_kernel_stack_and_jump(stack_top: u64, cont: u64) -> ! {
         options(noreturn)
     );
 }
-
-

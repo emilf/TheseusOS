@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 //! CPU setup and control module
-//! 
+//!
 //! This module provides functions to configure CPU features, control registers,
 //! and set up the CPU for kernel operation. It handles detection and enabling
 //! of various CPU features like SSE, AVX, and other extensions.
-//! 
+//!
 //! The module provides:
 //! - Control register manipulation (CR0, CR4)
 //! - CPU feature detection using CPUID
@@ -15,28 +15,28 @@ use raw_cpuid::CpuId;
 use spin::Once;
 
 /// Control register flags for CR0
-pub const CR0_PE: u64 = 1 << 0;   // Protected Mode Enable
-pub const CR0_MP: u64 = 1 << 1;   // Monitor Coprocessor
-pub const CR0_EM: u64 = 1 << 2;   // Emulation
-pub const CR0_TS: u64 = 1 << 3;   // Task Switched
-pub const CR0_ET: u64 = 1 << 4;   // Extension Type
-pub const CR0_NE: u64 = 1 << 5;   // Numeric Error
-pub const CR0_WP: u64 = 1 << 16;  // Write Protect
-pub const CR0_AM: u64 = 1 << 18;  // Alignment Mask
-pub const CR0_NW: u64 = 1 << 29;  // Not Writethrough
-pub const CR0_CD: u64 = 1 << 30;  // Cache Disable
-pub const CR0_PG: u64 = 1 << 31;  // Paging Enable
+pub const CR0_PE: u64 = 1 << 0; // Protected Mode Enable
+pub const CR0_MP: u64 = 1 << 1; // Monitor Coprocessor
+pub const CR0_EM: u64 = 1 << 2; // Emulation
+pub const CR0_TS: u64 = 1 << 3; // Task Switched
+pub const CR0_ET: u64 = 1 << 4; // Extension Type
+pub const CR0_NE: u64 = 1 << 5; // Numeric Error
+pub const CR0_WP: u64 = 1 << 16; // Write Protect
+pub const CR0_AM: u64 = 1 << 18; // Alignment Mask
+pub const CR0_NW: u64 = 1 << 29; // Not Writethrough
+pub const CR0_CD: u64 = 1 << 30; // Cache Disable
+pub const CR0_PG: u64 = 1 << 31; // Paging Enable
 
 /// Control register flags for CR4
-pub const CR4_VME: u64 = 1 << 0;  // Virtual 8086 Mode Extensions
-pub const CR4_PVI: u64 = 1 << 1;  // Protected Mode Virtual Interrupts
-pub const CR4_TSD: u64 = 1 << 2;  // Time Stamp Disable
-pub const CR4_DE: u64 = 1 << 3;   // Debugging Extensions
-pub const CR4_PSE: u64 = 1 << 4;  // Page Size Extensions
-pub const CR4_PAE: u64 = 1 << 5;  // Physical Address Extension
-pub const CR4_MCE: u64 = 1 << 6;  // Machine Check Enable
-pub const CR4_PGE: u64 = 1 << 7;  // Page Global Enable
-pub const CR4_PCE: u64 = 1 << 8;  // Performance Counter Enable
+pub const CR4_VME: u64 = 1 << 0; // Virtual 8086 Mode Extensions
+pub const CR4_PVI: u64 = 1 << 1; // Protected Mode Virtual Interrupts
+pub const CR4_TSD: u64 = 1 << 2; // Time Stamp Disable
+pub const CR4_DE: u64 = 1 << 3; // Debugging Extensions
+pub const CR4_PSE: u64 = 1 << 4; // Page Size Extensions
+pub const CR4_PAE: u64 = 1 << 5; // Physical Address Extension
+pub const CR4_MCE: u64 = 1 << 6; // Machine Check Enable
+pub const CR4_PGE: u64 = 1 << 7; // Page Global Enable
+pub const CR4_PCE: u64 = 1 << 8; // Performance Counter Enable
 pub const CR4_OSFXSR: u64 = 1 << 9; // OS FXSAVE/FXRSTOR Support
 pub const CR4_OSXMMEXCPT: u64 = 1 << 10; // OS XMM Exception Support
 pub const CR4_UMIP: u64 = 1 << 11; // User Mode Instruction Prevention
@@ -66,9 +66,9 @@ pub struct CpuFeatures {
 
 impl CpuFeatures {
     /// Create a new CpuFeatures structure with all features disabled
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// A new CpuFeatures instance with all feature flags set to false
     pub const fn new() -> Self {
         Self {
@@ -90,21 +90,21 @@ impl CpuFeatures {
 static CPU_FEATURES_ONCE: Once<CpuFeatures> = Once::new();
 
 /// Detect CPU features once during low-half initialization
-/// 
+///
 /// This function performs one-time CPU feature detection and caches the results.
 /// It should be called early in kernel initialization before switching to high-half.
-/// 
+///
 /// # Safety
-/// 
+///
 /// This function is safe to call during early kernel initialization.
 pub unsafe fn detect_cpu_features_once_lowhalf() {
     let _ = CPU_FEATURES_ONCE.call_once(|| detect_cpu_features());
 }
 
 /// Get the cached CPU features
-/// 
+///
 /// # Returns
-/// 
+///
 /// * `Some(CpuFeatures)` - If features have been detected
 /// * `None` - If features haven't been detected yet
 pub fn get_cpu_features_once() -> Option<CpuFeatures> {
@@ -112,12 +112,12 @@ pub fn get_cpu_features_once() -> Option<CpuFeatures> {
 }
 
 /// Set up control registers for kernel mode
-/// 
+///
 /// This function configures CR0 and CR4 control registers for proper kernel operation.
 /// It enables protected mode, paging, write protection, and other essential features.
-/// 
+///
 /// # Safety
-/// 
+///
 /// This function modifies CPU control registers and should only be called during
 /// kernel initialization when it's safe to modify these critical registers.
 pub unsafe fn setup_control_registers() {
@@ -149,17 +149,17 @@ pub unsafe fn setup_control_registers() {
 }
 
 /// Detect CPU features using CPUID
-/// 
+///
 /// This function queries the CPU using the CPUID instruction to determine which
 /// features are available. It checks for various instruction set extensions
 /// including SSE, AVX, and other modern CPU features.
-/// 
+///
 /// # Returns
-/// 
+///
 /// A CpuFeatures structure with detected features enabled
-/// 
+///
 /// # Safety
-/// 
+///
 /// This function is safe to call as it only reads CPU feature flags.
 pub unsafe fn detect_cpu_features() -> CpuFeatures {
     let mut f = CpuFeatures::new();
@@ -184,17 +184,17 @@ pub unsafe fn detect_cpu_features() -> CpuFeatures {
 }
 
 /// Enable SSE/AVX if available
-/// 
+///
 /// This function enables the floating point unit and SIMD extensions based on
 /// the detected CPU features. It configures the necessary control registers
 /// to enable SSE and AVX instruction sets.
-/// 
+///
 /// # Parameters
-/// 
+///
 /// * `features` - The detected CPU features to enable
-/// 
+///
 /// # Safety
-/// 
+///
 /// This function modifies CPU control registers and should only be called
 /// when it's safe to enable floating point operations.
 pub unsafe fn setup_floating_point(features: &CpuFeatures) {
@@ -202,7 +202,7 @@ pub unsafe fn setup_floating_point(features: &CpuFeatures) {
     if features.sse {
         enable_sse();
     }
-    
+
     // Enable AVX if available
     if features.avx && features.osxsave {
         enable_avx();
@@ -210,12 +210,12 @@ pub unsafe fn setup_floating_point(features: &CpuFeatures) {
 }
 
 /// Enable SSE (Streaming SIMD Extensions)
-/// 
+///
 /// This function enables SSE by configuring the necessary control registers.
 /// It sets CR0.EM=0, CR0.MP=1, CR4.OSFXSR=1, and CR4.OSXMMEXCPT=1.
-/// 
+///
 /// # Safety
-/// 
+///
 /// This function modifies CPU control registers and should only be called
 /// when it's safe to enable SSE operations.
 unsafe fn enable_sse() {
@@ -239,12 +239,12 @@ unsafe fn enable_sse() {
 }
 
 /// Enable AVX (Advanced Vector Extensions)
-/// 
+///
 /// This function enables AVX by configuring CR4.OSXSAVE and XCR0 registers.
 /// It enables x87, SSE, and AVX state saving/restoring.
-/// 
+///
 /// # Safety
-/// 
+///
 /// This function modifies CPU control registers and should only be called
 /// when it's safe to enable AVX operations.
 unsafe fn enable_avx() {
@@ -267,17 +267,17 @@ unsafe fn enable_avx() {
 // raw_cpuid replaces inline cpuid
 
 /// Check if FSGSBASE is available
-/// 
+///
 /// This function checks if the CPU supports the FSGSBASE instruction set,
 /// which allows direct access to FS and GS base registers.
-/// 
+///
 /// # Returns
-/// 
+///
 /// * `true` - If FSGSBASE is supported
 /// * `false` - If FSGSBASE is not supported
-/// 
+///
 /// # Safety
-/// 
+///
 /// This function is safe to call as it only reads CPU feature flags.
 pub unsafe fn has_fsgsbase() -> bool {
     if let Some(efi) = CpuId::new().get_extended_feature_info() {
@@ -293,12 +293,12 @@ unsafe fn has_osxsave() -> bool {
 }
 
 /// Set up Model Specific Registers (MSRs)
-/// 
+///
 /// This function configures various Model Specific Registers for kernel operation.
 /// Currently it enables system call extensions in the EFER register.
-/// 
+///
 /// # Safety
-/// 
+///
 /// This function modifies CPU MSRs and should only be called during
 /// kernel initialization when it's safe to modify these registers.
 pub unsafe fn setup_msrs() {
@@ -307,6 +307,8 @@ pub unsafe fn setup_msrs() {
         use x86_64::registers::model_specific::{Efer, EferFlags};
         let mut e = Efer::read();
         e.insert(EferFlags::SYSTEM_CALL_EXTENSIONS);
-        unsafe { Efer::write(e); }
+        unsafe {
+            Efer::write(e);
+        }
     }
 }

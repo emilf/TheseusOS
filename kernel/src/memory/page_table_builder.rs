@@ -4,9 +4,9 @@
 //! a centralized mapping policy (prefers 2MiB huge pages when aligned) which
 //! simplifies higher-level mapping logic.
 
-use crate::memory::{PageTable, PAGE_SIZE};
 use crate::memory::frame_allocator::BootFrameAllocator;
 use crate::memory::mapping::map_range_with_policy;
+use crate::memory::{PageTable, PAGE_SIZE};
 
 pub struct PageTableBuilder<'a> {
     pml4: &'a mut PageTable,
@@ -24,7 +24,9 @@ impl<'a> PageTableBuilder<'a> {
     /// This applies the mapping immediately using the policy implemented in
     /// `map_range_with_policy`.
     pub unsafe fn map_range(&mut self, va: u64, pa: u64, size: u64, flags: u64) {
-        if size == 0 { return; }
+        if size == 0 {
+            return;
+        }
         map_range_with_policy(self.pml4, va, pa, size, flags, self.fa);
     }
 
@@ -34,5 +36,3 @@ impl<'a> PageTableBuilder<'a> {
         self.map_range(va, pa, size, flags);
     }
 }
-
-

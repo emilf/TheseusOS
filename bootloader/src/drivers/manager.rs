@@ -1,5 +1,5 @@
 //! Driver Manager
-//! 
+//!
 //! Manages different output drivers and automatically selects the best available one.
 //! Uses a global singleton instance since we're in a single-threaded environment.
 
@@ -9,11 +9,11 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 pub trait Driver {
     /// Write a line of text
     fn write_line(&self, message: &str) -> bool;
-    
+
     /// Check if this driver is currently available
     #[allow(dead_code)]
     fn is_available(&self) -> bool;
-    
+
     /// Get the name of this driver
     fn name(&self) -> &'static str;
 }
@@ -49,38 +49,38 @@ impl OutputDriver {
             current_driver: Self::select_best_driver(),
         }
     }
-    
+
     /// Initialize the global output driver instance
     /// This should be called once at startup
     pub fn init_global() {
         let mut driver = Self::new();
         let driver_ptr = &mut driver as *mut OutputDriver;
         GLOBAL_OUTPUT_DRIVER.store(driver_ptr, Ordering::SeqCst);
-        
+
         // Leak the driver to keep it alive for the lifetime of the program
         core::mem::forget(driver);
-        
+
         // Write initial message
         write_line("Output driver initialized");
     }
-    
+
     /// Select the best available driver
     fn select_best_driver() -> DriverType {
         // For QEMU targets, prefer QEMU debug port as it's simpler and always available
         // This avoids conflicts with UEFI serial and provides consistent output
         DriverType::QemuDebug
     }
-    
+
     /// Update the current driver based on boot services status
     pub fn update_driver(&mut self) {
         self.current_driver = Self::select_best_driver();
     }
-    
+
     /// Write a line using the current driver
     pub fn write_line(&mut self, message: &str) -> bool {
         // Update driver selection in case boot services status changed
         self.update_driver();
-        
+
         match self.current_driver {
             DriverType::UefiSerial => {
                 if self.uefi_serial.is_available() {
@@ -98,15 +98,11 @@ impl OutputDriver {
                 self.current_driver = DriverType::RawSerial;
                 self.raw_serial.write_line(message)
             }
-            DriverType::RawSerial => {
-                self.raw_serial.write_line(message)
-            }
-            DriverType::None => {
-                false
-            }
+            DriverType::RawSerial => self.raw_serial.write_line(message),
+            DriverType::None => false,
         }
     }
-    
+
     /// Get the name of the current driver
     pub fn current_driver_name(&self) -> &'static str {
         match self.current_driver {
@@ -116,19 +112,19 @@ impl OutputDriver {
             DriverType::None => "None",
         }
     }
-    
+
     /// Force switch to a specific driver
     #[allow(dead_code)]
     pub fn force_driver(&mut self, driver_type: DriverType) {
         self.current_driver = driver_type;
     }
-    
+
     /// Check if any driver is available
     #[allow(dead_code)]
     pub fn is_available(&self) -> bool {
-        self.uefi_serial.is_available() || 
-        self.qemu_debug.is_available() || 
-        self.raw_serial.is_available()
+        self.uefi_serial.is_available()
+            || self.qemu_debug.is_available()
+            || self.raw_serial.is_available()
     }
 }
 
@@ -141,11 +137,9 @@ pub fn write_line(message: &str) -> bool {
     if driver_ptr.is_null() {
         return false;
     }
-    
+
     // SAFETY: We know the driver is valid and we're in a single-threaded environment
-    unsafe {
-        (*driver_ptr).write_line(message)
-    }
+    unsafe { (*driver_ptr).write_line(message) }
 }
 
 /// Get the name of the current global driver
@@ -154,11 +148,9 @@ pub fn current_driver_name() -> &'static str {
     if driver_ptr.is_null() {
         return "None";
     }
-    
+
     // SAFETY: We know the driver is valid and we're in a single-threaded environment
-    unsafe {
-        (*driver_ptr).current_driver_name()
-    }
+    unsafe { (*driver_ptr).current_driver_name() }
 }
 
 /// Update the global driver (e.g., after boot services exit)
@@ -168,7 +160,7 @@ pub fn update_driver() {
     if driver_ptr.is_null() {
         return;
     }
-    
+
     // SAFETY: We know the driver is valid and we're in a single-threaded environment
     unsafe {
         (*driver_ptr).update_driver();
@@ -182,7 +174,7 @@ pub fn force_driver(driver_type: DriverType) {
     if driver_ptr.is_null() {
         return;
     }
-    
+
     // SAFETY: We know the driver is valid and we're in a single-threaded environment
     unsafe {
         (*driver_ptr).force_driver(driver_type);

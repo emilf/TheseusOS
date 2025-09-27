@@ -9,38 +9,38 @@ use core::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TestEnvironment {
     /// Bare-metal environment - runs immediately after bootloader handoff
-    /// 
+    ///
     /// Available:
     /// - Basic CPU operations
     /// - Stack-based memory
     /// - Raw hardware access
-    /// 
+    ///
     /// NOT Available:
     /// - Heap allocation
     /// - Kernel services
     /// - Interrupt handling
     /// - Memory mapping beyond bootloader setup
     BareMetal,
-    
+
     /// Kernel-initialized environment - runs after full kernel setup
-    /// 
+    ///
     /// Available:
     /// - All kernel services
     /// - Heap allocation
     /// - Memory mapping
     /// - Interrupt handling
     /// - Kernel modules
-    /// 
+    ///
     /// NOT Available:
     /// - User space features (if any)
     KernelInitialized,
-    
+
     /// User space environment - runs in user mode (future)
-    /// 
+    ///
     /// Available:
     /// - User space APIs
     /// - System calls
-    /// 
+    ///
     /// NOT Available:
     /// - Direct hardware access
     /// - Kernel memory
@@ -88,7 +88,7 @@ impl TestEnvironmentSpec {
             },
         }
     }
-    
+
     pub fn kernel_initialized() -> Self {
         Self {
             environment: TestEnvironment::KernelInitialized,
@@ -102,7 +102,7 @@ impl TestEnvironmentSpec {
             },
         }
     }
-    
+
     pub fn user_space() -> Self {
         Self {
             environment: TestEnvironment::UserSpace,
@@ -119,9 +119,9 @@ impl TestEnvironmentSpec {
 }
 
 /// Macro to specify which environment a test should run in
-/// 
+///
 /// # Examples
-/// 
+///
 /// ```rust
 /// #[test_case]
 /// #[test_environment(BareMetal)]
@@ -129,7 +129,7 @@ impl TestEnvironmentSpec {
 ///     // This test runs in bare-metal environment
 ///     assert_eq!(1 + 1, 2);
 /// }
-/// 
+///
 /// #[test_case]
 /// #[test_environment(KernelInitialized)]
 /// fn test_heap_allocation() {
@@ -155,20 +155,23 @@ macro_rules! test_environment {
 }
 
 /// Validate that a test is compatible with its specified environment
-pub fn validate_test_environment(_test_name: &str, environment: TestEnvironment) -> Result<(), &'static str> {
+pub fn validate_test_environment(
+    _test_name: &str,
+    environment: TestEnvironment,
+) -> Result<(), &'static str> {
     match environment {
         TestEnvironment::BareMetal => {
             // Bare-metal tests should not use heap allocation or kernel services
             // This would need to be implemented with static analysis or runtime checks
             Ok(())
-        },
+        }
         TestEnvironment::KernelInitialized => {
             // Kernel tests can use all available services
             Ok(())
-        },
+        }
         TestEnvironment::UserSpace => {
             // User space tests should not use kernel services directly
             Ok(())
-        },
+        }
     }
 }

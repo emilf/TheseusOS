@@ -1,7 +1,10 @@
 //! Mapping helpers moved out of `memory.rs` to isolate page-table construction
 //! and mapping policies.
 
-use super::{PageTable, PageTableEntry, PAGE_SIZE, PTE_PRESENT, PTE_WRITABLE, PTE_GLOBAL, PTE_PS, PTE_NO_EXEC, PTE_PCD, PTE_PWT, KERNEL_VIRTUAL_BASE, TEMP_HEAP_VIRTUAL_BASE, PHYS_OFFSET};
+use super::{
+    PageTable, PageTableEntry, KERNEL_VIRTUAL_BASE, PAGE_SIZE, PHYS_OFFSET, PTE_GLOBAL,
+    PTE_NO_EXEC, PTE_PCD, PTE_PRESENT, PTE_PS, PTE_PWT, PTE_WRITABLE, TEMP_HEAP_VIRTUAL_BASE,
+};
 use crate::memory::frame_allocator::BootFrameAllocator;
 use crate::memory::page_table_builder::PageTableBuilder;
 
@@ -17,7 +20,13 @@ pub unsafe fn identity_map_first_1gb_2mb_alloc(pml4: &mut PageTable, fa: &mut Bo
     let mut addr: u64 = 0;
     let mut count: u32 = 0;
     while addr < gigabyte {
-        if count < 4 { crate::display::kernel_write_line("    [vm] map2m"); theseus_shared::print_hex_u64_0xe9!(addr); crate::display::kernel_write_line(" -> "); theseus_shared::print_hex_u64_0xe9!(addr); crate::display::kernel_write_line("\n"); }
+        if count < 4 {
+            crate::display::kernel_write_line("    [vm] map2m");
+            theseus_shared::print_hex_u64_0xe9!(addr);
+            crate::display::kernel_write_line(" -> ");
+            theseus_shared::print_hex_u64_0xe9!(addr);
+            crate::display::kernel_write_line("\n");
+        }
         super::map_2mb_page_alloc(pml4, addr, addr, flags, fa);
         addr += two_mb;
         count += 1;
@@ -27,7 +36,13 @@ pub unsafe fn identity_map_first_1gb_2mb_alloc(pml4: &mut PageTable, fa: &mut Bo
 /// Map a single page using frame-backed table allocation
 /// Map a single 4KiB page into `pml4`, creating intermediate page-table
 /// levels as necessary using `fa`.
-pub unsafe fn map_page_alloc(pml4: &mut PageTable, virtual_addr: u64, physical_addr: u64, flags: u64, fa: &mut BootFrameAllocator) {
+pub unsafe fn map_page_alloc(
+    pml4: &mut PageTable,
+    virtual_addr: u64,
+    physical_addr: u64,
+    flags: u64,
+    fa: &mut BootFrameAllocator,
+) {
     let pml4_index = ((virtual_addr >> 39) & 0x1FF) as usize;
     let pdpt_index = ((virtual_addr >> 30) & 0x1FF) as usize;
     let pd_index = ((virtual_addr >> 21) & 0x1FF) as usize;
@@ -40,7 +55,13 @@ pub unsafe fn map_page_alloc(pml4: &mut PageTable, virtual_addr: u64, physical_a
 
 /// Map a single 2 MiB page using frame-backed table allocation
 /// Map a single 2MiB page by installing a PD entry with the PS bit set.
-pub unsafe fn map_2mb_page_alloc(pml4: &mut PageTable, virtual_addr: u64, physical_addr: u64, flags: u64, fa: &mut BootFrameAllocator) {
+pub unsafe fn map_2mb_page_alloc(
+    pml4: &mut PageTable,
+    virtual_addr: u64,
+    physical_addr: u64,
+    flags: u64,
+    fa: &mut BootFrameAllocator,
+) {
     let pml4_index = ((virtual_addr >> 39) & 0x1FF) as usize;
     let pdpt_index = ((virtual_addr >> 30) & 0x1FF) as usize;
     let pd_index = ((virtual_addr >> 21) & 0x1FF) as usize;
@@ -51,13 +72,21 @@ pub unsafe fn map_2mb_page_alloc(pml4: &mut PageTable, virtual_addr: u64, physic
 
 /// Map kernel HH using 4KiB pages
 /// Map the kernel's physical image range into the high-half using 4KiB pages.
-pub unsafe fn map_kernel_high_half_4k_alloc(pml4: &mut PageTable, handoff: &theseus_shared::handoff::Handoff, fa: &mut BootFrameAllocator) {
+pub unsafe fn map_kernel_high_half_4k_alloc(
+    pml4: &mut PageTable,
+    handoff: &theseus_shared::handoff::Handoff,
+    fa: &mut BootFrameAllocator,
+) {
     let phys_base = handoff.kernel_physical_base;
     let phys_size = handoff.kernel_image_size;
-    if phys_base == 0 || phys_size == 0 { return; }
+    if phys_base == 0 || phys_size == 0 {
+        return;
+    }
     const KERNEL_IMAGE_PAD: u64 = 8 * 1024 * 1024;
     let mut total_bytes = phys_size + KERNEL_IMAGE_PAD;
-    if total_bytes >= PAGE_SIZE as u64 { total_bytes -= PAGE_SIZE as u64; }
+    if total_bytes >= PAGE_SIZE as u64 {
+        total_bytes -= PAGE_SIZE as u64;
+    }
     let pages: u64 = (total_bytes + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64;
     let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL;
     let mut builder = PageTableBuilder::new(pml4, fa);
@@ -69,41 +98,70 @@ pub unsafe fn map_kernel_high_half_4k_alloc(pml4: &mut PageTable, handoff: &thes
 
 /// Map framebuffer
 /// Map the framebuffer into a fixed high-half virtual region.
-pub unsafe fn map_framebuffer_alloc(pml4: &mut PageTable, handoff: &theseus_shared::handoff::Handoff, fa: &mut BootFrameAllocator) {
+pub unsafe fn map_framebuffer_alloc(
+    pml4: &mut PageTable,
+    handoff: &theseus_shared::handoff::Handoff,
+    fa: &mut BootFrameAllocator,
+) {
     let fb_physical = handoff.gop_fb_base;
     let fb_virtual = 0xFFFFFFFF90000000u64;
     let fb_size = handoff.gop_fb_size;
     let pages = (fb_size + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64;
     let mut builder = PageTableBuilder::new(pml4, fa);
-    builder.map_range(fb_virtual, fb_physical, pages * PAGE_SIZE as u64, PTE_PRESENT | PTE_WRITABLE | PTE_NO_EXEC);
+    builder.map_range(
+        fb_virtual,
+        fb_physical,
+        pages * PAGE_SIZE as u64,
+        PTE_PRESENT | PTE_WRITABLE | PTE_NO_EXEC,
+    );
 }
 
 /// Map temporary heap
 /// Map the temporary heap provided by the bootloader into the fixed virtual
 /// region `TEMP_HEAP_VIRTUAL_BASE`.
-pub unsafe fn map_temporary_heap_alloc(pml4: &mut PageTable, handoff: &theseus_shared::handoff::Handoff, fa: &mut BootFrameAllocator) {
+pub unsafe fn map_temporary_heap_alloc(
+    pml4: &mut PageTable,
+    handoff: &theseus_shared::handoff::Handoff,
+    fa: &mut BootFrameAllocator,
+) {
     let heap_physical = handoff.temp_heap_base;
     let heap_virtual = TEMP_HEAP_VIRTUAL_BASE;
     let heap_size = handoff.temp_heap_size;
     let pages = (heap_size + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64;
     let mut builder = PageTableBuilder::new(pml4, fa);
-    builder.map_range(heap_virtual, heap_physical, pages * PAGE_SIZE as u64, PTE_PRESENT | PTE_WRITABLE | PTE_NO_EXEC);
+    builder.map_range(
+        heap_virtual,
+        heap_physical,
+        pages * PAGE_SIZE as u64,
+        PTE_PRESENT | PTE_WRITABLE | PTE_NO_EXEC,
+    );
 }
 
 /// Map a 1GiB linear physical mapping at PHYS_OFFSET using 2MiB pages
 /// Map a linear mapping of the first 1GiB of physical memory at `PHYS_OFFSET`
 /// using 2MiB pages.
-pub unsafe fn map_phys_offset_1gb_2mb_alloc(pml4: &mut PageTable, fa: &mut BootFrameAllocator) {
+pub unsafe fn map_phys_offset_range_2mb_alloc(
+    pml4: &mut PageTable,
+    fa: &mut BootFrameAllocator,
+    max_phys_addr: u64,
+) {
     let two_mb: u64 = 2 * 1024 * 1024;
-    let one_gb: u64 = 1024 * 1024 * 1024;
+    if max_phys_addr == 0 {
+        return;
+    }
     let mut offset: u64 = 0;
+    let limit = max_phys_addr.saturating_add(two_mb - 1) & !(two_mb - 1);
     let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL;
-    while offset < one_gb {
+    while offset < limit {
         let pa = offset;
         let va = PHYS_OFFSET + offset;
         map_2mb_page_alloc(pml4, va, pa, flags, fa);
-        offset += two_mb;
+        offset = offset.saturating_add(two_mb);
     }
+}
+
+pub unsafe fn map_phys_offset_1gb_2mb_alloc(pml4: &mut PageTable, fa: &mut BootFrameAllocator) {
+    map_phys_offset_range_2mb_alloc(pml4, fa, 1 << 30);
 }
 
 /// Map LAPIC MMIO region
@@ -115,7 +173,13 @@ pub unsafe fn map_lapic_mmio_alloc(pml4: &mut PageTable, fa: &mut BootFrameAlloc
     for i in 0..(LAPIC_SIZE / PAGE_SIZE as u64) {
         let virt_addr = LAPIC_VIRT_BASE + (i * PAGE_SIZE as u64);
         let phys_addr = LAPIC_PHYS_BASE + (i * PAGE_SIZE as u64);
-        map_page_alloc(pml4, virt_addr, phys_addr, PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_PCD | PTE_PWT, fa);
+        map_page_alloc(
+            pml4,
+            virt_addr,
+            phys_addr,
+            PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_PCD | PTE_PWT,
+            fa,
+        );
     }
 }
 
@@ -137,11 +201,17 @@ pub unsafe fn map_high_half_1gb_2mb(pml4: &mut PageTable, fa: &mut BootFrameAllo
 
 /// Map the kernel's physical image range into the high-half window using 2MiB pages
 /// Map the kernel image into the high-half using 2MiB pages when possible.
-pub unsafe fn map_kernel_high_half_2mb(pml4: &mut PageTable, handoff: &theseus_shared::handoff::Handoff, fa: &mut BootFrameAllocator) {
+pub unsafe fn map_kernel_high_half_2mb(
+    pml4: &mut PageTable,
+    handoff: &theseus_shared::handoff::Handoff,
+    fa: &mut BootFrameAllocator,
+) {
     let two_mb: u64 = 2 * 1024 * 1024;
     let phys_base = handoff.kernel_physical_base;
     let phys_size = handoff.kernel_image_size;
-    if phys_base == 0 || phys_size == 0 { return; }
+    if phys_base == 0 || phys_size == 0 {
+        return;
+    }
 
     let phys_start = phys_base & !(two_mb - 1);
     let phys_end = (phys_base + phys_size + two_mb - 1) & !(two_mb - 1);
@@ -167,7 +237,9 @@ pub unsafe fn map_existing_region_va_to_its_pa(
     flags: u64,
     fa: &mut BootFrameAllocator,
 ) {
-    if size == 0 { return; }
+    if size == 0 {
+        return;
+    }
     let pml4: &mut PageTable = &mut *(pml4_phys as *mut PageTable);
     let offset = start_va.wrapping_sub(KERNEL_VIRTUAL_BASE);
     let pa = handoff.kernel_physical_base.wrapping_add(offset);
@@ -180,7 +252,14 @@ pub unsafe fn map_existing_region_va_to_its_pa(
 /// page mappings. This helper centralizes page-size decisions in one place.
 /// Map a VA/PA range using a simple policy that prefers 2MiB pages when
 /// possible and falls back to 4KiB pages for unaligned/tail regions.
-pub unsafe fn map_range_with_policy(pml4: &mut PageTable, mut va: u64, mut pa: u64, mut size: u64, flags: u64, fa: &mut BootFrameAllocator) {
+pub unsafe fn map_range_with_policy(
+    pml4: &mut PageTable,
+    mut va: u64,
+    mut pa: u64,
+    mut size: u64,
+    flags: u64,
+    fa: &mut BootFrameAllocator,
+) {
     const TWO_MB: u64 = 2 * 1024 * 1024;
     // Handle leading unaligned portion to reach 2MiB alignment
     while size > 0 && (va & (TWO_MB - 1) != 0 || pa & (TWO_MB - 1) != 0) {
@@ -204,5 +283,3 @@ pub unsafe fn map_range_with_policy(pml4: &mut PageTable, mut va: u64, mut pa: u
         size = size.saturating_sub(PAGE_SIZE as u64);
     }
 }
-
-

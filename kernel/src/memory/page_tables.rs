@@ -1,7 +1,9 @@
 //! Page table types and helpers moved out of `memory.rs` to reduce file size
 //! and separate low-level table layout from mapping logic.
 
-use super::{PAGE_MASK, PAGE_SIZE, PTE_PRESENT, PTE_WRITABLE, phys_to_virt_pa, phys_offset_is_active};
+use super::{
+    phys_offset_is_active, phys_to_virt_pa, PAGE_MASK, PAGE_SIZE, PTE_PRESENT, PTE_WRITABLE,
+};
 use crate::memory::frame_allocator::BootFrameAllocator;
 use x86_64::structures::paging::FrameAllocator;
 
@@ -17,10 +19,18 @@ impl PageTableEntry {
     pub const fn new(physical_addr: u64, flags: u64) -> Self {
         Self(physical_addr & !PAGE_MASK | flags)
     }
-    pub fn physical_addr(&self) -> u64 { self.0 & !PAGE_MASK }
-    pub fn is_present(&self) -> bool { self.0 & PTE_PRESENT != 0 }
-    pub fn set_present(&mut self) { self.0 |= PTE_PRESENT; }
-    pub fn flags(&self) -> u64 { self.0 & PAGE_MASK }
+    pub fn physical_addr(&self) -> u64 {
+        self.0 & !PAGE_MASK
+    }
+    pub fn is_present(&self) -> bool {
+        self.0 & PTE_PRESENT != 0
+    }
+    pub fn set_present(&mut self) {
+        self.0 |= PTE_PRESENT;
+    }
+    pub fn flags(&self) -> u64 {
+        self.0 & PAGE_MASK
+    }
 }
 
 /// Page table (512 entries)
@@ -34,7 +44,9 @@ pub struct PageTable {
 
 impl PageTable {
     pub const fn new() -> Self {
-        Self { entries: [PageTableEntry(0); 512] }
+        Self {
+            entries: [PageTableEntry(0); 512],
+        }
     }
     pub fn get_entry(&mut self, index: usize) -> &mut PageTableEntry {
         &mut self.entries[index]
@@ -52,7 +64,10 @@ impl PageTable {
 /// This function manipulates raw page-table entries and returns a `'static`
 /// mutable reference into physical memory. Callers must ensure the returned
 /// pointer is used under the correct paging/translation context.
-pub unsafe fn get_or_create_page_table_alloc(entry: &mut PageTableEntry, fa: &mut BootFrameAllocator) -> &'static mut PageTable {
+pub unsafe fn get_or_create_page_table_alloc(
+    entry: &mut PageTableEntry,
+    fa: &mut BootFrameAllocator,
+) -> &'static mut PageTable {
     if entry.is_present() {
         let pa = entry.physical_addr();
         if phys_offset_is_active() {
@@ -87,5 +102,3 @@ pub unsafe fn get_or_create_page_table_alloc(entry: &mut PageTableEntry, fa: &mu
         }
     }
 }
-
-
