@@ -736,29 +736,29 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
     }
 
     // Initialize ACPI and driver subsystem
-    {
-        use crate::display::kernel_write_line;
-        use crate::drivers::system;
+    // {
+    //     use crate::display::kernel_write_line;
+    //     use crate::drivers::system;
 
-        match system::init() {
-            Ok(platform_info) => {
-                kernel_write_line("[driver] platform summary");
-                kernel_write_line("  CPUs: ");
-                theseus_shared::print_hex_u64_0xe9!(platform_info.cpu_count as u64);
-                kernel_write_line("");
-                kernel_write_line("  IO APICs: ");
-                theseus_shared::print_hex_u64_0xe9!(platform_info.io_apic_count as u64);
-                kernel_write_line("");
-                kernel_write_line("  Local APIC: 0x");
-                theseus_shared::print_hex_u64_0xe9!(platform_info.local_apic_address);
-                kernel_write_line("");
-            }
-            Err(e) => {
-                kernel_write_line("[driver] initialization skipped: ");
-                kernel_write_line(e);
-            }
-        }
-    }
+    //     match system::init() {
+    //         Ok(platform_info) => {
+    //             kernel_write_line("[driver] platform summary");
+    //             kernel_write_line("  CPUs: ");
+    //             theseus_shared::print_hex_u64_0xe9!(platform_info.cpu_count as u64);
+    //             kernel_write_line("");
+    //             kernel_write_line("  IO APICs: ");
+    //             theseus_shared::print_hex_u64_0xe9!(platform_info.io_apic_count as u64);
+    //             kernel_write_line("");
+    //             kernel_write_line("  Local APIC: 0x");
+    //             theseus_shared::print_hex_u64_0xe9!(platform_info.local_apic_address);
+    //             kernel_write_line("");
+    //         }
+    //         Err(e) => {
+    //             kernel_write_line("[driver] initialization skipped: ");
+    //             kernel_write_line(e);
+    //         }
+    //     }
+    // }
 
     crate::display::kernel_write_line("=== Kernel environment setup complete ===");
     crate::display::kernel_write_line("Kernel environment test completed successfully");
