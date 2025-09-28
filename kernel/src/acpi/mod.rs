@@ -9,7 +9,7 @@ use crate::memory::{
     current_pml4_phys, map_range_with_policy, phys_to_virt_pa, BootFrameAllocator, PageTable,
     PHYS_OFFSET, PTE_GLOBAL, PTE_NO_EXEC, PTE_PRESENT, PTE_WRITABLE,
 };
-use acpi::{AcpiHandler, AcpiTables, PhysicalMapping};
+use acpi::{sdt::SdtHeader, AcpiHandler, AcpiTables, PhysicalMapping};
 use core::ptr::NonNull;
 use spin::Mutex;
 
@@ -98,6 +98,30 @@ fn ensure_acpi_virtual_mapping(phys_addr: u64, size: usize) -> u64 {
     virt_base + offset
 }
 
+fn map_sdt_bytes(phys_addr: u64) -> (*const u8, usize) {
+    let header_ptr = ensure_acpi_virtual_mapping(phys_addr, core::mem::size_of::<SdtHeader>())
+        as *const SdtHeader;
+    let length = unsafe { (*header_ptr).length as usize };
+    let ptr = ensure_acpi_virtual_mapping(phys_addr, length) as *const u8;
+    (ptr, length)
+}
+
+fn ensure_all_mirrored<H: AcpiHandler>(tables: &AcpiTables<H>) {
+    for (_, sdt) in tables.sdts.iter() {
+        ensure_acpi_virtual_mapping(sdt.physical_address as u64, sdt.length as usize);
+    }
+    if let Some(dsdt) = &tables.dsdt {
+        let header_addr = dsdt.address as u64 - core::mem::size_of::<SdtHeader>() as u64;
+        let total_len = dsdt.length as usize + core::mem::size_of::<SdtHeader>();
+        ensure_acpi_virtual_mapping(header_addr, total_len);
+    }
+    for ssdt in &tables.ssdts {
+        let header_addr = ssdt.address as u64 - core::mem::size_of::<SdtHeader>() as u64;
+        let total_len = ssdt.length as usize + core::mem::size_of::<SdtHeader>();
+        ensure_acpi_virtual_mapping(header_addr, total_len);
+    }
+}
+
 /// Simple ACPI platform information
 #[derive(Debug, Clone)]
 pub struct PlatformInfo {
@@ -173,10 +197,10 @@ pub fn initialize_acpi(acpi_rsdp: u64) -> Result<PlatformInfo, &'static str> {
             return Err("Failed to parse ACPI tables");
         }
     };
-    // TODO(map-ACPI): tables currently rely on PHYS_OFFSET identity. Mirror key tables into
-    // dedicated high-half regions and tighten PHYS_OFFSET coverage afterwards.
 
     kernel_write_line("  [driver/acpi] tables parsed");
+
+    ensure_all_mirrored(&tables);
 
     // Extract platform information
     let platform_info = extract_platform_info(&tables)?;
@@ -298,8 +322,7 @@ fn extract_platform_info(
 /// * `Err(&'static str)` - If parsing failed
 #[allow(dead_code)]
 fn parse_rsdp(rsdp_address: u64) -> Result<u64, &'static str> {
-    let rsdp_virt = PHYS_OFFSET + rsdp_address;
-    let rsdp_ptr = rsdp_virt as *const u8;
+    let rsdp_ptr = ensure_acpi_virtual_mapping(rsdp_address, 64) as *const u8;
 
     // Verify RSDP signature "RSD PTR "
     unsafe {
@@ -359,15 +382,12 @@ fn parse_rsdp(rsdp_address: u64) -> Result<u64, &'static str> {
 /// * `Err(&'static str)` - If MADT not found
 #[allow(dead_code)]
 fn find_madt(rsdt_address: u64) -> Result<u64, &'static str> {
-    let rsdt_virt = PHYS_OFFSET + rsdt_address;
-    let rsdt_ptr = rsdt_virt as *const u8;
+    let (rsdt_ptr, rsdt_len) = map_sdt_bytes(rsdt_address);
 
     unsafe {
-        // Read RSDT header
         let signature = core::ptr::read_volatile(rsdt_ptr);
-        let is_xsdt = signature == b'X'; // XSDT vs RSDT
+        let is_xsdt = signature == b'X';
 
-        // Read entry count (offset 4)
         let entry_count = core::ptr::read_volatile((rsdt_ptr.add(4)) as *const u32);
         kernel_write_line(&alloc::format!(
             "  {} entries: {}",
@@ -375,22 +395,31 @@ fn find_madt(rsdt_address: u64) -> Result<u64, &'static str> {
             entry_count
         ));
 
-        // Search for MADT (signature "APIC")
-        for i in 0..entry_count {
-            let entry_offset = 36 + (i as usize * if is_xsdt { 8 } else { 4 });
+        let entry_width = if is_xsdt {
+            core::mem::size_of::<u64>()
+        } else {
+            core::mem::size_of::<u32>()
+        };
+        let entries_base = rsdt_ptr.add(core::mem::size_of::<SdtHeader>());
+        let available = rsdt_len.saturating_sub(core::mem::size_of::<SdtHeader>());
+
+        for i in 0..entry_count as usize {
+            let offset = i * entry_width;
+            if offset + entry_width > available {
+                break;
+            }
             let table_address = if is_xsdt {
-                core::ptr::read_volatile((rsdt_ptr.add(entry_offset)) as *const u64)
+                core::ptr::read_unaligned(entries_base.add(offset) as *const u64)
             } else {
-                core::ptr::read_volatile((rsdt_ptr.add(entry_offset)) as *const u32) as u64
+                core::ptr::read_unaligned(entries_base.add(offset) as *const u32) as u64
             };
 
             if table_address == 0 {
                 continue;
             }
 
-            // Check table signature
-            let table_virt = PHYS_OFFSET + table_address;
-            let table_ptr = table_virt as *const u8;
+            let table_ptr = ensure_acpi_virtual_mapping(table_address, core::mem::size_of::<u32>())
+                as *const u8;
             let mut sig_bytes = [0u8; 4];
             for j in 0..4 {
                 sig_bytes[j] = core::ptr::read_volatile(table_ptr.add(j));
@@ -418,11 +447,9 @@ fn find_madt(rsdt_address: u64) -> Result<u64, &'static str> {
 /// * `Err(&'static str)` - If parsing failed
 #[allow(dead_code)]
 fn parse_madt(madt_address: u64) -> Result<PlatformInfo, &'static str> {
-    let madt_virt = PHYS_OFFSET + madt_address;
-    let madt_ptr = madt_virt as *const u8;
+    let (madt_ptr, madt_len) = map_sdt_bytes(madt_address);
 
     unsafe {
-        // Verify MADT signature
         let mut sig_bytes = [0u8; 4];
         for i in 0..4 {
             sig_bytes[i] = core::ptr::read_volatile(madt_ptr.add(i));
@@ -432,7 +459,6 @@ fn parse_madt(madt_address: u64) -> Result<PlatformInfo, &'static str> {
             return Err("Invalid MADT signature");
         }
 
-        // Read MADT length and Local APIC address
         let madt_length = core::ptr::read_volatile((madt_ptr.add(4)) as *const u32);
         let local_apic_address = core::ptr::read_volatile((madt_ptr.add(36)) as *const u32) as u64;
 
@@ -445,31 +471,29 @@ fn parse_madt(madt_address: u64) -> Result<PlatformInfo, &'static str> {
         let mut platform_info = PlatformInfo::new();
         platform_info.local_apic_address = local_apic_address;
 
-        // Parse MADT entries
-        let mut offset = 44; // Start of entries
-        while offset < madt_length as usize {
-            let entry_type = core::ptr::read_volatile(madt_ptr.add(offset + 1));
-            let entry_length = core::ptr::read_volatile(madt_ptr.add(offset + 2));
-
+        let mut offset = core::mem::size_of::<SdtHeader>() + 8;
+        let madt_len = core::cmp::min(madt_len, madt_length as usize);
+        while offset < madt_len {
+            let entry_ptr = madt_ptr.add(offset);
+            let entry_type = core::ptr::read_volatile(entry_ptr);
+            let entry_length = core::ptr::read_volatile(entry_ptr.add(1)) as usize;
+            if entry_length < 2 {
+                break;
+            }
             match entry_type {
                 0 => {
-                    // Processor Local APIC
-                    let apic_id = core::ptr::read_volatile(madt_ptr.add(offset + 3));
-                    let flags = core::ptr::read_volatile(madt_ptr.add(offset + 4));
-
+                    let apic_id = core::ptr::read_volatile(entry_ptr.add(3));
+                    let flags = core::ptr::read_volatile(entry_ptr.add(4));
                     if (flags & 1) != 0 {
-                        // Processor enabled
                         platform_info.cpu_count += 1;
                         kernel_write_line(&alloc::format!("    CPU APIC ID: {}", apic_id));
                     }
                 }
                 1 => {
-                    // IO APIC
-                    let io_apic_id = core::ptr::read_volatile(madt_ptr.add(offset + 3));
+                    let io_apic_id = core::ptr::read_volatile(entry_ptr.add(3));
                     let io_apic_address =
-                        core::ptr::read_volatile((madt_ptr.add(offset + 4)) as *const u32) as u64;
-                    let gsi_base =
-                        core::ptr::read_volatile((madt_ptr.add(offset + 8)) as *const u32);
+                        core::ptr::read_volatile((entry_ptr.add(4)) as *const u32) as u64;
+                    let gsi_base = core::ptr::read_volatile((entry_ptr.add(8)) as *const u32);
 
                     platform_info.io_apic_count += 1;
                     platform_info.has_io_apic = true;
@@ -480,12 +504,9 @@ fn parse_madt(madt_address: u64) -> Result<PlatformInfo, &'static str> {
                         gsi_base
                     ));
                 }
-                _ => {
-                    // Other entry types - skip
-                }
+                _ => {}
             }
-
-            offset += entry_length as usize;
+            offset += entry_length;
         }
 
         kernel_write_line(&alloc::format!("  Total CPUs: {}", platform_info.cpu_count));
@@ -499,7 +520,7 @@ fn parse_madt(madt_address: u64) -> Result<PlatformInfo, &'static str> {
 }
 
 fn validate_rsdp_signature(rsdp_address: u64) -> Result<(), &'static str> {
-    let ptr = (PHYS_OFFSET + rsdp_address) as *const u8;
+    let ptr = ensure_acpi_virtual_mapping(rsdp_address, 8) as *const u8;
     for (idx, byte) in b"RSD PTR ".iter().enumerate() {
         let val = unsafe { core::ptr::read_volatile(ptr.add(idx)) };
         if val != *byte {
