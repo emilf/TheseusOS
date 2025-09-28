@@ -10,13 +10,17 @@ use crate::memory::{
     PHYS_OFFSET, PTE_GLOBAL, PTE_NO_EXEC, PTE_PRESENT, PTE_WRITABLE,
 };
 use acpi::{sdt::SdtHeader, AcpiHandler, AcpiTables, PhysicalMapping};
-use core::ptr::NonNull;
+use core::{
+    ptr::NonNull,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use spin::Mutex;
 
 /// ACPI submodule exports
 pub use madt::MadtInfo;
 const ACPI_WINDOW_BASE: u64 = 0xFFFF_FF80_0000_0000;
 static ACPI_MAPPING_LOCK: Mutex<()> = Mutex::new(());
+static PHYS_OFFSET_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// ACPI Handler for kernel environment
 ///
@@ -59,8 +63,20 @@ impl AcpiHandler for KernelAcpiHandler {
     }
 }
 
+#[derive(Default)]
+#[allow(dead_code)]
+struct MadtParseContext {
+    entry_phys: u64,
+    entry_len: u64,
+    offset: u64,
+}
+
 fn ensure_acpi_virtual_mapping(phys_addr: u64, size: usize) -> u64 {
     if !crate::memory::phys_offset_is_active() {
+        if !PHYS_OFFSET_FALLBACK_WARNED.load(Ordering::Relaxed) {
+            PHYS_OFFSET_FALLBACK_WARNED.store(true, Ordering::Relaxed);
+            kernel_write_line("  [acpi/debug] phys_offset inactive; falling back to PHYS_OFFSET+");
+        }
         return PHYS_OFFSET + phys_addr;
     }
 
@@ -70,14 +86,7 @@ fn ensure_acpi_virtual_mapping(phys_addr: u64, size: usize) -> u64 {
     let size_aligned = ((offset + size as u64 + page_size - 1) / page_size) * page_size;
     let virt_base = ACPI_WINDOW_BASE + phys_base;
 
-    if crate::memory::virt_range_has_flags(virt_base, size_aligned as usize, PTE_PRESENT) {
-        return virt_base + offset;
-    }
-
     let _guard = ACPI_MAPPING_LOCK.lock();
-    if crate::memory::virt_range_has_flags(virt_base, size_aligned as usize, PTE_PRESENT) {
-        return virt_base + offset;
-    }
 
     unsafe {
         let handoff = &*(handoff_phys_ptr() as *const theseus_shared::handoff::Handoff);
@@ -450,64 +459,84 @@ fn parse_madt(madt_address: u64) -> Result<PlatformInfo, &'static str> {
     let (madt_ptr, madt_len) = map_sdt_bytes(madt_address);
 
     unsafe {
-        let mut sig_bytes = [0u8; 4];
-        for i in 0..4 {
-            sig_bytes[i] = core::ptr::read_volatile(madt_ptr.add(i));
-        }
-
-        if &sig_bytes != b"APIC" {
-            return Err("Invalid MADT signature");
-        }
-
-        let madt_length = core::ptr::read_volatile((madt_ptr.add(4)) as *const u32);
-        let local_apic_address = core::ptr::read_volatile((madt_ptr.add(36)) as *const u32) as u64;
-
-        kernel_write_line(&alloc::format!("  MADT length: {} bytes", madt_length));
-        kernel_write_line(&alloc::format!(
-            "  Local APIC address: 0x{:016X}",
-            local_apic_address
-        ));
-
+        let madt_length = (*(madt_ptr as *const SdtHeader)).length as usize;
         let mut platform_info = PlatformInfo::new();
+
+        if madt_length < core::mem::size_of::<SdtHeader>() + 8 {
+            return Err("MADT too small");
+        }
+
+        let local_apic_address = core::ptr::read_unaligned(madt_ptr.add(36) as *const u32) as u64;
         platform_info.local_apic_address = local_apic_address;
 
         let mut offset = core::mem::size_of::<SdtHeader>() + 8;
-        let madt_len = core::cmp::min(madt_len, madt_length as usize);
-        while offset < madt_len {
+        let limit = core::cmp::min(madt_len, madt_length);
+        while offset + 2 <= limit {
             let entry_ptr = madt_ptr.add(offset);
-            let entry_type = core::ptr::read_volatile(entry_ptr);
-            let entry_length = core::ptr::read_volatile(entry_ptr.add(1)) as usize;
-            if entry_length < 2 {
+            let entry_type = core::ptr::read_unaligned(entry_ptr);
+            let entry_len = core::ptr::read_unaligned(entry_ptr.add(1)) as usize;
+            if entry_len < 2 || offset + entry_len > limit {
                 break;
             }
+
+            crate::interrupts::set_double_fault_context(
+                entry_ptr as u64,
+                entry_type as u64,
+                entry_len as u64,
+                [
+                    offset as u64,
+                    limit as u64,
+                    madt_address,
+                    local_apic_address,
+                    platform_info.cpu_count as u64,
+                    platform_info.io_apic_count as u64,
+                ],
+            );
+
             match entry_type {
                 0 => {
-                    let apic_id = core::ptr::read_volatile(entry_ptr.add(3));
-                    let flags = core::ptr::read_volatile(entry_ptr.add(4));
-                    if (flags & 1) != 0 {
+                    let flags = core::ptr::read_unaligned(entry_ptr.add(4) as *const u32);
+                    if flags & 1 != 0 {
                         platform_info.cpu_count += 1;
+                        let apic_id = core::ptr::read_unaligned(entry_ptr.add(3));
                         kernel_write_line(&alloc::format!("    CPU APIC ID: {}", apic_id));
                     }
                 }
                 1 => {
-                    let io_apic_id = core::ptr::read_volatile(entry_ptr.add(3));
-                    let io_apic_address =
-                        core::ptr::read_volatile((entry_ptr.add(4)) as *const u32) as u64;
-                    let gsi_base = core::ptr::read_volatile((entry_ptr.add(8)) as *const u32);
-
                     platform_info.io_apic_count += 1;
                     platform_info.has_io_apic = true;
+                    let io_apic_id = core::ptr::read_unaligned(entry_ptr.add(2));
+                    let io_apic_addr =
+                        core::ptr::read_unaligned(entry_ptr.add(4) as *const u32) as u64;
+                    let gsi_base = core::ptr::read_unaligned(entry_ptr.add(8) as *const u32);
                     kernel_write_line(&alloc::format!(
                         "    IO APIC ID: {}, Address: 0x{:016X}, GSI Base: {}",
                         io_apic_id,
-                        io_apic_address,
+                        io_apic_addr,
                         gsi_base
                     ));
                 }
+                5 => {
+                    let override_addr = core::ptr::read_unaligned(entry_ptr.add(4) as *const u64);
+                    platform_info.local_apic_address = override_addr;
+                }
+                2 => {
+                    platform_info.has_legacy_pic = true;
+                }
                 _ => {}
             }
-            offset += entry_length;
+
+            offset += entry_len;
         }
+
+        if platform_info.cpu_count == 0 {
+            platform_info.cpu_count = 1;
+        }
+
+        kernel_write_line(&alloc::format!(
+            "  Local APIC address: 0x{:016X}",
+            platform_info.local_apic_address
+        ));
 
         kernel_write_line(&alloc::format!("  Total CPUs: {}", platform_info.cpu_count));
         kernel_write_line(&alloc::format!(

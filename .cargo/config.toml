@@ -1,2 +1,5 @@
 [target.x86_64-unknown-none]
 rustflags = ["-C", "link-arg=-Tlinker.ld"]
+[profile.release]
+debug = true
+strip = false

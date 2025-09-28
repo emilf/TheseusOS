@@ -109,6 +109,36 @@ pub struct Handoff {
     pub boot_services_exited: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HardwareDevice {
+    pub device_type: u32,
+    pub address: Option<u64>,
+    pub irq: Option<u32>,
+}
+
+impl HardwareDevice {
+    pub fn from_bytes(buffer: &[u8], index: usize) -> Option<Self> {
+        let entry_size = core::mem::size_of::<Self>();
+        let start = index.checked_mul(entry_size)?;
+        let end = start.checked_add(entry_size)?;
+        if end > buffer.len() {
+            return None;
+        }
+        let ptr = buffer[start..end].as_ptr() as *const Self;
+        unsafe { Some(core::ptr::read_unaligned(ptr)) }
+    }
+
+    pub fn device_type_str(&self) -> &'static str {
+        match self.device_type {
+            0 => "unknown",
+            1 => "cpu",
+            2 => "ioapic",
+            _ => "device",
+        }
+    }
+}
+
 /// Static storage for handoff data
 ///
 /// # Safety

@@ -54,7 +54,32 @@ static IDT_X86: SpinOnce<InterruptDescriptorTable> = SpinOnce::new();
 const APIC_TIMER_VECTOR: u8 = 0x40; // 64
 const APIC_ERROR_VECTOR: u8 = 0xFE; // APIC error interrupts
 static TIMER_TICKS: AtomicU32 = AtomicU32::new(0);
+pub static mut DOUBLE_FAULT_CONTEXT: Option<DoubleFaultContext> = None;
 
+#[derive(Copy, Clone)]
+pub struct DoubleFaultContext {
+    rip: u64,
+    cr2: u64,
+    rsp: u64,
+    stack: [u64; 6],
+}
+
+impl DoubleFaultContext {
+    pub const fn new(rip: u64, cr2: u64, rsp: u64, stack: [u64; 6]) -> Self {
+        Self {
+            rip,
+            cr2,
+            rsp,
+            stack,
+        }
+    }
+}
+
+pub fn set_double_fault_context(rip: u64, cr2: u64, rsp: u64, stack: [u64; 6]) {
+    unsafe {
+        DOUBLE_FAULT_CONTEXT = Some(DoubleFaultContext::new(rip, cr2, rsp, stack));
+    }
+}
 /// Global handoff pointer for timer interrupt access
 static mut HANDOFF_FOR_TIMER: Option<&'static theseus_shared::handoff::Handoff> = None;
 
@@ -116,14 +141,8 @@ extern "C" fn pf_report(ec: u64, rip: u64, cs: u64, rflags: u64, cr2: u64, rsp: 
         if !did_hins {
             print_str_0xe9("(skip)");
         }
-        // Dump top of fault stack (original RSP)
-        print_str_0xe9(" STK:");
-        for i in 0..6u64 {
-            let val = core::ptr::read_volatile((rsp + i * 8) as *const u64);
-            out_char_0xe9(b' ');
-            print_hex_u64_0xe9(val);
-        }
-        out_char_0xe9(b'\n');
+        // Stack dump disabled (see handler_pf below)
+        print_str_0xe9("\n");
     }
 }
 
@@ -378,32 +397,40 @@ extern "x86-interrupt" fn handler_pf(stack: InterruptStackFrame, code: PageFault
         print_str_0xe9(" RFLAGS=");
         print_hex_u64_0xe9(stack.cpu_flags);
         print_str_0xe9(" RSP=");
-        print_hex_u64_0xe9(stack.stack_pointer.as_u64());
-        print_str_0xe9(" SS=");
-        print_hex_u64_0xe9(stack.stack_segment as u64);
+        let rsp = stack.stack_pointer.as_u64();
+        print_hex_u64_0xe9(rsp);
+        print_str_0xe9(" STK:");
+        for i in 0..6u64 {
+            let val = core::ptr::read_volatile((rsp + i * 8) as *const u64);
+            out_char_0xe9(b' ');
+            print_hex_u64_0xe9(val);
+        }
         out_char_0xe9(b'\n');
-        theseus_shared::qemu_exit_ok!();
     }
     loop {
         x86_64::instructions::hlt();
     }
 }
 
-extern "x86-interrupt" fn handler_df(stack: InterruptStackFrame, code: u64) -> ! {
+extern "x86-interrupt" fn handler_df(_stack: InterruptStackFrame, _code: u64) -> ! {
     unsafe {
-        print_str_0xe9("DF EC=");
-        print_hex_u64_0xe9(code);
-        print_str_0xe9(" RIP=");
-        print_hex_u64_0xe9(stack.instruction_pointer.as_u64());
-        print_str_0xe9(" CS=");
-        print_hex_u64_0xe9(stack.code_segment as u64);
-        print_str_0xe9(" RFLAGS=");
-        print_hex_u64_0xe9(stack.cpu_flags);
-        print_str_0xe9(" RSP=");
-        print_hex_u64_0xe9(stack.stack_pointer.as_u64());
-        print_str_0xe9(" SS=");
-        print_hex_u64_0xe9(stack.stack_segment as u64);
-        print_str_0xe9("\n");
+        print_str_0xe9("DF at");
+        if let Some(ctx) = DOUBLE_FAULT_CONTEXT {
+            print_str_0xe9(" RIP=");
+            print_hex_u64_0xe9(ctx.rip);
+            print_str_0xe9(" CR2=");
+            print_hex_u64_0xe9(ctx.cr2);
+            print_str_0xe9(" RSP=");
+            print_hex_u64_0xe9(ctx.rsp);
+            print_str_0xe9(" STK:");
+            for word in ctx.stack.iter() {
+                out_char_0xe9(b' ');
+                print_hex_u64_0xe9(*word);
+            }
+            out_char_0xe9(b'\n');
+        } else {
+            print_str_0xe9(" (no context)\n");
+        }
     }
     theseus_shared::qemu_exit_ok!();
     loop {
