@@ -33,6 +33,78 @@ pub use display::kernel_write_line;
 pub use environment::setup_kernel_environment;
 pub use handoff::{set_handoff_pointers, validate_handoff};
 
+/// Unified kernel entry point for single-binary boot (UEFI + Kernel)
+///
+/// This function mirrors the previous `kernel_main` that lived in the separate
+/// kernel binary. It is now exported from the kernel library so the UEFI
+/// bootloader can call into it directly after ExitBootServices.
+#[no_mangle]
+pub extern "C" fn kernel_entry(handoff_addr: u64) -> ! {
+    // Early marker to confirm we reached kernel code (no allocations, raw port I/O)
+    unsafe {
+        core::arch::asm!(
+            "mov dx, 0xe9",
+            "mov al, 'K'",
+            "out dx, al",
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    crate::display::kernel_write_line("=== TheseusOS Kernel Starting ===");
+    crate::display::kernel_write_line("Kernel entry point reached successfully");
+
+    // Initialize heap from memory map (deferred to high-half later)
+    crate::display::kernel_write_line("Initializing heap from memory map...");
+    crate::allocator::initialize_heap_from_handoff(handoff_addr);
+    crate::handoff::set_handoff_pointers(handoff_addr);
+
+    crate::display::kernel_write_line("Handoff structure address received");
+
+    // Access the handoff structure from the passed address
+    unsafe {
+        if handoff_addr != 0 {
+            let handoff_ptr = handoff_addr as *const theseus_shared::handoff::Handoff;
+            let handoff = &*handoff_ptr;
+
+            if handoff.size > 0 {
+                crate::display::kernel_write_line("Handoff structure found");
+
+                // Dump handoff structure only if verbose output is enabled
+                if crate::config::VERBOSE_KERNEL_OUTPUT {
+                    crate::display::dump_handoff(handoff, false);
+                }
+
+                // Sanity-check critical fields to fail-fast on malformed handoff
+                match crate::handoff::validate_handoff(handoff) {
+                    Ok(()) => crate::display::kernel_write_line("Handoff validation passed"),
+                    Err(msg) => {
+                        crate::display::kernel_write_line("Handoff validation failed: ");
+                        theseus_shared::qemu_println!(msg);
+                        panic!("Invalid handoff structure");
+                    }
+                }
+
+                // Set up handoff for timer interrupt access
+                crate::interrupts::set_handoff_for_timer(handoff);
+
+                // Set up complete kernel environment (boot services have been exited)
+                crate::environment::setup_kernel_environment(
+                    handoff,
+                    handoff.kernel_physical_base,
+                    crate::config::VERBOSE_KERNEL_OUTPUT,
+                );
+            } else {
+                crate::display::kernel_write_line("ERROR: Handoff structure has invalid size");
+            }
+        } else {
+            crate::display::kernel_write_line("ERROR: Handoff structure address is null");
+        }
+    }
+
+    // If we reach here, it means setup_kernel_environment returned (which shouldn't happen)
+    crate::display::kernel_write_line("ERROR: setup_kernel_environment returned unexpectedly");
+    loop {}
+}
+
 /// Custom test runner for integration tests
 ///
 /// This function is called by Rust's custom test framework to run all test cases.

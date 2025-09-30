@@ -20,6 +20,30 @@ use crate::system_info::*;
 use alloc::format;
 use theseus_shared::handoff::{Handoff, HANDOFF};
 
+/// Resolve kernel image base/size using UEFI LoadedImage information.
+/// For a single-binary boot, we treat the bootloader image as the kernel image.
+pub fn set_kernel_image_from_loaded_image() {
+    // Do not touch UEFI protocols here; compute fields from our own entry symbol.
+    theseus_shared::qemu_println!("Setting kernel image fields (single binary, no UEFI)");
+    let entry_low = theseus_kernel::kernel_entry as usize as u64;
+    let align_2mb: u64 = 2 * 1024 * 1024;
+    let img_base = entry_low & !(align_2mb - 1);
+    let aligned_size = 16 * 1024 * 1024; // 16 MiB span to cover code+data
+    let offset_within_image = entry_low.saturating_sub(img_base);
+
+    unsafe {
+        HANDOFF.kernel_physical_base = img_base;
+        HANDOFF.kernel_image_size = aligned_size;
+        HANDOFF.kernel_virtual_base = 0xFFFFFFFF80000000;
+        HANDOFF.kernel_virtual_entry = if offset_within_image < aligned_size {
+            HANDOFF.kernel_virtual_base.wrapping_add(offset_within_image)
+        } else {
+            HANDOFF.kernel_virtual_base
+        };
+    }
+    theseus_shared::qemu_println!("✓ Kernel image fields set (single binary)");
+}
+
 /// Initialize the UEFI environment and output driver
 pub fn initialize_uefi_environment() -> Result<(), Status> {
     // Initialize UEFI logger
@@ -390,7 +414,17 @@ pub fn finalize_handoff_structure() {
 /// - Assumes the kernel is properly loaded at the expected address
 /// - Performs operations that cannot be undone
 /// - Accesses memory after exit_boot_services
-pub unsafe fn jump_to_kernel_with_handoff(physical_entry_point: u64, handoff_ptr: *const Handoff) {
+pub unsafe fn jump_to_kernel_with_handoff(_physical_entry_point: u64, handoff_ptr: *const Handoff) {
+    write_line("[jump] entering jump_to_kernel_with_handoff");
+    // Marker: 'J' before handoff copy
+    unsafe {
+        core::arch::asm!(
+            "mov dx, 0xe9",
+            "mov al, 'J'",
+            "out dx, al",
+            options(nomem, nostack, preserves_flags)
+        );
+    }
     // Copy handoff into a persistent LOADER_DATA buffer and pass its physical address
     let handoff_size = core::mem::size_of::<Handoff>() as u64;
     write_line(&format!(
@@ -430,22 +464,43 @@ pub unsafe fn jump_to_kernel_with_handoff(physical_entry_point: u64, handoff_ptr
 
     // Exit boot services before transferring control to the kernel
     write_line("Exiting boot services before kernel handoff...");
+    // Marker: 'B' before ExitBootServices
+    unsafe {
+        core::arch::asm!(
+            "mov dx, 0xe9",
+            "mov al, 'B'",
+            "out dx, al",
+            options(nomem, nostack, preserves_flags)
+        );
+    }
     let _memory_map = unsafe { uefi::boot::exit_boot_services(None) };
+    // Marker: 'S' after ExitBootServices
+    unsafe {
+        core::arch::asm!(
+            "mov dx, 0xe9",
+            "mov al, 'S'",
+            "out dx, al",
+            options(nomem, nostack, preserves_flags)
+        );
+    }
 
     // Mark boot services exited in the copied handoff
     unsafe {
         (*(handoff_phys as *mut Handoff)).boot_services_exited = 1;
     }
 
-    // Do NOT log after ExitBootServices; firmware services are gone
-    // Jump to the kernel entry point using System V ABI: first argument in RDI
+    // Call kernel directly from the same binary
+    let entry: extern "C" fn(u64) -> ! = theseus_kernel::kernel_entry;
+    let arg = handoff_phys as u64;
+    let _ = arg; // keep name for clarity
+    // Marker: 'C' before calling kernel
     unsafe {
         core::arch::asm!(
-            "mov rdi, {handoff}",  // Load handoff structure address into RDI (first argument)
-            "jmp {entry}",         // Jump to kernel entry point
-            handoff = in(reg) handoff_phys as u64,
-            entry = in(reg) physical_entry_point,
-            options(noreturn)
+            "mov dx, 0xe9",
+            "mov al, 'C'",
+            "out dx, al",
+            options(nomem, nostack, preserves_flags)
         );
     }
+    entry(handoff_phys as u64)
 }

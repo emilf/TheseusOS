@@ -13,7 +13,9 @@ use linked_list_allocator::LockedHeap;
 ///
 /// This is the kernel's global allocator that handles all dynamic memory allocation.
 /// It uses a linked list allocator with a mutex for thread safety.
-#[global_allocator]
+// Global allocator is provided by the UEFI app at the binary level in the
+// single-binary configuration. We keep a linked allocator instance here for
+// future post-UEFI usage but do not mark it as the global allocator.
 pub(crate) static ALLOCATOR_LINKED: LockedHeap = LockedHeap::empty();
 
 /// Initialize the global allocator based on bootloader-provided handoff info.

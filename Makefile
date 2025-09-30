@@ -34,16 +34,15 @@ build-bootloader:
 	cargo build --package $(BOOTLOADER_PROJECT) --target $(BOOTLOADER_TARGET) $(CARGO_PROFILE_FLAG) $(if $(FEATURES),--features $(FEATURES),)
 
 build-kernel:
-	cargo build --package $(KERNEL_PROJECT) --target $(KERNEL_TARGET) $(CARGO_PROFILE_FLAG) $(if $(FEATURES),--features $(FEATURES),)
+	cargo build --lib --package $(KERNEL_PROJECT) --target $(KERNEL_TARGET) $(CARGO_PROFILE_FLAG) $(if $(FEATURES),--features $(FEATURES),)
 
 esp: $(EFI_OUTPUT)
 
-$(EFI_OUTPUT): $(EFI_BIN) $(KERNEL_BIN)
+$(EFI_OUTPUT): $(EFI_BIN)
 	@echo "Creating EFI System Partition..."
 	@rm -rf $(ESP_DIR)
 	@mkdir -p $(EFI_DIR)
 	@cp $(EFI_BIN) $(EFI_OUTPUT)
-	@cp $(KERNEL_BIN) $(EFI_DIR)/kernel.efi
 	@# Create a proper GPT disk image with EFI System Partition
 	@echo "Creating GPT disk image with EFI System Partition..."
 	@dd if=/dev/zero of=$(ESP_DIR)/disk.img bs=1M count=64 2>/dev/null
@@ -59,7 +58,6 @@ $(EFI_OUTPUT): $(EFI_BIN) $(KERNEL_BIN)
 	@mmd -i $(ESP_DIR)/disk.img ::EFI/BOOT 2>/dev/null || true
 	@# Copy the bootloader and kernel
 	@mcopy -i $(ESP_DIR)/disk.img -s $(EFI_BIN) ::EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
-	@mcopy -i $(ESP_DIR)/disk.img -s $(KERNEL_BIN) ::kernel.efi 2>/dev/null || true
 	@echo "✓ Created GPT disk image with EFI System Partition"
 
 # Automatically copy BIOS files if needed

@@ -85,27 +85,7 @@ use drivers::manager::{write_line, OutputDriver};
 use uefi::Status;
 // (no additional shared imports)
 
-/// Panic handler for bootloader
-#[cfg(not(test))]
-#[panic_handler]
-fn panic_handler(_panic_info: &core::panic::PanicInfo) -> ! {
-    // Output panic information to QEMU debug port (avoiding allocator)
-    const PANIC_PREFIX: &[u8] = b"BOOTLOADER PANIC: ";
-
-    // Write panic prefix
-    theseus_shared::qemu_print_bytes!(PANIC_PREFIX);
-
-    // Output a generic panic message (we can't easily format the actual message without allocator)
-    const PANIC_MSG: &[u8] = b"Panic occurred";
-    theseus_shared::qemu_print_bytes!(PANIC_MSG);
-
-    theseus_shared::qemu_print_bytes!(b"\n");
-
-    // Exit QEMU with error
-    theseus_shared::qemu_exit_error!();
-
-    loop {}
-}
+// Use kernel's panic handler to avoid duplicate lang item
 
 /// Allocate temporary heap memory for kernel setup
 ///
@@ -210,7 +190,7 @@ fn efi_main() -> Status {
 
     // Collect all system information
     collect_graphics_info(VERBOSE_OUTPUT);
-    let memory_map = collect_memory_map(VERBOSE_OUTPUT);
+    let _memory_map = collect_memory_map(VERBOSE_OUTPUT);
     collect_acpi_info(VERBOSE_OUTPUT);
     collect_system_info(VERBOSE_OUTPUT);
     collect_hardware_inventory_info(VERBOSE_OUTPUT);
@@ -222,57 +202,38 @@ fn efi_main() -> Status {
     // Finalize handoff structure
     finalize_handoff_structure();
 
-    // Load kernel and jump to it
-    // The kernel will handle its own boot services exit and virtual memory setup
-    if let Some(mmap) = &memory_map {
-        write_line("About to call load_kernel_binary...");
-        match crate::kernel_loader::load_kernel_binary(mmap) {
-            Ok((
-                kernel_physical_base,
-                kernel_physical_entry,
-                kernel_virtual_entry,
-                kernel_image_size,
-            )) => {
-                // Update the handoff structure with the actual kernel information
-                unsafe {
-                    HANDOFF.kernel_physical_base = kernel_physical_base;
-                    HANDOFF.kernel_virtual_entry = kernel_virtual_entry;
-                    HANDOFF.kernel_virtual_base = 0xffffffff80000000; // Virtual base
-                    let aligned_img_size = (kernel_image_size + 0xFFF) & !0xFFF;
-                    HANDOFF.kernel_image_size = aligned_img_size;
-                    HANDOFF.boot_services_exited = 0; // set just before handoff
-
-                    // Ensure handoff structure is properly initialized
-                    HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
-                    write_line(&format!(
-                        "Handoff structure size set to: {} bytes",
-                        core::mem::size_of::<Handoff>()
-                    ));
-                    write_line(&format!(
-                        "Kernel image span: {} -> aligned to {} bytes",
-                        kernel_image_size, aligned_img_size
-                    ));
-                }
-
-                write_line(
-                    "✓ All system information collected, preparing to exit boot services...",
-                );
-
-                // Jump to kernel with handoff structure address
-                unsafe {
-                    crate::boot_sequence::jump_to_kernel_with_handoff(
-                        kernel_physical_entry,
-                        &raw const HANDOFF as *const Handoff,
-                    );
-                }
-            }
-            Err(status) => {
-                write_line(&format!("✗ Failed to load kernel: {:?}", status));
-                write_line("Cannot proceed with kernel handoff");
-            }
+    // Marker before kernel image field setup
+    unsafe { core::arch::asm!("mov dx, 0xe9; mov al, 'M'; out dx, al", options(nomem, nostack, preserves_flags)); }
+    // Single-binary path: set kernel fields from LoadedImage, then enter kernel
+    boot_sequence::set_kernel_image_from_loaded_image();
+    // Ensure temp heap does not overlap kernel image in physical memory
+    unsafe {
+        let heap_start = HANDOFF.temp_heap_base;
+        let heap_end = heap_start.saturating_add(HANDOFF.temp_heap_size);
+        let img_start = HANDOFF.kernel_physical_base;
+        let img_end = img_start.saturating_add(HANDOFF.kernel_image_size);
+        let overlaps = !(heap_end <= img_start || heap_start >= img_end);
+        if overlaps {
+            // Disable temp heap to satisfy kernel validation
+            HANDOFF.temp_heap_base = 0;
+            HANDOFF.temp_heap_size = 0;
+            write_line("⚠ Temp heap overlapped kernel image; disabled temp heap in handoff");
         }
-    } else {
-        write_line("✗ No memory map available for kernel loading");
+    }
+    // Raw byte marker 'Z' right after field setup
+    unsafe { core::arch::asm!("mov dx, 0xe9; mov al, 'Z'; out dx, al", options(nomem, nostack, preserves_flags)); }
+    // Marker after kernel image field setup
+    unsafe { core::arch::asm!("mov dx, 0xe9; mov al, 'N'; out dx, al", options(nomem, nostack, preserves_flags)); }
+
+    write_line("✓ All system information collected, preparing to exit boot services...");
+
+    // Marker before jump
+    unsafe { core::arch::asm!("mov dx, 0xe9; mov al, 'P'; out dx, al", options(nomem, nostack, preserves_flags)); }
+    unsafe {
+        crate::boot_sequence::jump_to_kernel_with_handoff(
+            0,
+            &raw const HANDOFF as *const Handoff,
+        );
     }
 
     // If we reach here, it means there was an error in the handoff process

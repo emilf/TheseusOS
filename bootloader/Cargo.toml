@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 theseus-shared = { path = "../shared" }
+theseus-kernel = { path = "../kernel" }
 uefi = { workspace = true }
 log = { workspace = true }
 acpi = { workspace = true }
