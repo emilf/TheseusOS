@@ -174,14 +174,16 @@ make PROFILE=debug debug
 
 ### Where artifacts are placed
 
-- UEFI bootloader: `target/x86_64-unknown-uefi/(release|debug)/theseus_efi.efi`
-- Kernel binary: `target/x86_64-unknown-none/(release|debug)/kernel`
-- Test binaries (when running test targets) are placed in `target/x86_64-unknown-none/(release|debug)/deps` and the Makefile finds and copies the appropriate test binary into the ESP when creating test disk images.
+- Unified binary: `target/x86_64-unknown-uefi/(release|debug)/theseus_efi.efi`
+- Kernel library: `target/x86_64-unknown-none/(release|debug)/libtheseus_kernel.rlib` (linked into bootloader)
+- Test binaries: `target/x86_64-unknown-none/(release|debug)/deps/*` (copied to ESP by test targets)
 
 ### Disk image / ESP creation
 
-- The `esp` target (and helper functions used by test targets) create a FAT32-formatted disk image with a proper GPT table and an EFI System Partition. The Makefile copies the UEFI bootloader to `EFI/BOOT/BOOTX64.EFI` and the kernel to `kernel.efi` inside the ESP image.
-- When you build with `PROFILE=debug`, the debug artifacts from `target/.../debug` are the files that will be copied into the disk image.
+- The `esp` target creates a FAT32-formatted disk image with proper GPT table and EFI System Partition
+- The Makefile copies the unified `BOOTX64.EFI` binary to `EFI/BOOT/BOOTX64.EFI`
+- When you build with `PROFILE=debug`, the debug artifact from `target/x86_64-unknown-uefi/debug` is copied
+- No separate kernel file needed; everything is in `BOOTX64.EFI`
 
 ### OVMF / Firmware handling
 
@@ -204,7 +206,7 @@ You can also start QEMU manually with the `startQemu.sh` helper and pass `QEMU_O
 ### Troubleshooting / common issues
 
 - "Missing OVMF files": install `edk2-ovmf` / `ovmf` or copy your system's OVMF files into the repository `OVMF/` directory.
-- "Kernel not found in ESP": ensure you built the kernel for the correct `PROFILE` and target; `make PROFILE=debug build esp` will use debug artifacts.
+- "Build failures": Run `make clean` then rebuild; ensure rust toolchain is up to date
 - "QEMU can't find KVM": on Linux ensure you have KVM enabled and the user has permission; the Makefile falls back to TCG if KVM isn't available.
 
 ### Where to look next

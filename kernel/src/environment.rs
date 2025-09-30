@@ -813,28 +813,50 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
     }
 }
 
-/// Set up complete kernel environment (correct order)
+/// Set up complete kernel environment in single-binary boot
 ///
-/// This function performs the setup sequence in the correct order to establish kernel control:
-/// 1. Exit boot services FIRST (to prevent firmware interference)
-/// 2. Disable all interrupts including NMI
-/// 3. Set up GDT and TSS
-/// 4. Configure control registers
-/// 5. Set up CPU features
-/// 6. Test basic operations
+/// This function performs the complete kernel initialization sequence after the
+/// UEFI bootloader has exited boot services and called into the kernel library.
+///
+/// ## Initialization Sequence
+///
+/// 1. **Disable all interrupts** (including NMI) to prevent firmware interference
+/// 2. **Set up GDT and TSS** for proper segmentation and task state
+/// 3. **Configure control registers** (CR0, CR4) for long mode and paging
+/// 4. **Establish virtual memory**:
+///    - Create identity mapping for low 1 GiB
+///    - Map kernel to higher-half (0xFFFFFFFF80000000)
+///    - Map framebuffer to fixed virtual address
+///    - Map PHYS_OFFSET linear mapping (0xFFFF800000000000)
+///    - Map LAPIC MMIO region
+/// 5. **Switch to new page tables** (load CR3)
+/// 6. **Install IDT** for exception and interrupt handling
+/// 7. **Jump to higher-half** virtual addresses
+/// 8. **Initialize permanent heap** at KERNEL_HEAP_BASE
+/// 9. **Enable CPU features** (SSE, MSRs)
+/// 10. **Configure LAPIC timer** for interrupt testing and animation
+/// 11. **Set up framebuffer** and draw initial pattern
+/// 12. **Enter idle loop** or exit based on kernel configuration
+///
+/// # Arguments
+///
+/// * `_handoff` - Reference to validated handoff structure from bootloader
+/// * `kernel_physical_base` - Physical base address where kernel image is loaded
+/// * `verbose` - Enable detailed debug output during initialization
 ///
 /// # Safety
 ///
 /// This function is unsafe because it:
-/// - Modifies global system state (interrupts, GDT, control registers)
-/// - Performs memory management operations
-/// - Assumes the handoff structure is valid and properly initialized
+/// - Modifies global system state (interrupts, GDT, control registers, page tables)
+/// - Performs direct memory manipulation and MMIO access
+/// - Assumes handoff structure is valid and boot services are exited
+/// - Switches stack and jumps to higher-half addresses
 ///
 /// The caller must ensure:
-/// - The handoff structure contains valid system information
-/// - No other code is running concurrently
-/// - The kernel physical base address is correct
-/// - UEFI boot services have been exited
+/// - Handoff structure is properly validated
+/// - UEFI boot services have been exited (no firmware calls after this)
+/// - Kernel physical base address is accurate
+/// - No concurrent execution (single-threaded environment)
 pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64, verbose: bool) {
     crate::display::kernel_write_line("=== Setting up Kernel Environment ===");
 

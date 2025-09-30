@@ -393,7 +393,7 @@ debug_hex!("expected", crate::gdt::KERNEL_CS as u64);
 **Current Issues**:
 ```rust
 // In bootloader
-pub fn find_kernel_file() -> Result<RegularFile, Status> {
+pub fn allocate_memory(size: u64, memory_type: MemoryType) -> MemoryResult<MemoryRegion> {
     // Returns generic UEFI status without context
 }
 ```
@@ -401,21 +401,20 @@ pub fn find_kernel_file() -> Result<RegularFile, Status> {
 **Recommended Solution**:
 ```rust
 #[derive(Debug)]
-pub enum KernelLoadError {
-    FileNotFound(String),
-    InvalidElf(String),
-    InsufficientMemory { required: u64, available: u64 },
+pub enum MemoryError {
+    AllocationFailed { size: u64, available: u64 },
+    OutOfMemory,
+    OverlapDetected { requested: Range<u64>, forbidden: Range<u64> },
     UefiError(Status),
-    IoError(String),
 }
 
-impl From<Status> for KernelLoadError {
+impl From<Status> for MemoryError {
     fn from(status: Status) -> Self {
-        KernelLoadError::UefiError(status)
+        MemoryError::UefiError(status)
     }
 }
 
-pub fn find_kernel_file() -> Result<RegularFile, KernelLoadError> {
+pub fn allocate_memory(size: u64, memory_type: MemoryType) -> Result<MemoryRegion, MemoryError> {
     // Return specific error types with context
 }
 ```

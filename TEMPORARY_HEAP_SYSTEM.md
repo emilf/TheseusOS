@@ -1,4 +1,4 @@
-# Temporary Heap System for Kernel Setup
+# Temporary Heap System for Single-Binary Boot
 
 ## What is a "Heap"?
 
@@ -6,26 +6,30 @@ In programming, a **heap** is a region of memory where programs can dynamically 
 
 ## Why Do We Need a Temporary Heap?
 
-When the kernel starts up, it needs memory to work with, but it hasn't set up its own memory management system yet. It's like trying to organize a room when you don't have any shelves or storage containers - you need some basic storage first!
+In the single-binary architecture, we use UEFI's allocator during the bootloader phase. However, once we establish higher-half virtual memory mapping, we need a kernel-controlled heap region. The temporary heap bridges this transition:
 
-The temporary heap system solves this by:
-- Giving the kernel a "starter" memory region to use
-- Avoiding complex memory setup during early kernel initialization
-- Providing a safe, pre-allocated memory area
+- Gives the kernel a mapped memory region to use early on
+- Avoids complex heap setup during initial higher-half transition
+- Provides a safe, pre-allocated memory area that survives ExitBootServices
+- Allows testing heap operations before permanent heap is ready
 
-## How It Works
+## How It Works in Single-Binary Boot
 
-### Bootloader Side (The Memory Allocator)
-- **What it does**: Asks UEFI for 1MB of safe memory to give to the kernel
-- **How it works**: Uses UEFI's memory allocation services (like asking the system for memory)
-- **What it stores**: Saves the memory address and size in the handoff structure
-- **Safety**: If it can't get memory, it sets the fields to 0 (no memory available)
+### Bootloader Phase (Pre-ExitBootServices)
+- **Global Allocator**: Uses UEFI's `global_allocator` for Vec, String, etc.
+- **Temp Heap Allocation**: Allocates 1MB using `allocate_memory_non_overlapping`
+- **Overlap Avoidance**: Ensures temp heap doesn't overlap kernel image region
+- **Retry Strategy**: Increments allocation size to perturb UEFI allocator if needed
+- **Handoff Storage**: Stores physical base and size in handoff structure
+- **Failure Handling**: If allocation fails, sets fields to 0 (kernel uses fallback)
 
-### Kernel Side (The Memory User)
-- **What it does**: Checks if the bootloader left it any memory to use
-- **How it works**: Sets up a simple "bump allocator" (just moves a pointer forward as it allocates)
-- **Fallback**: If no memory was provided, uses a fixed 1MB region at a known address
-- **Result**: The kernel can now allocate memory during its startup phase
+### Kernel Phase (Post-ExitBootServices)
+- **Initial State**: UEFI allocator still active (persists after ExitBootServices)
+- **Higher-Half Mapping**: Temp heap is mapped to `TEMP_HEAP_VIRTUAL_BASE` (0xFFFFFFFFA0000000)
+- **Early Use**: Can be used for allocations during higher-half transition
+- **Permanent Heap**: After mapping KERNEL_HEAP_BASE, switches to permanent heap
+- **Cleanup**: Temporary heap mapping is unmapped after permanent heap is active
+- **Fallback**: If no temp heap provided, initializes permanent heap directly at KERNEL_HEAP_BASE
 
 ## Implementation Details
 
@@ -66,30 +70,41 @@ pub temp_heap_size: u64,   // Size of heap in bytes
 - **Easy to Understand**: Simple address and size fields in the handoff structure
 - **Flexible**: Easy to change the heap size or add more features later
 
-## Usage Example
+## Usage Example (Single-Binary)
 
 ```rust
-// Bootloader allocates heap
-match memory::allocate_memory(1024 * 1024, MemoryType::LOADER_DATA) {
+// Bootloader phase: allocate non-overlapping temp heap
+let img_start = HANDOFF.kernel_physical_base;
+let img_end = img_start + HANDOFF.kernel_image_size;
+match memory::allocate_memory_non_overlapping(
+    1024 * 1024,
+    MemoryType::LOADER_DATA,
+    img_start,
+    img_end,
+) {
     Ok(region) => {
-        handoff.temp_heap_base = region.physical_address;
-        handoff.temp_heap_size = region.size;
+        HANDOFF.temp_heap_base = region.physical_address;
+        HANDOFF.temp_heap_size = region.size;
     }
     Err(_) => {
-        handoff.temp_heap_base = 0;
-        handoff.temp_heap_size = 0;
+        HANDOFF.temp_heap_base = 0;
+        HANDOFF.temp_heap_size = 0;
     }
 }
 
-// Kernel uses heap
-if handoff.temp_heap_base != 0 && handoff.temp_heap_size != 0 {
-    // Use pre-allocated heap
-    HEAP_START = handoff.temp_heap_base as *mut u8;
-    HEAP_END = (handoff.temp_heap_base + handoff.temp_heap_size) as *mut u8;
-    HEAP_NEXT = handoff.temp_heap_base as *mut u8;
+// Kernel phase: use temp heap or fallback to permanent heap
+if handoff.temp_heap_size != 0 {
+    // Map temp heap to high-half and use it
+    ALLOCATOR_LINKED.lock().init(
+        TEMP_HEAP_VIRTUAL_BASE as *mut u8,
+        handoff.temp_heap_size as usize
+    );
 } else {
-    // Use fallback heap
-    init_heap_fallback();
+    // Initialize permanent heap directly
+    ALLOCATOR_LINKED.lock().init(
+        KERNEL_HEAP_BASE as *mut u8,
+        KERNEL_HEAP_SIZE
+    );
 }
 ```
 
@@ -102,15 +117,17 @@ The system includes comprehensive testing:
 
 ## Current Status
 
-✅ **Working Perfectly**: The system is fully functional with:
-- Bootloader successfully allocates 1MB of memory for the kernel
-- Kernel can use this memory immediately when it starts
-- Simple but effective memory allocation system
-- Clean startup and shutdown process
+✅ **Working**: Single-binary architecture with:
+- UEFI allocator active during bootloader phase
+- Non-overlapping temp heap allocation (when successful)
+- Fallback to direct permanent heap init (when temp heap fails)
+- Permanent heap at KERNEL_HEAP_BASE after higher-half transition
+- Clean transition from UEFI allocator to kernel-managed heap
 
-## What's Next
+⚠️ **Known Limitation**: Temp heap allocation sometimes fails to find non-overlapping region due to conservative 16 MiB kernel image size estimate. Fallback to permanent heap works correctly.
 
-- **Configurable Size**: Allow the heap size to be adjusted based on system needs
-- **Multiple Heaps**: Support for having several memory regions if needed
-- **Smart Memory Selection**: Automatically choose the best type of memory for the heap
-- **Usage Tracking**: Monitor how much memory is being used during startup
+## Future Improvements
+
+- **Better Image Size Detection**: Use more accurate kernel image size instead of 16 MiB estimate
+- **Allocator Statistics**: Track allocation patterns and usage
+- **Multiple Heap Regions**: Support zone-based allocation strategies

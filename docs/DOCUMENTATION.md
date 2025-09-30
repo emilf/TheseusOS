@@ -110,30 +110,33 @@ All public types include:
 
 All the core operating system modules are fully documented:
 
-- **`main.rs`**: Where the kernel starts running
-- **`allocator.rs`**: How the kernel manages memory allocation
-- **`cpu.rs`**: How the kernel detects and configures the CPU
-- **`display.rs`**: How the kernel shows information to the user
-- **`environment.rs`**: How the kernel sets up its environment
-- **`gdt.rs`**: How the kernel manages memory segments
-- **`handoff.rs`**: How the kernel reads information from the bootloader
-- **`interrupts.rs`**: How the kernel handles interrupts and exceptions
-- **`memory.rs`**: How the kernel manages virtual memory
-- **`panic.rs`**: What happens when the kernel encounters an error
+- **`lib.rs`**: Exports `kernel_entry` function (called by bootloader)
+- **`environment.rs`**: Complete kernel initialization sequence with higher-half transition
+- **`memory.rs`**: Virtual memory management, page tables, and frame allocation
+- **`allocator.rs`**: Heap allocator management and permanent heap initialization
+- **`gdt.rs`**: Global Descriptor Table and Task State Segment setup
+- **`interrupts.rs`**: IDT, exception handlers, LAPIC timer configuration
+- **`handoff.rs`**: Handoff structure validation and access
+- **`cpu.rs`**: CPU feature detection and configuration
+- **`display.rs`**: Kernel output and handoff structure display
+- **`framebuffer.rs`**: GOP framebuffer management and drawing
+- **`panic.rs`**: Panic handler for kernel errors
+- **`boot.rs`**: Boot-time abort helpers
+- **`stack.rs`**: Stack switching utilities
 
-### Bootloader Modules (The System Starter)
+### Bootloader Modules (The UEFI Phase)
 
 All the bootloader modules are fully documented:
 
-- **`main.rs`**: Where the bootloader starts running
-- **`acpi.rs`**: How the bootloader finds hardware configuration info
-- **`boot_sequence.rs`**: The main boot process orchestration
-- **`hardware.rs`**: How the bootloader discovers hardware
-- **`kernel_loader.rs`**: How the bootloader loads the kernel
-- **`memory.rs`**: How the bootloader manages memory
-- **`display.rs`**: How the bootloader shows information
-- **`serial.rs`**: How the bootloader communicates over serial ports
-- **`system_info.rs`**: How the bootloader collects system information
+- **`main.rs`**: UEFI entry point and main boot sequence
+- **`boot_sequence.rs`**: System information collection and kernel handoff
+- **`memory.rs`**: UEFI memory allocation and non-overlapping heap logic
+- **`acpi.rs`**: ACPI table discovery and parsing
+- **`hardware.rs`**: Hardware inventory collection via UEFI protocols
+- **`system_info.rs`**: Firmware, CPU, and boot time information collection
+- **`display.rs`**: Formatted output and handoff structure display
+- **`drivers/`**: Output driver system (UEFI serial, QEMU debug, raw serial)
+- **`serial.rs`**: Serial communication primitives
 
 ### Shared Library (Common Code)
 

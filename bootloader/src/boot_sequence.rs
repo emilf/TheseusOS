@@ -1,7 +1,8 @@
-//! Boot sequence orchestration
+//! Boot sequence orchestration for single-binary boot
 //!
-//! This module contains the main boot sequence logic that orchestrates
-//! the collection of system information and preparation of the handoff structure.
+//! This module contains the main boot sequence logic for the unified UEFI+kernel binary.
+//! It orchestrates system information collection, handoff preparation, and the transition
+//! from UEFI boot services to kernel control via direct function call.
 
 use uefi::boot::{MemoryType, SearchType};
 use uefi::mem::memory_map::MemoryMap;
@@ -20,10 +21,22 @@ use crate::system_info::*;
 use alloc::format;
 use theseus_shared::handoff::{Handoff, HANDOFF};
 
-/// Resolve kernel image base/size using UEFI LoadedImage information.
-/// For a single-binary boot, we treat the bootloader image as the kernel image.
+/// Compute kernel image base, size, and virtual entry for single-binary boot
+///
+/// Since the kernel is part of the same binary, we derive its physical base and size
+/// from the `kernel_entry` function symbol. The image base is aligned to 2 MiB and
+/// a conservative 16 MiB span is used to cover all code and data sections.
+///
+/// The virtual entry point is computed by taking the offset of `kernel_entry` within
+/// the physical image and adding it to the kernel's virtual base address.
+///
+/// # Handoff Fields Set
+///
+/// - `kernel_physical_base`: 2 MiB-aligned address containing `kernel_entry`
+/// - `kernel_image_size`: 16 MiB (conservative estimate)
+/// - `kernel_virtual_base`: `0xFFFFFFFF80000000` (higher-half)
+/// - `kernel_virtual_entry`: Virtual address where kernel will start execution
 pub fn set_kernel_image_from_loaded_image() {
-    // Do not touch UEFI protocols here; compute fields from our own entry symbol.
     theseus_shared::qemu_println!("Setting kernel image fields (single binary, no UEFI)");
     let entry_low = theseus_kernel::kernel_entry as usize as u64;
     let align_2mb: u64 = 2 * 1024 * 1024;
@@ -44,7 +57,15 @@ pub fn set_kernel_image_from_loaded_image() {
     theseus_shared::qemu_println!("✓ Kernel image fields set (single binary)");
 }
 
-/// Initialize the UEFI environment and output driver
+/// Initialize the UEFI environment and prepare handoff structure
+///
+/// Initializes the UEFI logger and sets up the handoff structure size.
+/// This must be called early in the boot sequence.
+///
+/// # Returns
+///
+/// * `Ok(())` - UEFI environment initialized successfully
+/// * `Err(Status)` - UEFI initialization failed
 pub fn initialize_uefi_environment() -> Result<(), Status> {
     // Initialize UEFI logger
     uefi::helpers::init().unwrap();
@@ -375,45 +396,31 @@ pub fn finalize_handoff_structure() {
     write_line("✓ All system information collected and stored");
 }
 
-/// Load the kernel binary (simplified version)
+/// Perform final handoff to kernel in single-binary boot
 ///
-/// This function allocates memory for the kernel and creates a placeholder binary.
+/// This function executes the critical transition from UEFI bootloader to kernel:
+/// 1. Allocates persistent LOADER_DATA buffer for handoff structure
+/// 2. Copies handoff data to the persistent buffer
+/// 3. Calls `ExitBootServices` to leave UEFI control
+/// 4. Marks `boot_services_exited` flag in handoff
+/// 5. Calls `kernel_entry` directly (same binary, different function)
 ///
 /// # Arguments
 ///
-/// * `memory_map` - The UEFI memory map
-/// * `output_driver` - Output driver for logging
-///
-/// # Returns
-///
-/// * `Ok((physical_address, entry_point))` - Physical address and entry point where kernel was loaded
-/// * `Err(status)` - Error loading kernel
-
-/// Jump to the kernel entry point
-///
-/// This function performs the final handoff from bootloader to kernel.
-/// It sets up the kernel environment and jumps to the kernel entry point.
+/// * `_physical_entry_point` - Unused (kept for API compatibility)
+/// * `handoff_ptr` - Pointer to temporary handoff structure to copy
 ///
 /// # Safety
 ///
 /// This function is unsafe because it:
-/// - Jumps to arbitrary code (kernel entry point)
-/// - Assumes the kernel is properly loaded at the expected address
-/// - Performs operations that cannot be undone
-
-/// Jump to the kernel entry point with persistent handoff structure
+/// - Calls `ExitBootServices`, making UEFI boot services unavailable
+/// - Transfers control to kernel code (does not return)
+/// - Accesses and modifies memory after `ExitBootServices`
 ///
-/// This function performs the final handoff from bootloader to kernel after
-/// exiting boot services. It passes the persistent handoff structure address
-/// to the kernel.
+/// # Panics
 ///
-/// # Safety
-///
-/// This function is unsafe because it:
-/// - Jumps to arbitrary code (kernel entry point)
-/// - Assumes the kernel is properly loaded at the expected address
-/// - Performs operations that cannot be undone
-/// - Accesses memory after exit_boot_services
+/// Returns (does not panic) if handoff buffer allocation fails, but this
+/// should never happen as it only requests one 4K page.
 pub unsafe fn jump_to_kernel_with_handoff(_physical_entry_point: u64, handoff_ptr: *const Handoff) {
     write_line("Entering jump_to_kernel_with_handoff");
     // Copy handoff into a persistent LOADER_DATA buffer and pass its physical address

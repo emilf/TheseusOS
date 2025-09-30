@@ -86,8 +86,36 @@ pub fn allocate_memory(size: u64, memory_type: MemoryType) -> MemoryResult<Memor
     })
 }
 
-/// Allocate memory ensuring it does not overlap a forbidden physical range.
-/// Retries a few times and increases the request size to get a different page run.
+/// Allocate memory ensuring it does not overlap a forbidden physical range
+///
+/// This function is used in single-binary boot to allocate a temporary heap that
+/// doesn't overlap with the kernel image. It uses a retry strategy with incrementally
+/// larger requests to perturb UEFI's allocator into returning different page runs.
+///
+/// # Arguments
+///
+/// * `size` - Minimum size in bytes to allocate
+/// * `memory_type` - UEFI memory type (typically `LOADER_DATA`)
+/// * `forbid_start` - Start of forbidden physical address range (inclusive)
+/// * `forbid_end` - End of forbidden physical address range (exclusive)
+///
+/// # Returns
+///
+/// * `Ok(MemoryRegion)` - Allocated region that doesn't overlap `[forbid_start, forbid_end)`
+/// * `Err(Status::OUT_OF_RESOURCES)` - Failed to find non-overlapping region after 8 attempts
+///
+/// # Algorithm
+///
+/// 1. Attempt allocation with requested size
+/// 2. Check if allocated region overlaps forbidden range
+/// 3. If overlap: free the region, increment size by 4K, and retry
+/// 4. If no overlap: return the region
+/// 5. Repeat up to 8 times
+///
+/// # Safety
+///
+/// Safe to call before `ExitBootServices`. The returned memory must be freed or
+/// marked as persistent before calling `ExitBootServices`.
 pub fn allocate_memory_non_overlapping(
     size: u64,
     memory_type: MemoryType,

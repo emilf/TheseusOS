@@ -1,30 +1,40 @@
-//! TheseusOS UEFI Bootloader
+//! TheseusOS UEFI Bootloader (Single-Binary)
 //!
-//! This is the UEFI bootloader for TheseusOS. It runs in the UEFI environment
-//! and is responsible for:
+//! This is the unified UEFI application for TheseusOS. It combines the bootloader
+//! and kernel into a single binary, eliminating the need for separate ELF loading.
+//!
+//! ## Responsibilities
 //!
 //! 1. **System Information Collection**: Gathering memory maps, ACPI tables,
 //!    graphics information, hardware inventory, and other system details
-//! 2. **Kernel Loading**: Loading the kernel binary from the EFI system partition
-//!    and parsing its ELF structure
-//! 3. **Memory Management**: Allocating memory for the kernel and temporary heap
-//! 4. **Boot Services Exit**: Calling UEFI's ExitBootServices to transition
-//!    control from firmware to the kernel
-//! 5. **Kernel Handoff**: Jumping to the kernel entry point with a handoff
-//!    structure containing all collected system information
+//! 2. **Memory Management**: Allocating memory for temporary heap and handoff structure
+//! 3. **Handoff Preparation**: Computing kernel image base/size from loaded binary
+//! 4. **Boot Services Exit**: Calling UEFI's `ExitBootServices` to transition
+//!    from firmware to kernel control
+//! 5. **Kernel Entry**: Direct function call to `kernel_entry` in the same binary
 //!
 //! ## Architecture
 //!
 //! The bootloader is organized into several modules:
-//! - `serial`: Serial communication and output
-//! - `display`: Console output and display management
-//! - `hardware`: Hardware detection and inventory
+//! - `boot_sequence`: Main boot sequence orchestration and kernel entry
+//! - `memory`: Memory map collection and allocation helpers
 //! - `acpi`: ACPI table discovery and parsing
-//! - `memory`: Memory map collection and management
-//! - `graphics`: Graphics Output Protocol (GOP) setup
-//! - `kernel_loader`: ELF parsing and kernel loading
-//! - `boot_sequence`: Main boot sequence orchestration
+//! - `hardware`: Hardware detection and inventory
+//! - `display`: Console output formatting
+//! - `drivers`: Output driver management (UEFI serial, raw serial, QEMU debug)
+//! - `system_info`: Firmware, boot time, and CPU information collection
+//! - `serial`: Serial communication primitives
 //! - `qemu_exit`: QEMU exit device integration for testing
+//!
+//! ## Single-Binary Boot Flow
+//!
+//! 1. UEFI firmware loads `BOOTX64.EFI` into memory
+//! 2. Bootloader phase: collect system information using UEFI Boot Services
+//! 3. Compute kernel image base/size from the loaded binary's entry symbol
+//! 4. Allocate non-overlapping temporary heap for kernel use
+//! 5. Call `ExitBootServices` to leave UEFI control
+//! 6. Call `kernel_entry` directly (same binary, different function)
+//! 7. Kernel establishes higher-half mapping and continues execution
 
 #![no_std]
 #![no_main]
@@ -35,11 +45,9 @@ use uefi::prelude::*;
 // alloc::format imported in display module
 use theseus_shared::handoff::{Handoff, HANDOFF};
 
-// Configuration Options for Bootloader Output
 //
-// These constants control the verbosity of bootloader output.
-// Set to false for clean, minimal output suitable for AI agents and CI/CD.
-// Set to true for detailed debugging output.
+// Configuration Options
+//
 
 /// Global verbose output control
 ///
@@ -58,9 +66,10 @@ use theseus_shared::handoff::{Handoff, HANDOFF};
 /// showing detailed information.
 pub const VERBOSE_OUTPUT: bool = false;
 
-// Memory Allocation Testing
-// Set to true to run memory allocation tests during boot
-// Set to false to skip tests for faster boot
+/// Memory allocation testing flag
+///
+/// When `true`, runs UEFI memory allocation tests during boot.
+/// When `false`, skips tests for faster boot time.
 const RUN_MEMORY_TESTS: bool = false;
 
 // Include our modules
@@ -84,22 +93,32 @@ use drivers::manager::{write_line, OutputDriver};
 use uefi::Status;
 // (no additional shared imports)
 
-// Use kernel's panic handler to avoid duplicate lang item
+// Note: Panic handler is provided by the kernel library to avoid duplicate lang items
 
-/// Main UEFI entry point
+/// Main UEFI entry point for the unified bootloader+kernel binary
 ///
-/// This function orchestrates the boot sequence by calling specialized functions
-/// to collect system information and prepare the handoff structure for the kernel.
+/// This function orchestrates the single-binary boot sequence:
+/// 1. Initializes UEFI environment and output drivers
+/// 2. Collects comprehensive system information (memory map, ACPI, GOP, hardware)
+/// 3. Computes kernel image base/size from the loaded binary
+/// 4. Allocates non-overlapping temporary heap for kernel use
+/// 5. Exits UEFI Boot Services
+/// 6. Calls directly into `kernel_entry` within the same binary
 ///
 /// # Returns
 ///
-/// * `Status::SUCCESS` - All system information collected successfully
-/// * Other status codes - Various error conditions during initialization
+/// This function never returns normally. It either:
+/// - Successfully transitions to kernel via `kernel_entry` (does not return)
+/// - Panics on fatal errors during boot sequence
+///
+/// # Panics
+///
+/// Panics if the kernel handoff fails unexpectedly (should never happen).
 ///
 /// # Safety
 ///
-/// This function is the main entry point and assumes UEFI boot services are active.
-/// It will panic if called after exit_boot_services.
+/// This function assumes UEFI boot services are active. It calls `ExitBootServices`
+/// before transferring control to the kernel.
 #[entry]
 fn efi_main() -> Status {
     // Initialize UEFI environment and global output driver

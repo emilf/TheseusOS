@@ -1,8 +1,8 @@
-//! TheseusOS Kernel Library
+//! TheseusOS Kernel Library (Single-Binary Architecture)
 //!
-//! This library exposes the kernel functionality for use in integration tests.
-//! The kernel binary imports from this library, and integration tests can
-//! also import functions from here.
+//! This library provides the kernel functionality for the unified UEFI+kernel binary.
+//! It exports `kernel_entry` which is called directly by the UEFI bootloader after
+//! exiting boot services. Integration tests also import functions from this library.
 
 #![no_std]
 #![feature(custom_test_frameworks)]
@@ -33,11 +33,38 @@ pub use display::kernel_write_line;
 pub use environment::setup_kernel_environment;
 pub use handoff::{set_handoff_pointers, validate_handoff};
 
-/// Unified kernel entry point for single-binary boot (UEFI + Kernel)
+/// Unified kernel entry point for single-binary boot
 ///
-/// This function mirrors the previous `kernel_main` that lived in the separate
-/// kernel binary. It is now exported from the kernel library so the UEFI
-/// bootloader can call into it directly after ExitBootServices.
+/// This is the main kernel entry function called directly by the UEFI bootloader
+/// after it exits boot services. It receives a physical address pointing to the
+/// handoff structure containing all system information collected by the bootloader.
+///
+/// ## Boot Flow
+///
+/// 1. Bootloader collects system information using UEFI Boot Services
+/// 2. Bootloader calls `ExitBootServices`
+/// 3. Bootloader calls this function with handoff structure address
+/// 4. Kernel validates handoff and sets up environment
+/// 5. Kernel establishes higher-half virtual memory mapping
+/// 6. Kernel initializes heap, interrupts, and other subsystems
+/// 7. Kernel enters idle loop or exits based on configuration
+///
+/// # Arguments
+///
+/// * `handoff_addr` - Physical address of the handoff structure
+///
+/// # Panics
+///
+/// Panics if:
+/// - Handoff structure is invalid or malformed
+/// - Critical initialization steps fail
+///
+/// # Safety
+///
+/// This function assumes:
+/// - UEFI boot services have been exited
+/// - Handoff structure is valid and accessible
+/// - System is in a stable state for kernel initialization
 #[no_mangle]
 pub extern "C" fn kernel_entry(handoff_addr: u64) -> ! {
     // Initialize kernel logging using QEMU debug port
