@@ -7,11 +7,6 @@ edition = "2021"
 name = "theseus_kernel"
 path = "src/lib.rs"
 
-[[bin]]
-name = "kernel"
-path = "src/main.rs"
-test = true
-
 # Bare-metal tests - run immediately after bootloader handoff
 [[test]]
 name = "bare_metal_tests"

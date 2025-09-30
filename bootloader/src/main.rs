@@ -76,7 +76,6 @@ mod system_info;
 
 // Include bootloader-specific modules
 mod drivers;
-mod kernel_loader;
 mod memory;
 
 use alloc::format;
@@ -86,57 +85,6 @@ use uefi::Status;
 // (no additional shared imports)
 
 // Use kernel's panic handler to avoid duplicate lang item
-
-/// Allocate temporary heap memory for kernel setup
-///
-/// This function allocates a chunk of safe memory that the kernel can use for its
-/// temporary heap during initialization. The memory is allocated using UEFI Boot Services
-/// and stored in the handoff structure for the kernel to use. This allows the kernel
-/// to have a working heap immediately upon entry without needing to parse memory maps.
-fn allocate_temp_heap_for_kernel() {
-    write_line("=== Allocating Temporary Heap for Kernel ===");
-
-    // Allocate 1MB of conventional memory for the kernel's temporary heap
-    const TEMP_HEAP_SIZE: u64 = 1024 * 1024; // 1MB
-
-    match memory::allocate_memory(TEMP_HEAP_SIZE, uefi::boot::MemoryType::LOADER_DATA) {
-        Ok(region) => {
-            write_line(&format!("✓ Temporary heap allocated successfully"));
-            write_line(&format!(
-                "  Base address: 0x{:016x}",
-                region.physical_address
-            ));
-            write_line(&format!(
-                "  Size: {} bytes ({} KB)",
-                region.size,
-                region.size / 1024
-            ));
-
-            // Store the heap information in the handoff structure
-            unsafe {
-                HANDOFF.temp_heap_base = region.physical_address;
-                HANDOFF.temp_heap_size = region.size;
-                HANDOFF.boot_services_exited = 0;
-            }
-
-            write_line("✓ Temporary heap information stored in handoff structure");
-        }
-        Err(status) => {
-            write_line(&format!(
-                "✗ Failed to allocate temporary heap: {:?}",
-                status
-            ));
-            write_line("Kernel will need to use fallback heap allocation");
-
-            // Set heap fields to 0 to indicate allocation failed
-            unsafe {
-                HANDOFF.temp_heap_base = 0;
-                HANDOFF.temp_heap_size = 0;
-                HANDOFF.boot_services_exited = 0;
-            }
-        }
-    }
-}
 
 /// Main UEFI entry point
 ///
@@ -204,9 +152,7 @@ fn efi_main() -> Status {
     // Finalize handoff structure
     finalize_handoff_structure();
 
-    // Marker before kernel image field setup
-    unsafe { core::arch::asm!("mov dx, 0xe9; mov al, 'M'; out dx, al", options(nomem, nostack, preserves_flags)); }
-    // Single-binary path: set kernel fields from LoadedImage, then enter kernel
+    // Single-binary path: set kernel fields from entry symbol, then enter kernel
     boot_sequence::set_kernel_image_from_loaded_image();
     // Allocate the temp heap now, avoiding overlap with kernel image span
     unsafe {

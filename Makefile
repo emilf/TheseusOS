@@ -4,11 +4,9 @@ BOOTLOADER_TARGET := x86_64-unknown-uefi
 KERNEL_TARGET := x86_64-unknown-none
 PROFILE ?= release
 BOOTLOADER_BUILD_DIR := target/$(BOOTLOADER_TARGET)/$(PROFILE)
-KERNEL_BUILD_DIR := target/$(KERNEL_TARGET)/$(PROFILE)
 EFI_DIR := build/EFI/BOOT
 ESP_DIR := build
 EFI_BIN := $(BOOTLOADER_BUILD_DIR)/theseus_efi.efi
-KERNEL_BIN := $(KERNEL_BUILD_DIR)/kernel
 EFI_OUTPUT := $(EFI_DIR)/BOOTX64.EFI
 OVMF_DIR := OVMF
 OVMF_CODE := $(OVMF_DIR)/OVMF_CODE.fd
@@ -23,18 +21,15 @@ else
 CARGO_PROFILE_FLAG :=
 endif
 
-.PHONY: all clean clean-all run build-bootloader build-kernel build esp bios test test-all test-bare-metal test-kernel test-panic test-help debug help debug-build
+.PHONY: all clean clean-all run build-bootloader build esp bios test test-all test-bare-metal test-kernel test-panic test-help debug help debug-build
 TIMEOUT ?= 20
 
 all: build esp bios
 
-build: build-bootloader build-kernel
+build: build-bootloader
 
 build-bootloader:
 	cargo build --package $(BOOTLOADER_PROJECT) --target $(BOOTLOADER_TARGET) $(CARGO_PROFILE_FLAG) $(if $(FEATURES),--features $(FEATURES),)
-
-build-kernel:
-	cargo build --lib --package $(KERNEL_PROJECT) --target $(KERNEL_TARGET) $(CARGO_PROFILE_FLAG) $(if $(FEATURES),--features $(FEATURES),)
 
 esp: $(EFI_OUTPUT)
 

@@ -40,15 +40,7 @@ pub use handoff::{set_handoff_pointers, validate_handoff};
 /// bootloader can call into it directly after ExitBootServices.
 #[no_mangle]
 pub extern "C" fn kernel_entry(handoff_addr: u64) -> ! {
-    // Early marker to confirm we reached kernel code (no allocations, raw port I/O)
-    unsafe {
-        core::arch::asm!(
-            "mov dx, 0xe9",
-            "mov al, 'K'",
-            "out dx, al",
-            options(nomem, nostack, preserves_flags)
-        );
-    }
+    // Initialize kernel logging using QEMU debug port
     crate::display::kernel_write_line("=== TheseusOS Kernel Starting ===");
     crate::display::kernel_write_line("Kernel entry point reached successfully");
 
