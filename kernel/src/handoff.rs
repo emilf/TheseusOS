@@ -196,11 +196,9 @@ pub fn validate_handoff(h: &Handoff) -> Result<(), &'static str> {
     }
 
     // Boot services: bootloader exits boot services before transferring control
-    // For early bring-up, allow either state; we will soon stop using firmware anyway.
-    // This avoids an immediate panic during transitional integration.
-    // if h.boot_services_exited != 1 {
-    //     return Err("boot_services_exited must be 1 at kernel entry");
-    // }
+    if h.boot_services_exited != 1 {
+        return Err("boot_services_exited must be 1 at kernel entry");
+    }
 
     Ok(())
 }

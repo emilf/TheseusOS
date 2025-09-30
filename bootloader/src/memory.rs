@@ -86,6 +86,38 @@ pub fn allocate_memory(size: u64, memory_type: MemoryType) -> MemoryResult<Memor
     })
 }
 
+/// Allocate memory ensuring it does not overlap a forbidden physical range.
+/// Retries a few times and increases the request size to get a different page run.
+pub fn allocate_memory_non_overlapping(
+    size: u64,
+    memory_type: MemoryType,
+    forbid_start: u64,
+    forbid_end: u64,
+) -> MemoryResult<MemoryRegion> {
+    let mut attempt: u32 = 0;
+    let mut req_size = size;
+    while attempt < 8 {
+        match allocate_memory(req_size, memory_type) {
+            Ok(region) => {
+                let start = region.physical_address;
+                let end = start.saturating_add(region.size);
+                let overlap = !(end <= forbid_start || start >= forbid_end);
+                if !overlap {
+                    return Ok(region);
+                }
+                // Free and retry with a different size to perturb allocator
+                let _ = free_memory(region);
+            }
+            Err(_) => {
+                // fall through to retry with larger size
+            }
+        }
+        attempt += 1;
+        req_size = req_size.saturating_add(4096);
+    }
+    Err(Status::OUT_OF_RESOURCES)
+}
+
 /// Free memory using UEFI Boot Services
 ///
 /// This function frees memory that was previously allocated using allocate_memory.

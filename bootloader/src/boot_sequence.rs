@@ -415,16 +415,7 @@ pub fn finalize_handoff_structure() {
 /// - Performs operations that cannot be undone
 /// - Accesses memory after exit_boot_services
 pub unsafe fn jump_to_kernel_with_handoff(_physical_entry_point: u64, handoff_ptr: *const Handoff) {
-    write_line("[jump] entering jump_to_kernel_with_handoff");
-    // Marker: 'J' before handoff copy
-    unsafe {
-        core::arch::asm!(
-            "mov dx, 0xe9",
-            "mov al, 'J'",
-            "out dx, al",
-            options(nomem, nostack, preserves_flags)
-        );
-    }
+    write_line("Entering jump_to_kernel_with_handoff");
     // Copy handoff into a persistent LOADER_DATA buffer and pass its physical address
     let handoff_size = core::mem::size_of::<Handoff>() as u64;
     write_line(&format!(
@@ -464,25 +455,7 @@ pub unsafe fn jump_to_kernel_with_handoff(_physical_entry_point: u64, handoff_pt
 
     // Exit boot services before transferring control to the kernel
     write_line("Exiting boot services before kernel handoff...");
-    // Marker: 'B' before ExitBootServices
-    unsafe {
-        core::arch::asm!(
-            "mov dx, 0xe9",
-            "mov al, 'B'",
-            "out dx, al",
-            options(nomem, nostack, preserves_flags)
-        );
-    }
     let _memory_map = unsafe { uefi::boot::exit_boot_services(None) };
-    // Marker: 'S' after ExitBootServices
-    unsafe {
-        core::arch::asm!(
-            "mov dx, 0xe9",
-            "mov al, 'S'",
-            "out dx, al",
-            options(nomem, nostack, preserves_flags)
-        );
-    }
 
     // Mark boot services exited in the copied handoff
     unsafe {
@@ -493,14 +466,5 @@ pub unsafe fn jump_to_kernel_with_handoff(_physical_entry_point: u64, handoff_pt
     let entry: extern "C" fn(u64) -> ! = theseus_kernel::kernel_entry;
     let arg = handoff_phys as u64;
     let _ = arg; // keep name for clarity
-    // Marker: 'C' before calling kernel
-    unsafe {
-        core::arch::asm!(
-            "mov dx, 0xe9",
-            "mov al, 'C'",
-            "out dx, al",
-            options(nomem, nostack, preserves_flags)
-        );
-    }
     entry(handoff_phys as u64)
 }

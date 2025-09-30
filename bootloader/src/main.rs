@@ -196,8 +196,10 @@ fn efi_main() -> Status {
     collect_hardware_inventory_info(VERBOSE_OUTPUT);
     collect_loaded_image_path(VERBOSE_OUTPUT);
 
-    // Allocate temporary heap for kernel
-    allocate_temp_heap_for_kernel();
+    // Allocate temporary heap for kernel (non-overlapping with kernel image)
+    write_line("=== Allocating Temporary Heap for Kernel ===");
+    const TEMP_HEAP_SIZE: u64 = 1024 * 1024; // 1MB
+    // Defer actual allocation until after kernel image fields are computed
 
     // Finalize handoff structure
     finalize_handoff_structure();
@@ -206,29 +208,42 @@ fn efi_main() -> Status {
     unsafe { core::arch::asm!("mov dx, 0xe9; mov al, 'M'; out dx, al", options(nomem, nostack, preserves_flags)); }
     // Single-binary path: set kernel fields from LoadedImage, then enter kernel
     boot_sequence::set_kernel_image_from_loaded_image();
-    // Ensure temp heap does not overlap kernel image in physical memory
+    // Allocate the temp heap now, avoiding overlap with kernel image span
     unsafe {
-        let heap_start = HANDOFF.temp_heap_base;
-        let heap_end = heap_start.saturating_add(HANDOFF.temp_heap_size);
         let img_start = HANDOFF.kernel_physical_base;
         let img_end = img_start.saturating_add(HANDOFF.kernel_image_size);
-        let overlaps = !(heap_end <= img_start || heap_start >= img_end);
-        if overlaps {
-            // Disable temp heap to satisfy kernel validation
-            HANDOFF.temp_heap_base = 0;
-            HANDOFF.temp_heap_size = 0;
-            write_line("⚠ Temp heap overlapped kernel image; disabled temp heap in handoff");
+        match memory::allocate_memory_non_overlapping(
+            TEMP_HEAP_SIZE,
+            uefi::boot::MemoryType::LOADER_DATA,
+            img_start,
+            img_end,
+        ) {
+            Ok(region) => {
+                write_line("✓ Temporary heap allocated successfully");
+                write_line(&format!(
+                    "  Base address: 0x{:016x}",
+                    region.physical_address
+                ));
+                write_line(&format!(
+                    "  Size: {} bytes ({} KB)",
+                    region.size,
+                    region.size / 1024
+                ));
+                HANDOFF.temp_heap_base = region.physical_address;
+                HANDOFF.temp_heap_size = region.size;
+                HANDOFF.boot_services_exited = 0;
+            }
+            Err(_) => {
+                write_line("✗ Failed to allocate non-overlapping temporary heap");
+                HANDOFF.temp_heap_base = 0;
+                HANDOFF.temp_heap_size = 0;
+            }
         }
     }
-    // Raw byte marker 'Z' right after field setup
-    unsafe { core::arch::asm!("mov dx, 0xe9; mov al, 'Z'; out dx, al", options(nomem, nostack, preserves_flags)); }
-    // Marker after kernel image field setup
-    unsafe { core::arch::asm!("mov dx, 0xe9; mov al, 'N'; out dx, al", options(nomem, nostack, preserves_flags)); }
+    // (markers removed)
 
     write_line("✓ All system information collected, preparing to exit boot services...");
 
-    // Marker before jump
-    unsafe { core::arch::asm!("mov dx, 0xe9; mov al, 'P'; out dx, al", options(nomem, nostack, preserves_flags)); }
     unsafe {
         crate::boot_sequence::jump_to_kernel_with_handoff(
             0,

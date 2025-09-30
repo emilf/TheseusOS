@@ -5,7 +5,7 @@
 //! configuration in a single place.
 
 /// When `true` enable verbose kernel debug output (many debug traces).
-pub const VERBOSE_KERNEL_OUTPUT: bool = false;
+pub const VERBOSE_KERNEL_OUTPUT: bool = true;
 
 /// When `true` the kernel will idle (keep running) after initialization.
 /// When `false` the kernel will exit QEMU immediately (useful for CI).
