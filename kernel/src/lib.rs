@@ -28,7 +28,6 @@ pub mod panic;
 pub mod stack;
 
 // Re-export commonly used types and functions
-pub use allocator::initialize_heap_from_handoff;
 pub use display::kernel_write_line;
 pub use environment::setup_kernel_environment;
 pub use handoff::{set_handoff_pointers, validate_handoff};
@@ -71,9 +70,8 @@ pub extern "C" fn kernel_entry(handoff_addr: u64) -> ! {
     crate::display::kernel_write_line("=== TheseusOS Kernel Starting ===");
     crate::display::kernel_write_line("Kernel entry point reached successfully");
 
-    // Initialize heap from memory map (deferred to high-half later)
-    crate::display::kernel_write_line("Initializing heap from memory map...");
-    crate::allocator::initialize_heap_from_handoff(handoff_addr);
+    // Allocator shim is installed globally; kernel will arm it later
+    crate::display::kernel_write_line("Allocator shim active (pre-exit backend)");
     crate::handoff::set_handoff_pointers(handoff_addr);
 
     crate::display::kernel_write_line("Handoff structure address received");

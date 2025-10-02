@@ -39,6 +39,7 @@
 #![no_std]
 #![no_main]
 
+#![feature(alloc_error_handler)]
 extern crate alloc;
 
 use uefi::prelude::*;
@@ -91,6 +92,7 @@ use alloc::format;
 use boot_sequence::*;
 use drivers::manager::{write_line, OutputDriver};
 use uefi::Status;
+use uefi::mem::memory_map::MemoryType;
 // (no additional shared imports)
 
 // Note: Panic handler is provided by the kernel library to avoid duplicate lang items
@@ -121,6 +123,10 @@ use uefi::Status;
 /// before transferring control to the kernel.
 #[entry]
 fn efi_main() -> Status {
+    // Install pre-exit allocators that forward to UEFI Boot Services
+    theseus_shared::allocator::install_pre_exit_allocators(
+        pre_exit_alloc, pre_exit_dealloc,
+    );
     // Initialize UEFI environment and global output driver
     match initialize_uefi_environment() {
         Ok(_) => {}
@@ -166,7 +172,7 @@ fn efi_main() -> Status {
     // Allocate temporary heap for kernel (non-overlapping with kernel image)
     write_line("=== Allocating Temporary Heap for Kernel ===");
     const TEMP_HEAP_SIZE: u64 = 1024 * 1024; // 1MB
-    // Defer actual allocation until after kernel image fields are computed
+                                             // Defer actual allocation until after kernel image fields are computed
 
     // Finalize handoff structure
     finalize_handoff_structure();
@@ -210,14 +216,37 @@ fn efi_main() -> Status {
     write_line("✓ All system information collected, preparing to exit boot services...");
 
     unsafe {
-        crate::boot_sequence::jump_to_kernel_with_handoff(
-            0,
-            &raw const HANDOFF as *const Handoff,
-        );
+        crate::boot_sequence::jump_to_kernel_with_handoff(0, &raw const HANDOFF as *const Handoff);
     }
 
     // If we reach here, it means there was an error in the handoff process
     // This should never happen since we jump to the kernel on success
     write_line("✗ ERROR: Unexpected bootloader completion - kernel handoff failed");
     panic!("Bootloader should never reach this point");
+}
+
+// ----------------------------
+// Pre-Exit allocator callbacks
+// ----------------------------
+use core::alloc::Layout;
+#[alloc_error_handler]
+fn alloc_oom(_: core::alloc::Layout) -> ! {
+    // In bootloader, treat OOM as fatal.
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+unsafe fn pre_exit_alloc(layout: Layout) -> *mut u8 {
+    // Use UEFI allocate_pool as a generic allocator before ExitBootServices
+    match uefi::boot::allocate_pool(MemoryType::LOADER_DATA, layout.size()) {
+        Ok(mut buf) => buf.as_mut(),
+        Err(_) => core::ptr::null_mut(),
+    }
+}
+
+unsafe fn pre_exit_dealloc(ptr: *mut u8, _layout: Layout) {
+    if !ptr.is_null() {
+        let _ = uefi::boot::free_pool(core::ptr::NonNull::new_unchecked(ptr));
+    }
 }

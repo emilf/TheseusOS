@@ -12,7 +12,7 @@ pub const VERBOSE_KERNEL_OUTPUT: bool = true;
 pub const KERNEL_SHOULD_IDLE: bool = false;
 
 /// When `true`, dump the UEFI hardware inventory entries during driver init.
-pub const PRINT_HARDWARE_INVENTORY: bool = false;
+pub const PRINT_HARDWARE_INVENTORY: bool = true;
 
 /// When `true`, keep the legacy 1 GiB PHYS_OFFSET identity mapping.
 /// When `false`, rely on per-table ACPI mappings and tighter PHYS_OFFSET coverage.

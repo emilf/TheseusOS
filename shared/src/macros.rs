@@ -161,3 +161,38 @@ macro_rules! qemu_exit_error {
         $crate::qemu_exit!($crate::constants::exit_codes::QEMU_ERROR)
     }};
 }
+
+#[macro_export]
+/// Print current RIP (Instruction Pointer) to QEMU debug port (0xE9)
+///
+/// This macro prints the current RIP value in the format:
+/// "\n [DEBUG] Current RIP: 0x<hex_value>\n"
+///
+/// # Assembly Details
+/// - Uses `lea` instruction to get the current RIP
+/// - Prints the debug prefix string
+/// - Prints the RIP value in hexadecimal format
+/// - Prints a newline
+/// - No allocations or format! calls used
+macro_rules! print_rip {
+    () => {{
+        // Print the debug prefix: "\n [DEBUG] Current RIP: "
+        $crate::qemu_print!("\n [DEBUG] Current RIP: ");
+        
+        // Get current RIP using inline assembly
+        let rip: u64;
+        unsafe {
+            core::arch::asm!(
+                "lea {rip}, [rip]",  // Load effective address of current RIP
+                rip = out(reg) rip,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+        
+        // Print the RIP value in hexadecimal
+        $crate::print_hex_u64_0xe9!(rip);
+        
+        // Print newline
+        $crate::out_char_0xe9!(b'\n');
+    }};
+}

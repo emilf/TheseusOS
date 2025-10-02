@@ -4,7 +4,7 @@
 //! responsible for initializing ACPI, enumerating platform devices, and feeding
 //! them into the manager so that concrete drivers can bind.
 
-use crate::acpi::PlatformInfo;
+use crate::acpi::{self, PlatformInfo};
 use crate::display::kernel_write_line;
 use crate::handoff::handoff_phys_ptr;
 
@@ -19,12 +19,16 @@ pub fn init() -> DriverResult<PlatformInfo> {
     kernel_write_line("[driver] initializing driver system");
 
     let handoff = unsafe { &*(handoff_phys_ptr() as *const theseus_shared::handoff::Handoff) };
-    kernel_write_line("[driver] using UEFI hardware inventory");
+
+    let platform_info = acpi::initialize_acpi(handoff.acpi_rsdp)?;
+    kernel_write_line("[driver] ACPI initialization complete");
 
     if handoff.hardware_device_count == 0 || handoff.hardware_inventory_ptr == 0 {
         kernel_write_line("[driver] hardware inventory missing");
-        return Err("hardware inventory missing");
+        return Ok(platform_info);
     }
+
+    kernel_write_line("[driver] registering UEFI hardware inventory");
 
     let count = handoff.hardware_device_count as usize;
     let bytes = handoff.hardware_inventory_size as usize;
@@ -57,5 +61,5 @@ pub fn init() -> DriverResult<PlatformInfo> {
         driver_manager().lock().add_device(device);
     }
 
-    Ok(PlatformInfo::new())
+    Ok(platform_info)
 }

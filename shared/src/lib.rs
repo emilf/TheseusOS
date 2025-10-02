@@ -5,6 +5,7 @@
 //! This crate contains shared data structures, constants, and utilities
 //! used by both the bootloader and kernel.
 
+pub mod allocator;
 pub mod constants;
 pub mod handoff;
 pub mod macros;

@@ -63,15 +63,16 @@ pub fn parse_madt(tables: &AcpiTables<impl acpi::AcpiHandler>) -> Result<MadtInf
         // Add BSP (Bootstrap Processor) - always present
         info.cpu_apic_ids
             .push(processor_info.boot_processor.local_apic_id as u8);
-        kernel_write_line(&alloc::format!(
-            "  BSP APIC ID: {}",
-            processor_info.boot_processor.local_apic_id
-        ));
+        kernel_write_line("  BSP APIC ID: ");
+        theseus_shared::print_hex_u64_0xe9!(processor_info.boot_processor.local_apic_id as u64);
+        kernel_write_line("\n");
 
         // Add Application Processors (APs)
         for ap in &processor_info.application_processors {
             info.cpu_apic_ids.push(ap.local_apic_id as u8);
-            kernel_write_line(&alloc::format!("  AP APIC ID: {}", ap.local_apic_id));
+            kernel_write_line("  AP APIC ID: ");
+            theseus_shared::print_hex_u64_0xe9!(ap.local_apic_id as u64);
+            kernel_write_line("\n");
         }
     }
 
@@ -80,10 +81,9 @@ pub fn parse_madt(tables: &AcpiTables<impl acpi::AcpiHandler>) -> Result<MadtInf
         acpi::InterruptModel::Apic(apic_info) => {
             // Extract Local APIC information
             info.local_apic_address = apic_info.local_apic_address as u64;
-            kernel_write_line(&alloc::format!(
-                "  Local APIC address: 0x{:016X}",
-                info.local_apic_address
-            ));
+            kernel_write_line("  Local APIC address: 0x");
+            theseus_shared::print_hex_u64_0xe9!(info.local_apic_address);
+            kernel_write_line("\n");
 
             // Extract IO APIC information
             for io_apic in &apic_info.io_apics {
@@ -93,12 +93,13 @@ pub fn parse_madt(tables: &AcpiTables<impl acpi::AcpiHandler>) -> Result<MadtInf
                     gsi_base: io_apic.global_system_interrupt_base,
                 };
                 info.io_apics.push(entry);
-                kernel_write_line(&alloc::format!(
-                    "  IO APIC ID: {}, Address: 0x{:016X}, GSI Base: {}",
-                    io_apic.id,
-                    io_apic.address as u64,
-                    io_apic.global_system_interrupt_base
-                ));
+                kernel_write_line("  IO APIC ID: ");
+                theseus_shared::print_hex_u64_0xe9!(io_apic.id as u64);
+                kernel_write_line(" Address: 0x");
+                theseus_shared::print_hex_u64_0xe9!(io_apic.address as u64);
+                kernel_write_line(" GSI Base: ");
+                theseus_shared::print_hex_u64_0xe9!(io_apic.global_system_interrupt_base as u64);
+                kernel_write_line("\n");
             }
 
             // Check for 8259 PIC support
@@ -108,13 +109,19 @@ pub fn parse_madt(tables: &AcpiTables<impl acpi::AcpiHandler>) -> Result<MadtInf
             kernel_write_line("  No APIC interrupt model found");
         }
     }
-    kernel_write_line(&alloc::format!("  Has 8259 PIC: {}", info.has_8259_pic));
+    kernel_write_line("  Has 8259 PIC: ");
+    if info.has_8259_pic {
+        kernel_write_line("true\n");
+    } else {
+        kernel_write_line("false\n");
+    }
 
-    kernel_write_line(&alloc::format!(
-        "  Total CPUs found: {}",
-        info.cpu_apic_ids.len()
-    ));
-    kernel_write_line(&alloc::format!("  IO APICs found: {}", info.io_apics.len()));
+    kernel_write_line("  Total CPUs found: ");
+    theseus_shared::print_hex_u64_0xe9!(info.cpu_apic_ids.len() as u64);
+    kernel_write_line("\n");
+    kernel_write_line("  IO APICs found: ");
+    theseus_shared::print_hex_u64_0xe9!(info.io_apics.len() as u64);
+    kernel_write_line("\n");
 
     Ok(info)
 }

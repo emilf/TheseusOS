@@ -49,7 +49,9 @@ pub fn set_kernel_image_from_loaded_image() {
         HANDOFF.kernel_image_size = aligned_size;
         HANDOFF.kernel_virtual_base = 0xFFFFFFFF80000000;
         HANDOFF.kernel_virtual_entry = if offset_within_image < aligned_size {
-            HANDOFF.kernel_virtual_base.wrapping_add(offset_within_image)
+            HANDOFF
+                .kernel_virtual_base
+                .wrapping_add(offset_within_image)
         } else {
             HANDOFF.kernel_virtual_base
         };
