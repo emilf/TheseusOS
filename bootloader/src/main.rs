@@ -38,7 +38,6 @@
 
 #![no_std]
 #![no_main]
-
 #![feature(alloc_error_handler)]
 extern crate alloc;
 
@@ -91,8 +90,8 @@ mod memory;
 use alloc::format;
 use boot_sequence::*;
 use drivers::manager::{write_line, OutputDriver};
-use uefi::Status;
 use uefi::mem::memory_map::MemoryType;
+use uefi::Status;
 // (no additional shared imports)
 
 // Note: Panic handler is provided by the kernel library to avoid duplicate lang items
@@ -124,9 +123,7 @@ use uefi::mem::memory_map::MemoryType;
 #[entry]
 fn efi_main() -> Status {
     // Install pre-exit allocators that forward to UEFI Boot Services
-    theseus_shared::allocator::install_pre_exit_allocators(
-        pre_exit_alloc, pre_exit_dealloc,
-    );
+    theseus_shared::allocator::install_pre_exit_allocators(pre_exit_alloc, pre_exit_dealloc);
     // Initialize UEFI environment and global output driver
     match initialize_uefi_environment() {
         Ok(_) => {}

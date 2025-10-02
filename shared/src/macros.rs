@@ -178,7 +178,7 @@ macro_rules! print_rip {
     () => {{
         // Print the debug prefix: "\n [DEBUG] Current RIP: "
         $crate::qemu_print!("\n [DEBUG] Current RIP: ");
-        
+
         // Get current RIP using inline assembly
         let rip: u64;
         unsafe {
@@ -188,10 +188,10 @@ macro_rules! print_rip {
                 options(nomem, nostack, preserves_flags)
             );
         }
-        
+
         // Print the RIP value in hexadecimal
         $crate::print_hex_u64_0xe9!(rip);
-        
+
         // Print newline
         $crate::out_char_0xe9!(b'\n');
     }};

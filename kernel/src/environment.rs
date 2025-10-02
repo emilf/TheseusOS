@@ -528,7 +528,9 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
                 // Do not switch yet; keep using pre-exit backend until permanent heap mapped
             }
             if verbose {
-                crate::display::kernel_write_line("  High-half temp heap mapped for allocator shim");
+                crate::display::kernel_write_line(
+                    "  High-half temp heap mapped for allocator shim",
+                );
             }
         } else if verbose {
             crate::display::kernel_write_line("  No temp heap available for high-half allocator");
@@ -582,7 +584,9 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
             // frame_alloc drops here while the allocator still points to temp heap → safe
         }
         if verbose {
-            crate::display::kernel_write_line("  [perm] initializing global allocator on permanent heap...");
+            crate::display::kernel_write_line(
+                "  [perm] initializing global allocator on permanent heap...",
+            );
         }
         // Initialize and switch the global allocator shim to the permanent heap
         let perm_base = crate::memory::KERNEL_HEAP_BASE as *mut u8;

@@ -1,0 +1,645 @@
+Building project...
+cargo build --package theseus-bootloader --target x86_64-unknown-uefi --release 
+   Compiling theseus-bootloader v0.1.0 (/home/emil/dev/hobbyos/bootloader)
+    Finished `release` profile [optimized + debuginfo] target(s) in 6.37s
+Creating EFI System Partition...
+Creating GPT disk image with EFI System Partition...
+mkfs.fat 4.2 (2021-01-31)
+✓ Created GPT disk image with EFI System Partition
+Setting up OVMF_CODE...
+Found OVMF_CODE.4m.fd in /usr/share/edk2-ovmf/x64
+Setting up OVMF_VARS original...
+Found OVMF_VARS.4m.fd in /usr/share/edk2-ovmf/x64
+Setting up OVMF_VARS writable copy...
+Starting QEMU in headless mode...
+  QEMU Debug Driver output: stdout (port 0xe9)
+Running QEMU (no timeout)...
+Output driver initialized
+=== TheseusOS UEFI Loader Starting ===
+Output driver initialized: QEMU Debug
+✓ Memory allocation tests skipped (disabled)
+Collecting graphics information...
+✓ Graphics Output Protocol (GOP) found and initialized
+✓ Framebuffer information collected and stored in handoff structure
+Collecting memory map information...
+✓ Memory map collected successfully
+✓ Memory map information stored in handoff structure
+Locating ACPI RSDP table...
+✓ ACPI RSDP table found
+✓ ACPI information stored in handoff structure
+Collecting UEFI system table and image handle...
+✓ UEFI system table and image handle collected
+Collecting firmware information...
+✓ Firmware information collected
+Collecting boot time information...
+✓ Boot time information collected
+Collecting boot device path information...
+✓ Boot device path information collected
+Collecting CPU information...
+✓ CPU information collected
+Collecting hardware inventory...
+Collecting hardware inventory using device paths...
+Found 22 device path handles
+✓ Hardware inventory collected: 22 devices
+✓ Hardware inventory collected
+Getting loaded image device path...
+Getting loaded image device path...
+✓ Loaded image device path found
+  Path pointer: 0x000000003eaa8f18
+✓ Loaded image device path collected
+=== Allocating Temporary Heap for Kernel ===
+Finalizing handoff structure...
+✓ Handoff structure size: 224 bytes
+✓ All system information collected and stored
+Setting kernel image fields (single binary, no UEFI)
+✓ Kernel image fields set (single binary)
+Allocating 1048576 bytes using UEFI allocate_pages (type: LOADER_DATA)
+  Requesting 256 pages (1048576 bytes)
+  ✓ UEFI memory allocated at: 0x000000003E0DD000
+Freeing UEFI memory region: 0x000000003E0DD000 (1048576 bytes)
+  ✓ UEFI memory freed: 0x000000003E0DD000
+Allocating 1052672 bytes using UEFI allocate_pages (type: LOADER_DATA)
+  Requesting 257 pages (1052672 bytes)
+  ✓ UEFI memory allocated at: 0x000000003E0DC000
+Freeing UEFI memory region: 0x000000003E0DC000 (1052672 bytes)
+  ✓ UEFI memory freed: 0x000000003E0DC000
+Allocating 1056768 bytes using UEFI allocate_pages (type: LOADER_DATA)
+  Requesting 258 pages (1056768 bytes)
+  ✓ UEFI memory allocated at: 0x000000003E0DB000
+Freeing UEFI memory region: 0x000000003E0DB000 (1056768 bytes)
+  ✓ UEFI memory freed: 0x000000003E0DB000
+Allocating 1060864 bytes using UEFI allocate_pages (type: LOADER_DATA)
+  Requesting 259 pages (1060864 bytes)
+  ✓ UEFI memory allocated at: 0x000000003E0DA000
+Freeing UEFI memory region: 0x000000003E0DA000 (1060864 bytes)
+  ✓ UEFI memory freed: 0x000000003E0DA000
+Allocating 1064960 bytes using UEFI allocate_pages (type: LOADER_DATA)
+  Requesting 260 pages (1064960 bytes)
+  ✓ UEFI memory allocated at: 0x000000003E0D9000
+Freeing UEFI memory region: 0x000000003E0D9000 (1064960 bytes)
+  ✓ UEFI memory freed: 0x000000003E0D9000
+Allocating 1069056 bytes using UEFI allocate_pages (type: LOADER_DATA)
+  Requesting 261 pages (1069056 bytes)
+  ✓ UEFI memory allocated at: 0x000000003E0D8000
+Freeing UEFI memory region: 0x000000003E0D8000 (1069056 bytes)
+  ✓ UEFI memory freed: 0x000000003E0D8000
+Allocating 1073152 bytes using UEFI allocate_pages (type: LOADER_DATA)
+  Requesting 262 pages (1073152 bytes)
+  ✓ UEFI memory allocated at: 0x000000003E0D7000
+Freeing UEFI memory region: 0x000000003E0D7000 (1073152 bytes)
+  ✓ UEFI memory freed: 0x000000003E0D7000
+Allocating 1077248 bytes using UEFI allocate_pages (type: LOADER_DATA)
+  Requesting 263 pages (1077248 bytes)
+  ✓ UEFI memory allocated at: 0x000000003E0D6000
+Freeing UEFI memory region: 0x000000003E0D6000 (1077248 bytes)
+  ✓ UEFI memory freed: 0x000000003E0D6000
+✗ Failed to allocate non-overlapping temporary heap
+✓ All system information collected, preparing to exit boot services...
+Entering jump_to_kernel_with_handoff
+Allocating persistent handoff buffer, size 224 (0xe0)
+Allocating 224 bytes using UEFI allocate_pages (type: LOADER_DATA)
+  Requesting 1 pages (4096 bytes)
+  ✓ UEFI memory allocated at: 0x000000003EAB8000
+Allocated handoff buffer at phys 0x000000003eab8000
+Copying handoff from src 0x3e1f40a8 to phys 0x000000003eab8000
+Copied HANDOFF.size readback: 224 (0x000000e0)
+Exiting boot services before kernel handoff...
+=== TheseusOS Kernel Starting ===
+Kernel entry point reached successfully
+Allocator shim active (pre-exit backend)
+[handoff] phys=
+0x000000003EAB8000 virt=
+0x000000003EAB8000
+
+Handoff structure address received
+Handoff structure found
+
+┌─────────────────────────────────────────────────────────┐
+│                     Handoff Contents                    │
+├─────────────────────────────────────────────────────────┤
+size: 0x0x00000000000000E0
+handoff_version: 0x0x0000000000000001
+│ Graphics (GOP)
+gop_fb_base: 0x0x0000000080000000
+gop_fb_size: 0x0x00000000003E8000
+gop_width: 0x0x0000000000000500
+gop_height: 0x0x0000000000000320
+gop_stride: 0x0x0000000000000500
+gop_pixel_format: 0x0x0000000000000001
+│ Memory Map
+memory_map_buffer_ptr: 0x0x000000003EAAA018
+memory_map_descriptor_size: 0x0x0000000000000030
+memory_map_descriptor_version: 0x0x0000000000000001
+memory_map_entries: 0x0x0000000000000087
+memory_map_size: 0x0x0000000000001950
+│ ACPI
+acpi_rsdp: 0x0x000000003FB7E014
+│ UEFI
+uefi_system_table: 0x0x000000003F9EC018
+uefi_image_handle: 0x0x000000003EABA898
+│ Firmware
+firmware_vendor_ptr: 0x0x000000003F989B98
+firmware_vendor_len: 0x0x0000000000000006
+firmware_revision: 0x0x0000000000010000
+│ Boot Time / Device Path
+boot_time_seconds: 0x0x0000000068DED479
+boot_time_nanoseconds: 0x0x0000000000000000
+boot_device_path_ptr: 0x0x000000003EAA8F18
+boot_device_path_size: 0x0x0000000000000000
+│ CPU / Hardware
+cpu_count: 0x0x0000000000000001
+cpu_features: 0x0x0000000000000000
+microcode_revision: 0x0x0000000000000000
+hardware_device_count: 0x0x0000000000000016
+hardware_inventory_ptr: 0x0x000000003EAB9018
+hardware_inventory_size: 0x0x00000000000002C0
+│ Kernel Image
+kernel_virtual_base: 0x0xFFFFFFFF80000000
+kernel_physical_base: 0x0x000000003E000000
+kernel_virtual_entry: 0x0xFFFFFFFF801EB84E
+kernel_image_size: 0x0x0000000001000000
+│ Temp Heap
+temp_heap_base: 0x0x0000000000000000
+temp_heap_size: 0x0x0000000000000000
+│ Status
+boot_services_exited: 0x0x0000000000000001
+└─────────────────────────────────────────────────────────┘
+  Debug: handoff.size = 
+0x00000000000000E0 expected = 
+0x00000000000000E0
+
+Handoff validation passed
+=== Setting up Kernel Environment ===
+1. Disabling all interrupts...
+  [apic] deferring LAPIC access until after paging
+  ✓ All interrupts disabled
+2. Setting up GDT...
+  ✓ GDT loaded and segments reloaded
+3. Configuring control registers...
+  [cr] CR0: begin
+  [cr] CR0: done
+  [cr] CR4: begin
+  [cr] CR4: skip modifications
+  ✓ Control registers configured
+3.5. Setting up paging...
+  [vm/new] start
+  [fa] from_handoff begin
+  [fa] base_ptr=
+0x000000003EAAA018 desc_size=
+0x0000000000000030 count=
+0x0000000000000087
+
+  [fa] memmap total_pages=
+0x00000000000503A4 conv_pages=
+0x000000000003D2CC
+
+  [fa] desc[
+0] @
+0x000000003EAAA018
+
+    type=
+0x0000000000000007 start=
+0x0000000000000000 pages=
+0x00000000000000A0
+
+  [fa] region start=
+0x0000000000001000 pages=
+0x000000000000009F
+
+  [fa] reserved frames=
+0x0000000000000010
+
+  [vm/new] got pml4
+  [vm/new] id-map 1GiB begin
+    [vm] map2m
+0x0000000000000000 -> 
+0x0000000000000000
+
+    [vm] map2m
+0x0000000000200000 -> 
+0x0000000000200000
+
+    [vm] map2m
+0x0000000000400000 -> 
+0x0000000000400000
+
+    [vm] map2m
+0x0000000000600000 -> 
+0x0000000000600000
+
+  [vm/new] id-map 1GiB done
+  [vm/new] map kernel HH begin
+  [vm/new] map kernel HH done
+0x000000000000E003  [vm/new] map fb/heap begin
+  [vm/new] map fb/heap done
+  [vm/new] map phys_offset 1GiB begin
+  [vm/new] map phys_offset 1GiB done
+  [vm/new] map LAPIC MMIO begin
+  [vm/new] map LAPIC MMIO done
+  [vm] before new
+  [dbg] mm returned from MemoryManager::new
+  [vm] after new; loading CR3
+  [chk] mm.page_table_root=
+0x0000000000011000
+
+  [chk] mm.pml4_va=
+0xFFFF800000011000
+
+0x0000000000011000[dbg] activate_virtual_memory: loading CR3 with=
+0x0000000000011000
+
+[dbg] activate_virtual_memory: CR3 before=
+0x000000003FC01000
+
+[dbg] activate_virtual_memory: CR3 after=
+0x0000000000011000
+
+  [vm] after CR3
+  ✓ Paging enabled (identity + high-half kernel)
+4. Setting up CPU features...
+  IDT (low-half) installed
+  [hh] preparing jump to high-half...
+  [hh] jump info: 
+ phys_base=
+0x000000003E000000 rip_now=
+0x000000003E1E5425 sym=
+0x000000003E1E533A target=
+0xFFFFFFFF801E533A
+
+  [hh] target physical=
+0x000000003E1E533A
+
+  [hh] jumping to high-half (verified)
+  [hh] entered high-half
+  [dbg] CS=
+0x0000000000000008 expected=
+0x0000000000000008
+
+  [dbg] IDT14 sel=
+0x0000000000000008 type=
+0x000000000000008E
+
+  IDT installed
+  [fa] from_handoff begin
+  [fa] base_ptr=
+0x000000003EAAA018 desc_size=
+0x0000000000000030 count=
+0x0000000000000087
+
+  [fa] memmap total_pages=
+0x00000000000503A4 conv_pages=
+0x000000000003D2CC
+
+  [fa] desc[
+0] @
+0x000000003EAAA018
+
+    type=
+0x0000000000000007 start=
+0x0000000000000000 pages=
+0x00000000000000A0
+
+  [fa] region start=
+0x0000000000001000 pages=
+0x000000000000009F
+
+  [dbg] PF IST=
+0xFFFFFFFF80236000
+
+  [cr] CR4: re-enabled OSFXSR, OSXMMEXCPT, PAGE_GLOBAL
+  SSE enabled
+  MSRs configured
+  [lapic] configuring timer
+  [lapic] TPR=0
+  [lapic] set divide
+  [lapic] program LVT timer (masked)
+  [lapic] ID=0x0000000000000000 VER=0x0000000000050014 SIVR=0x00000000000001FF TPR=0x0000000000000000 LVT=0x0000000000010040 ESR=0x0000000000000000
+  [lapic] arming one-shot timer
+  [lapic] current=0x0000000000018025
+  [lapic] enabling IF
+  [dbg] CR3 before IF=
+0x0000000000011000
+
+  [dbg] CR3 after disable=
+0x0000000000011000
+
+  [lapic] disabled IF
+  [lapic] ticks(before/after)=
+0x0000000000000000/
+0x0000000000000001
+
+  [lapic] timer interrupt received
+  No temp heap available for high-half allocator
+  [perm] begin
+  [perm] frame_alloc from handoff...
+  [fa] from_handoff begin
+  [fa] base_ptr=
+0x000000003EAAA018 desc_size=
+0x0000000000000030 count=
+0x0000000000000087
+
+  [fa] memmap total_pages=
+0x00000000000503A4 conv_pages=
+0x000000000003D2CC
+
+  [fa] desc[
+0] @
+0x000000003EAAA018
+
+    type=
+0x0000000000000007 start=
+0x0000000000000000 pages=
+0x00000000000000A0
+
+  [fa] region start=
+0x0000000000001000 pages=
+0x000000000000009F
+
+  [perm] frame_alloc ready
+  [perm] PML4 pa=
+0x0000000000011000
+
+  [perm] mapper ready
+  [perm] map kernel heap...
+  [fa] desc[
+1] @
+0x000000003EAAA048
+
+    type=
+0x0000000000000007 start=
+0x0000000000100000 pages=
+0x0000000000000700
+
+  [fa] region start=
+0x0000000000100000 pages=
+0x0000000000000700
+
+  [perm] map kernel heap done
+  [perm] initializing global allocator on permanent heap...
+  Global allocator switched to permanent heap
+[dbg] unmap_temporary_heap_x86: begin
+
+  Temporary heap unmapped
+[dbg] unmap_identity_kernel_x86: begin
+
+[dbg] unmap_identity_kernel_x86: done
+
+  Identity-mapped kernel image unmapped
+[driver] initializing driver system
+  [driver/acpi] initialize
+  [driver/acpi] RSDP address: 0x
+0x000000003FB7E014
+
+  [driver/acpi] dumping first 32 bytes of RSDP
+  [acpi/debug] using PHYS_OFFSET mapping for ACPI access
+    
+0x0000000000000052 
+0x0000000000000053 
+0x0000000000000044 
+0x0000000000000020 
+0x0000000000000050 
+0x0000000000000054 
+0x0000000000000052 
+0x0000000000000020 
+    
+0x0000000000000016 
+0x0000000000000042 
+0x000000000000004F 
+0x0000000000000043 
+0x0000000000000048 
+0x0000000000000053 
+0x0000000000000020 
+0x0000000000000002 
+    
+0x0000000000000074 
+0x00000000000000D0 
+0x00000000000000B7 
+0x000000000000003F 
+0x0000000000000024 
+0x0000000000000000 
+0x0000000000000000 
+0x0000000000000000 
+    
+0x00000000000000E8 
+0x00000000000000D0 
+0x00000000000000B7 
+0x000000000000003F 
+0x0000000000000000 
+0x0000000000000000 
+0x0000000000000000 
+0x0000000000000000 
+
+
+  [driver/acpi] RSDP signature pre-check passed
+  [driver/acpi] parsing tables
+  [driver/acpi] mapping header for 
+RSDP
+ @ 0x
+0x000000003FB7E014
+
+    signature: 
+RSD  length: 0x
+0x0000000020525450
+
+  [driver/acpi] about to call AcpiTables::from_rsdp
+  [driver/acpi] AcpiTables::from_rsdp returned Ok
+  [driver/acpi] tables parsed
+  [driver/acpi] extracting platform info
+  [driver/acpi] BSP APIC ID: 
+0x0000000000000000
+
+  [driver/acpi] Local APIC address: 0x
+0x00000000FEE00000
+
+  [driver/acpi] IO APIC ID: 
+0x0000000000000000 Address: 0x
+0x00000000FEC00000 GSI Base: 
+0x0000000000000000
+
+  [driver/acpi] Has 8259 PIC: 
+Yes
+
+Parsing MADT (Multiple APIC Description Table)...
+  BSP APIC ID: 
+0x0000000000000000
+
+  Local APIC address: 0x
+0x00000000FEE00000
+
+  IO APIC ID: 
+0x0000000000000000 Address: 0x
+0x00000000FEC00000 GSI Base: 
+0x0000000000000000
+
+  Has 8259 PIC: 
+true
+
+  Total CPUs found: 
+0x0000000000000001
+
+  IO APICs found: 
+0x0000000000000001
+
+  [driver/acpi] MADT parsed
+  [driver/acpi] Total CPUs: 
+0x0000000000000001
+
+  [driver/acpi] IO APICs: 
+0x0000000000000001
+
+✓ ACPI initialization completed successfully
+[driver] ACPI initialization complete
+[driver] registering UEFI hardware inventory
+[driver] inventory entry index:
+0x0000000000000000 type:
+unknown
+ address:
+0x000000003F8E3518
+[driver] discovered device
+[driver] inventory entry index:
+0x0000000000000001 type:
+unknown
+ address:
+0x000000003F4B5698
+[driver] discovered device
+[driver] inventory entry index:
+0x0000000000000002 type:
+acpi
+ address:
+0x000000003F048898
+[driver] discovered device
+[driver] inventory entry index:
+0x0000000000000003 type:
+vendor
+ address:
+0x000000003ED30598
+[driver] discovered device
+[driver] inventory entry index:
+0x0000000000000004 type:
+vendor
+ address:
+0x000000003ECFCF18
+[driver] discovered device
+[driver] inventory entry index:
+0x0000000000000005 type:
+vendor
+ address:
+0x000000003ECFBA98
+[driver] discovered device
+[driver] inventory entry index:
+0x0000000000000006 type:
+vendor
+ address:
+0x000000003ECEF998
+[driver] discovered device
+[driver] inventory entry index:
+0x0000000000000007 type:
+vendor
+ address:
+0x000000003ECE2A98
+[driver] discovered device
+[driver] inventory entry index:
+0x0000000000000008 type:
+vendor
+ address:
+0x000000003ECE2998
+[driver] discovered device
+[driver] inventory entry index:
+0x0000000000000009 type:
+pci
+ address:
+0x000000003EB15F18
+[driver] discovered device
+[driver] inventory entry index:
+0x000000000000000A type:
+pci
+ address:
+0x000000003EB15018
+[driver] discovered device
+[driver] inventory entry index:
+0x000000000000000B type:
+pci
+ address:
+0x000000003EB17D18
+[driver] discovered device
+[driver] inventory entry index:
+0x000000000000000C type:
+pci
+ address:
+0x000000003EB15718
+[driver] discovered device
+[driver] inventory entry index:
+0x000000000000000D type:
+pci
+ address:
+0x000000003EB11E18
+[driver] discovered device
+[driver] inventory entry index:
+0x000000000000000E type:
+acpi
+ address:
+0x000000003EB11A98
+[driver] discovered device
+[driver] inventory entry index:
+0x000000000000000F type:
+unknown
+ address:
+0x000000003EADE918
+[driver] discovered device
+[driver] inventory entry index:
+0x0000000000000010 type:
+unknown
+ address:
+0x000000003EAF7E18
+[driver] discovered device
+[driver] inventory entry index:
+0x0000000000000011 type:
+unknown
+ address:
+0x000000003EAF7A98
+[driver] discovered device
+[driver] inventory entry index:
+0x0000000000000012 type:
+unknown
+ address:
+0x000000003EADFF18
+[driver] discovered device
+[driver] inventory entry index:
+0x0000000000000013 type:
+unknown
+ address:
+0x000000003EABEF98
+[driver] discovered device
+[driver] inventory entry index:
+0x0000000000000014 type:
+sata
+ address:
+0x000000003EAB2818
+[driver] discovered device
+[driver] inventory entry index:
+0x0000000000000015 type:
+unknown
+ address:
+0x000000003EAAF098
+[driver] discovered device
+[driver] platform summary
+  CPUs: 
+0x0000000000000001
+  IO APICs: 
+0x0000000000000001
+  Local APIC: 0x
+0x00000000FEE00000
+=== Kernel environment setup complete ===
+Kernel environment test completed successfully
+Setting up framebuffer drawing...
+Framebuffer: 0x0000000000000500x0x0000000000000320, stride: 0x0000000000000500, format: 0x0000000000000001, base: 0x0x0000000080000000, size: 0x00000000003E8000
+Bytes per pixel: 0x0000000000000001
+Heart at (0x00000000000004EB,0x0000000000000005) size 16x16
+Configuring APIC timer for heart animation...
+  [lapic] TPR=0
+  [lapic] set divide
+  [lapic] program LVT timer (masked)
+  [lapic] ID=0x0000000000000000 VER=0x0000000000050014 SIVR=0x00000000000001FF TPR=0x0000000000000000 LVT=0x0000000000010040 ESR=0x0000000000000000
+Timer configured and interrupts enabled
+Kernel initialization complete
+Exiting QEMU immediately...

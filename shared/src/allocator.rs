@@ -21,8 +21,8 @@ pub type PreDeallocFn = unsafe fn(*mut u8, Layout);
 
 struct ShimAllocator {
     ready_post_exit: AtomicBool,
-    heap: Mutex<Option<Heap>>,          // post-exit kernel heap
-    pre_alloc: Mutex<Option<PreAllocFn>>,   // pre-exit allocate
+    heap: Mutex<Option<Heap>>,                // post-exit kernel heap
+    pre_alloc: Mutex<Option<PreAllocFn>>,     // pre-exit allocate
     pre_dealloc: Mutex<Option<PreDeallocFn>>, // pre-exit deallocate
 }
 
@@ -88,9 +88,9 @@ pub unsafe fn init_kernel_heap(heap_start: *mut u8, heap_size: usize) {
 
 /// Switch the allocator to use the kernel heap (post-ExitBootServices).
 pub fn switch_to_kernel_heap() {
-    GLOBAL_ALLOCATOR.ready_post_exit.store(true, Ordering::Release);
+    GLOBAL_ALLOCATOR
+        .ready_post_exit
+        .store(true, Ordering::Release);
 }
 
 // Note: OOM handler is provided by binaries (bootloader/kernel) if needed.
-
-

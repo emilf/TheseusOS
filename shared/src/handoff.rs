@@ -117,6 +117,33 @@ pub struct HardwareDevice {
     pub irq: Option<u32>,
 }
 
+pub const DEVICE_TYPE_UNKNOWN: u32 = 0;
+pub const DEVICE_TYPE_CPU: u32 = 1;
+pub const DEVICE_TYPE_IO_APIC: u32 = 2;
+pub const DEVICE_TYPE_PCI: u32 = 3;
+pub const DEVICE_TYPE_USB: u32 = 4;
+pub const DEVICE_TYPE_SATA: u32 = 5;
+pub const DEVICE_TYPE_NVME: u32 = 6;
+pub const DEVICE_TYPE_MAC: u32 = 7;
+pub const DEVICE_TYPE_IPV4: u32 = 8;
+pub const DEVICE_TYPE_IPV6: u32 = 9;
+pub const DEVICE_TYPE_ACPI: u32 = 10;
+pub const DEVICE_TYPE_VENDOR: u32 = 11;
+pub const DEVICE_TYPE_FILE_PATH: u32 = 12;
+pub const DEVICE_TYPE_DISK: u32 = 13;
+pub const DEVICE_TYPE_CDROM: u32 = 14;
+pub const DEVICE_TYPE_RAMDISK: u32 = 15;
+pub const DEVICE_TYPE_URI: u32 = 16;
+pub const DEVICE_TYPE_MESSAGING: u32 = 17;
+pub const DEVICE_TYPE_HARDWARE: u32 = 18;
+pub const DEVICE_TYPE_MEDIA: u32 = 19;
+pub const DEVICE_TYPE_CONTROLLER: u32 = 20;
+pub const DEVICE_TYPE_BLUETOOTH: u32 = 21;
+pub const DEVICE_TYPE_WIFI: u32 = 22;
+pub const DEVICE_TYPE_SD: u32 = 23;
+pub const DEVICE_TYPE_UFS: u32 = 24;
+pub const DEVICE_TYPE_UART: u32 = 25;
+
 impl HardwareDevice {
     pub fn from_bytes(buffer: &[u8], index: usize) -> Option<Self> {
         let entry_size = core::mem::size_of::<Self>();
@@ -131,10 +158,33 @@ impl HardwareDevice {
 
     pub fn device_type_str(&self) -> &'static str {
         match self.device_type {
-            0 => "unknown",
-            1 => "cpu",
-            2 => "ioapic",
-            _ => "device",
+            DEVICE_TYPE_UNKNOWN => "unknown",
+            DEVICE_TYPE_CPU => "cpu",
+            DEVICE_TYPE_IO_APIC => "ioapic",
+            DEVICE_TYPE_PCI => "pci",
+            DEVICE_TYPE_USB => "usb",
+            DEVICE_TYPE_SATA => "sata",
+            DEVICE_TYPE_NVME => "nvme",
+            DEVICE_TYPE_MAC => "mac",
+            DEVICE_TYPE_IPV4 => "ipv4",
+            DEVICE_TYPE_IPV6 => "ipv6",
+            DEVICE_TYPE_ACPI => "acpi",
+            DEVICE_TYPE_VENDOR => "vendor",
+            DEVICE_TYPE_FILE_PATH => "file",
+            DEVICE_TYPE_DISK => "disk",
+            DEVICE_TYPE_CDROM => "cdrom",
+            DEVICE_TYPE_RAMDISK => "ramdisk",
+            DEVICE_TYPE_URI => "uri",
+            DEVICE_TYPE_MESSAGING => "messaging",
+            DEVICE_TYPE_HARDWARE => "hardware",
+            DEVICE_TYPE_MEDIA => "media",
+            DEVICE_TYPE_CONTROLLER => "controller",
+            DEVICE_TYPE_BLUETOOTH => "bluetooth",
+            DEVICE_TYPE_WIFI => "wifi",
+            DEVICE_TYPE_SD => "sd",
+            DEVICE_TYPE_UFS => "ufs",
+            DEVICE_TYPE_UART => "uart",
+            _ => "unknown",
         }
     }
 }

@@ -1,29 +1,27 @@
 extern crate alloc;
 
 use crate::drivers::manager::write_line;
+use alloc::boxed::Box;
 use alloc::format;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use theseus_shared::constants::hardware;
+use theseus_shared::handoff::{
+    HardwareDevice, DEVICE_TYPE_ACPI, DEVICE_TYPE_BLUETOOTH, DEVICE_TYPE_CDROM,
+    DEVICE_TYPE_CONTROLLER, DEVICE_TYPE_DISK, DEVICE_TYPE_FILE_PATH, DEVICE_TYPE_IPV4,
+    DEVICE_TYPE_IPV6, DEVICE_TYPE_MAC, DEVICE_TYPE_MEDIA, DEVICE_TYPE_MESSAGING, DEVICE_TYPE_NVME,
+    DEVICE_TYPE_PCI, DEVICE_TYPE_RAMDISK, DEVICE_TYPE_SATA, DEVICE_TYPE_SD, DEVICE_TYPE_UART,
+    DEVICE_TYPE_UFS, DEVICE_TYPE_UNKNOWN, DEVICE_TYPE_USB, DEVICE_TYPE_VENDOR, DEVICE_TYPE_WIFI,
+};
 use uefi::proto::device_path::{
     text::{AllowShortcuts, DevicePathToText, DisplayOnly},
     DevicePath,
 };
+use uefi::proto::device_path::{DeviceSubType, DeviceType};
 use uefi::proto::loaded_image::LoadedImage;
 use uefi::{boot::SearchType, Identify};
 
-/// Hardware device information
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct HardwareDevice {
-    /// Device type (PCI, USB, SATA, etc.)
-    pub device_type: u32,
-    /// Device handle pointer
-    pub handle_ptr: u64,
-    /// Device path size in bytes
-    pub device_path_size: u32,
-    /// Device path data pointer
-    pub device_path_ptr: u64,
-}
+static mut INVENTORY_STORAGE: Option<Box<[HardwareDevice]>> = None;
 
 /// Hardware inventory structure
 #[repr(C)]
@@ -41,7 +39,7 @@ pub struct HardwareInventory {
 pub fn collect_hardware_inventory(verbose: bool) -> Option<HardwareInventory> {
     write_line("Collecting hardware inventory using device paths...");
 
-    let mut devices = Vec::new();
+    let mut devices: Vec<HardwareDevice> = Vec::new();
 
     // Find all handles that support DevicePath protocol (more comprehensive)
     let handles = match uefi::boot::locate_handle_buffer(SearchType::ByProtocol(&DevicePath::GUID))
@@ -86,67 +84,26 @@ pub fn collect_hardware_inventory(verbose: bool) -> Option<HardwareInventory> {
 
     // Enumerate all handles and get device path information
     for (index, handle) in handles.iter().enumerate() {
-        let mut device = HardwareDevice {
-            device_type: 1, // Generic Device Path
-            handle_ptr: core::ptr::addr_of!(*handle) as usize as u64,
-            device_path_size: 0,
-            device_path_ptr: 0,
+        let handle_addr = handle.as_ptr() as usize as u64;
+        let (device_type, summary) =
+            classify_device(handle, device_path_to_text.as_ref().map(|p| &**p));
+        let entry = HardwareDevice {
+            device_type,
+            address: Some(handle_addr),
+            irq: None,
         };
 
-        // Try to get the device path for this handle
-        if let Ok(device_path_protocol) = uefi::boot::open_protocol_exclusive::<DevicePath>(*handle)
-        {
-            // Store the device path pointer
-            device.device_path_ptr = core::ptr::addr_of!(device_path_protocol) as usize as u64;
-
-            // Try to convert to human-readable text if protocol is available
-            if let Some(ref to_text) = device_path_to_text {
-                match to_text.convert_device_path_to_text(
-                    &device_path_protocol,
-                    DisplayOnly(false),
-                    AllowShortcuts(true),
-                ) {
-                    Ok(text) => {
-                        if verbose {
-                            // Convert PoolString to readable format using as_str_in_buf
-                            let mut path_buf = alloc::string::String::new();
-                            if let Ok(_) = text.as_str_in_buf(&mut path_buf) {
-                                write_line(&format!("  Device {}: {}", index + 1, path_buf));
-                            } else {
-                                write_line(&format!(
-                                    "  Device {}: [Failed to convert to string]",
-                                    index + 1
-                                ));
-                            }
-                        }
-                        // PoolString doesn't have len(), so we'll use a placeholder size
-                        device.device_path_size = 64; // Placeholder size for device path text
-                    }
-                    Err(_) => {
-                        if verbose {
-                            write_line(&format!(
-                                "  Device {}: Handle 0x{:016x} (failed to convert to text)",
-                                index + 1,
-                                core::ptr::addr_of!(*handle) as usize as u64
-                            ));
-                        }
-                    }
-                }
-            } else {
-                if verbose {
-                    write_line(&format!(
-                        "  Device {}: Handle 0x{:016x} (no text conversion)",
-                        index + 1,
-                        core::ptr::addr_of!(*handle) as usize as u64
-                    ));
-                }
-            }
+        if verbose {
+            write_line(&format!(
+                "  Device {}: Handle 0x{:016x} -> {}",
+                index + 1,
+                handle_addr,
+                summary
+            ));
         }
 
-        devices.push(device);
+        devices.push(entry);
 
-        // Limit to first 10 devices to avoid hanging
-        // Bounds check to prevent excessive memory usage and potential hangs
         if devices.len() >= hardware::MAX_HARDWARE_DEVICES {
             if verbose {
                 write_line(&format!(
@@ -163,16 +120,25 @@ pub fn collect_hardware_inventory(verbose: bool) -> Option<HardwareInventory> {
         return None;
     }
 
+    let boxed_devices = devices.into_boxed_slice();
+    let device_count = boxed_devices.len();
+    let devices_ptr = boxed_devices.as_ptr() as u64;
+    let total_size = (device_count * core::mem::size_of::<HardwareDevice>()) as u64;
+
     let inventory = HardwareInventory {
-        device_count: devices.len() as u32,
-        devices_ptr: devices.as_ptr() as u64,
-        total_size: (devices.len() * core::mem::size_of::<HardwareDevice>()) as u64,
+        device_count: device_count as u32,
+        devices_ptr,
+        total_size,
     };
+
+    unsafe {
+        INVENTORY_STORAGE = Some(boxed_devices);
+    }
 
     if verbose {
         write_line(&format!(
             "✓ Hardware inventory collected: {} devices",
-            devices.len()
+            inventory.device_count
         ));
         write_line(&format!(
             "  Device struct size: {} bytes",
@@ -190,11 +156,165 @@ pub fn collect_hardware_inventory(verbose: bool) -> Option<HardwareInventory> {
     } else {
         write_line(&format!(
             "✓ Hardware inventory collected: {} devices",
-            devices.len()
+            inventory.device_count
         ));
     }
 
     Some(inventory)
+}
+
+fn classify_device(
+    handle: &uefi::Handle,
+    device_path_to_text: Option<&DevicePathToText>,
+) -> (u32, String) {
+    let mut kind = DEVICE_TYPE_UNKNOWN;
+    let mut summary = String::from("unknown");
+
+    if let Ok(device_path) = uefi::boot::open_protocol_exclusive::<DevicePath>(*handle) {
+        let mut parts = Vec::new();
+        let mut detected = DEVICE_TYPE_UNKNOWN;
+
+        for node in device_path.node_iter() {
+            let node_summary = match (node.device_type(), node.sub_type()) {
+                (DeviceType::HARDWARE, DeviceSubType::HARDWARE_PCI) => {
+                    detected = DEVICE_TYPE_PCI;
+                    "hardware/pci"
+                }
+                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_SCSI) => {
+                    detected = DEVICE_TYPE_SATA;
+                    "messaging/scsi"
+                }
+                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_USB) => {
+                    detected = DEVICE_TYPE_USB;
+                    "messaging/usb"
+                }
+                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_SATA) => {
+                    detected = DEVICE_TYPE_SATA;
+                    "messaging/sata"
+                }
+                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_NVME_OF_NAMESPACE) => {
+                    detected = DEVICE_TYPE_NVME;
+                    "messaging/nvme-of"
+                }
+                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_MAC_ADDRESS) => {
+                    detected = DEVICE_TYPE_MAC;
+                    "messaging/mac"
+                }
+                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_IPV4) => {
+                    detected = DEVICE_TYPE_IPV4;
+                    "messaging/ipv4"
+                }
+                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_IPV6) => {
+                    detected = DEVICE_TYPE_IPV6;
+                    "messaging/ipv6"
+                }
+                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_USB_CLASS) => {
+                    detected = DEVICE_TYPE_USB;
+                    "messaging/usb-class"
+                }
+                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_SCSI_SAS_EX) => {
+                    detected = DEVICE_TYPE_SATA;
+                    "messaging/sas"
+                }
+                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_UART) => {
+                    detected = DEVICE_TYPE_UART;
+                    "messaging/uart"
+                }
+                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_BLUETOOTH) => {
+                    detected = DEVICE_TYPE_BLUETOOTH;
+                    "messaging/bluetooth"
+                }
+                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_WIFI) => {
+                    detected = DEVICE_TYPE_WIFI;
+                    "messaging/wifi"
+                }
+                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_SD) => {
+                    detected = DEVICE_TYPE_SD;
+                    "messaging/sd"
+                }
+                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_UFS) => {
+                    detected = DEVICE_TYPE_UFS;
+                    "messaging/ufs"
+                }
+                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_URI) => {
+                    detected = DEVICE_TYPE_MESSAGING;
+                    "messaging/uri"
+                }
+                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_I2O) => {
+                    detected = DEVICE_TYPE_MESSAGING;
+                    "messaging/i2o"
+                }
+                (DeviceType::MEDIA, DeviceSubType::MEDIA_HARD_DRIVE) => {
+                    detected = DEVICE_TYPE_DISK;
+                    "media/hard-drive"
+                }
+                (DeviceType::MEDIA, DeviceSubType::MEDIA_CD_ROM) => {
+                    detected = DEVICE_TYPE_CDROM;
+                    "media/cdrom"
+                }
+                (DeviceType::MEDIA, DeviceSubType::MEDIA_FILE_PATH) => {
+                    detected = DEVICE_TYPE_FILE_PATH;
+                    "media/file"
+                }
+                (DeviceType::MEDIA, DeviceSubType::MEDIA_RELATIVE_OFFSET_RANGE) => {
+                    detected = DEVICE_TYPE_MEDIA;
+                    "media/relative-offset"
+                }
+                (DeviceType::MEDIA, DeviceSubType::MEDIA_RAM_DISK) => {
+                    detected = DEVICE_TYPE_RAMDISK;
+                    "media/ramdisk"
+                }
+                (DeviceType::HARDWARE, DeviceSubType::HARDWARE_CONTROLLER) => {
+                    detected = DEVICE_TYPE_CONTROLLER;
+                    "hardware/controller"
+                }
+                (DeviceType::HARDWARE, DeviceSubType::HARDWARE_VENDOR) => {
+                    detected = DEVICE_TYPE_VENDOR;
+                    "hardware/vendor"
+                }
+                (DeviceType::ACPI, _) => {
+                    detected = DEVICE_TYPE_ACPI;
+                    "acpi/node"
+                }
+                (DeviceType::END, DeviceSubType::END_INSTANCE) => "end-instance",
+                (DeviceType::END, DeviceSubType::END_ENTIRE) => "end-entire",
+                (ty, subtype) => {
+                    detected = DEVICE_TYPE_MESSAGING;
+                    parts.push(format!("other({:?}/{:?})", ty, subtype));
+                    continue;
+                }
+            };
+            parts.push(node_summary.to_string());
+            if detected != DEVICE_TYPE_UNKNOWN {
+                kind = detected;
+            }
+        }
+
+        if kind == DEVICE_TYPE_UNKNOWN {
+            kind = DEVICE_TYPE_UNKNOWN;
+        }
+
+        if let Some(to_text) = device_path_to_text {
+            if let Ok(text) = to_text.convert_device_path_to_text(
+                &device_path,
+                DisplayOnly(false),
+                AllowShortcuts(true),
+            ) {
+                let mut path_buf = String::new();
+                if text.as_str_in_buf(&mut path_buf).is_ok() {
+                    summary = path_buf;
+                } else {
+                    summary = parts.join(" -> ");
+                }
+            } else {
+                summary = parts.join(" -> ");
+            }
+        } else {
+            summary = parts.join(" -> ");
+        }
+    }
+
+    (kind, summary)
 }
 
 /// Display hardware inventory in a beautiful format
