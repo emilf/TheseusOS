@@ -1,5 +1,25 @@
-/// Handoff structure passed to the kernel
-/// Layout is stable (repr C) to allow consumption from any language
+/// Handoff structure passed from bootloader to kernel.
+///
+/// This structure contains all the system information collected during UEFI boot
+/// and is passed to the kernel during the handoff process. It includes hardware
+/// inventory, memory maps, ACPI information, and other platform details.
+///
+/// # Layout
+/// The structure is marked `#[repr(C)]` to ensure stable layout for
+/// consumption from any language and to maintain ABI compatibility.
+///
+/// # Fields
+/// - **Graphics**: Framebuffer information from UEFI GOP
+/// - **Memory Map**: UEFI memory map and descriptor information
+/// - **ACPI**: Root System Description Pointer (RSDP) address
+/// - **UEFI**: System table and image handle for boot services exit
+/// - **Firmware**: Vendor information and revision
+/// - **Boot Time**: Timestamp and device path information
+/// - **CPU**: Processor count, features, and microcode revision
+/// - **Hardware Inventory**: Device enumeration results
+/// - **Kernel Image**: Virtual memory layout information
+/// - **Temporary Heap**: Pre-allocated heap for kernel initialization
+/// - **Status**: Boot services exit status
 #[repr(C)]
 pub struct Handoff {
     /// Total size of this struct in bytes
@@ -109,42 +129,126 @@ pub struct Handoff {
     pub boot_services_exited: u32,
 }
 
+/// Hardware device information structure.
+///
+/// This structure represents a single hardware device discovered during UEFI boot.
+/// It contains the device type, optional address information, and optional IRQ
+/// assignment. The structure is used in the hardware inventory passed from
+/// bootloader to kernel.
+///
+/// # Layout
+/// The structure is marked `#[repr(C)]` to ensure stable layout for
+/// handoff between bootloader and kernel.
+///
+/// # Fields
+/// - `device_type`: Standardized device type constant (see `DEVICE_TYPE_*` constants)
+/// - `address`: Optional device address (typically UEFI handle address)
+/// - `irq`: Optional interrupt request number (currently unused)
+///
+/// # Usage
+/// Devices are collected during bootloader execution and passed to the kernel
+/// via the handoff structure. The kernel uses this information to register
+/// devices with the driver system.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct HardwareDevice {
+    /// Standardized device type constant (see DEVICE_TYPE_* constants)
     pub device_type: u32,
+    /// Optional device address (typically UEFI handle address)
     pub address: Option<u64>,
+    /// Optional interrupt request number (currently unused)
     pub irq: Option<u32>,
 }
 
+/// Device type constants for hardware inventory classification.
+///
+/// These constants define standardized device types used throughout the
+/// hardware inventory system. They map UEFI device path node types to
+/// simplified categories that the kernel can easily understand and process.
+///
+/// # Device Categories
+/// - **System**: CPU cores, IO APICs, ACPI devices
+/// - **Storage**: PCI, USB, SATA, NVMe, disks, CD-ROMs, RAM disks
+/// - **Network**: MAC addresses, IPv4/IPv6 interfaces, WiFi, Bluetooth
+/// - **Media**: File paths, URIs, generic media devices
+/// - **Communication**: UART, messaging protocols
+/// - **Vendor**: Vendor-specific hardware
+/// - **Unknown**: Unclassified or unrecognized devices
+///
+/// # Usage
+/// These constants are used by the bootloader to classify discovered devices
+/// and by the kernel to understand device types during driver registration.
 pub const DEVICE_TYPE_UNKNOWN: u32 = 0;
+/// Unclassified device
 pub const DEVICE_TYPE_CPU: u32 = 1;
+/// CPU cores
 pub const DEVICE_TYPE_IO_APIC: u32 = 2;
+/// IO APIC controllers
 pub const DEVICE_TYPE_PCI: u32 = 3;
+/// PCI devices
 pub const DEVICE_TYPE_USB: u32 = 4;
+/// USB devices
 pub const DEVICE_TYPE_SATA: u32 = 5;
+/// SATA/SCSI devices
 pub const DEVICE_TYPE_NVME: u32 = 6;
+/// NVMe devices
 pub const DEVICE_TYPE_MAC: u32 = 7;
+/// Network interfaces
 pub const DEVICE_TYPE_IPV4: u32 = 8;
+/// IPv4 network
 pub const DEVICE_TYPE_IPV6: u32 = 9;
+/// IPv6 network
 pub const DEVICE_TYPE_ACPI: u32 = 10;
+/// ACPI devices
 pub const DEVICE_TYPE_VENDOR: u32 = 11;
+/// Vendor-specific devices
 pub const DEVICE_TYPE_FILE_PATH: u32 = 12;
+/// File system paths
 pub const DEVICE_TYPE_DISK: u32 = 13;
+/// Block storage
 pub const DEVICE_TYPE_CDROM: u32 = 14;
+/// Optical drives
 pub const DEVICE_TYPE_RAMDISK: u32 = 15;
+/// RAM disks
 pub const DEVICE_TYPE_URI: u32 = 16;
+/// URI references
 pub const DEVICE_TYPE_MESSAGING: u32 = 17;
+/// Generic messaging
 pub const DEVICE_TYPE_HARDWARE: u32 = 18;
+/// Generic hardware
 pub const DEVICE_TYPE_MEDIA: u32 = 19;
+/// Media devices
 pub const DEVICE_TYPE_CONTROLLER: u32 = 20;
+/// Hardware controllers
 pub const DEVICE_TYPE_BLUETOOTH: u32 = 21;
+/// Bluetooth devices
 pub const DEVICE_TYPE_WIFI: u32 = 22;
+/// WiFi interfaces
 pub const DEVICE_TYPE_SD: u32 = 23;
+/// SD card devices
 pub const DEVICE_TYPE_UFS: u32 = 24;
+/// UFS storage
 pub const DEVICE_TYPE_UART: u32 = 25;
+/// Serial ports
 
 impl HardwareDevice {
+    /// Create a `HardwareDevice` from a byte buffer at the specified index.
+    ///
+    /// This function is used by the kernel to deserialize hardware device
+    /// information from the handoff structure's inventory buffer.
+    ///
+    /// # Arguments
+    /// * `buffer` - The byte buffer containing serialized hardware devices
+    /// * `index` - The zero-based index of the device to deserialize
+    ///
+    /// # Returns
+    /// * `Some(HardwareDevice)` - Successfully deserialized device
+    /// * `None` - Index out of bounds or buffer too small
+    ///
+    /// # Safety
+    /// This function assumes the buffer contains valid `HardwareDevice` structures
+    /// laid out sequentially. The caller must ensure the buffer is properly
+    /// aligned and contains valid data.
     pub fn from_bytes(buffer: &[u8], index: usize) -> Option<Self> {
         let entry_size = core::mem::size_of::<Self>();
         let start = index.checked_mul(entry_size)?;
@@ -156,6 +260,24 @@ impl HardwareDevice {
         unsafe { Some(core::ptr::read_unaligned(ptr)) }
     }
 
+    /// Convert device type constant to human-readable string.
+    ///
+    /// This function provides a string representation of the device type
+    /// constant for logging and debugging purposes.
+    ///
+    /// # Returns
+    /// A string slice containing the human-readable device type name.
+    /// Unknown device types return "unknown".
+    ///
+    /// # Example
+    /// ```rust
+    /// let device = HardwareDevice {
+    ///     device_type: DEVICE_TYPE_PCI,
+    ///     address: Some(0x1234),
+    ///     irq: None,
+    /// };
+    /// assert_eq!(device.device_type_str(), "pci");
+    /// ```
     pub fn device_type_str(&self) -> &'static str {
         match self.device_type {
             DEVICE_TYPE_UNKNOWN => "unknown",
