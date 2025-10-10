@@ -4,6 +4,7 @@
 //! higher-level driver system initialization routines.
 
 pub mod manager;
+pub mod serial;
 pub mod system;
 pub mod traits;
 

@@ -18,6 +18,11 @@ pub type DriverResult<T> = Result<T, &'static str>;
 pub fn init() -> DriverResult<PlatformInfo> {
     kernel_write_line("[driver] initializing driver system");
 
+    // Register core drivers first
+    kernel_write_line("[driver] registering core drivers");
+    super::serial::register_serial_driver();
+    super::serial::register_com1_device();
+
     let handoff = unsafe { &*(handoff_phys_ptr() as *const theseus_shared::handoff::Handoff) };
 
     let platform_info = acpi::initialize_acpi(handoff.acpi_rsdp)?;

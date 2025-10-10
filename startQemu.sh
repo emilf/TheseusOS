@@ -35,7 +35,8 @@ fi
 if [[ "$HEADLESS" == "true" || "$HEADLESS" == "headless" ]]; then
   echo "Starting QEMU in headless mode..."
   echo "  QEMU Debug Driver output: stdout (port 0xe9)"
-  QEMU_DISPLAY_ARGS=( -display none -serial null )
+  echo "  COM1 Serial output: com1.log"
+  QEMU_DISPLAY_ARGS=( -display none -serial file:com1.log )
   # Do not wait for a monitor connection or pause by default
   QEMU_MONITOR_ARGS=( -monitor none )
   QEMU_PAUSE_ARGS=()
