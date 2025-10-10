@@ -682,6 +682,17 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
     crate::display::kernel_write_line("=== Kernel environment setup complete ===");
     crate::display::kernel_write_line("Kernel environment test completed successfully");
 
+    // Enter kernel monitor if configured
+    if crate::config::ENABLE_KERNEL_MONITOR {
+        crate::display::kernel_write_line("[monitor] ENABLE_KERNEL_MONITOR=true, entering monitor...");
+        // Unmask COM1 IRQ 4 for interrupt-driven I/O
+        unsafe {
+            crate::interrupts::unmask_pic_irq(4);
+        }
+        crate::monitor::start_monitor();
+        // Never returns
+    }
+
     // Set up framebuffer drawing and timer
     crate::display::kernel_write_line("Setting up framebuffer drawing...");
     crate::framebuffer::init_framebuffer_drawing();

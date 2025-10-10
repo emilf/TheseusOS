@@ -17,3 +17,8 @@ pub const PRINT_HARDWARE_INVENTORY: bool = true;
 /// When `true`, keep the legacy 1 GiB PHYS_OFFSET identity mapping.
 /// When `false`, rely on per-table ACPI mappings and tighter PHYS_OFFSET coverage.
 pub const MAP_LEGACY_PHYS_OFFSET_1GIB: bool = true;
+
+/// When `true`, start the interactive kernel monitor after initialization.
+/// The monitor provides a serial-based command-line interface for debugging.
+/// WARNING: This prevents normal kernel operation - use for debugging only!
+pub const ENABLE_KERNEL_MONITOR: bool = true;

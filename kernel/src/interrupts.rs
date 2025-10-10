@@ -46,6 +46,7 @@ impl IdtEntry {
 // Switch to x86_64 crate IDT; retain minimal entry struct for diagnostics via SIDT
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Once as SpinOnce;
+use x86_64::instructions::port::Port;
 use x86_64::instructions::tables::sgdt;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
@@ -53,6 +54,7 @@ use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, Pag
 static IDT_X86: SpinOnce<InterruptDescriptorTable> = SpinOnce::new();
 const APIC_TIMER_VECTOR: u8 = 0x40; // 64
 const APIC_ERROR_VECTOR: u8 = 0xFE; // APIC error interrupts
+const SERIAL_COM1_VECTOR: u8 = 0x24; // IRQ 4 = vector 36 (0x20 + 4)
 static TIMER_TICKS: AtomicU32 = AtomicU32::new(0);
 pub static mut DOUBLE_FAULT_CONTEXT: Option<DoubleFaultContext> = None;
 
@@ -279,6 +281,8 @@ pub unsafe fn setup_idt() {
         idt.page_fault.set_handler_fn(handler_pf);
         // Timer interrupt vector
         idt[APIC_TIMER_VECTOR as usize].set_handler_fn(handler_timer);
+        // Serial COM1 interrupt vector (IRQ 4)
+        idt[SERIAL_COM1_VECTOR as usize].set_handler_fn(handler_serial_com1);
         // Spurious interrupt vector (0xFF)
         idt[0xFF].set_handler_fn(handler_spurious);
         // APIC error vector
@@ -472,6 +476,18 @@ extern "x86-interrupt" fn handler_timer(_stack: InterruptStackFrame) {
         if let Some(handoff) = get_handoff_for_timer() {
             crate::framebuffer::update_heart_animation(handoff);
         }
+    }
+}
+
+extern "x86-interrupt" fn handler_serial_com1(_stack: InterruptStackFrame) {
+    // Dispatch to driver manager
+    use crate::drivers::manager::driver_manager;
+    driver_manager().lock().handle_irq(4);
+    
+    // Send EOI to master PIC (IRQ 0-7)
+    unsafe {
+        let mut pic1: Port<u8> = Port::new(0x20);
+        pic1.write(0x20); // EOI command
     }
 }
 
@@ -789,6 +805,31 @@ unsafe fn mask_pic_interrupts() {
         master.write(0xFFu8);
         slave.write(0xFFu8);
     }
+}
+
+/// Unmask a specific IRQ in the PIC
+///
+/// # Arguments
+/// * `irq` - The IRQ number to unmask (0-15)
+///
+/// # Safety
+/// This function modifies PIC mask registers and should only be called
+/// when the PIC is properly initialized.
+pub unsafe fn unmask_pic_irq(irq: u8) {
+    use x86_64::instructions::port::Port;
+    
+    let port: u16 = if irq < 8 {
+        0x21 // Master PIC
+    } else {
+        0xA1 // Slave PIC
+    };
+    
+    let irq_bit = if irq < 8 { irq } else { irq - 8 };
+    
+    let mut pic: Port<u8> = Port::new(port);
+    let current_mask = pic.read();
+    let new_mask = current_mask & !(1 << irq_bit);
+    pic.write(new_mask);
 }
 
 /// Check if APIC is available

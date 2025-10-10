@@ -12,7 +12,6 @@ extern crate alloc;
 
 // Re-export all the kernel modules
 pub mod acpi;
-pub mod allocator;
 pub mod boot;
 pub mod config;
 pub mod cpu;
@@ -24,6 +23,7 @@ pub mod gdt;
 pub mod handoff;
 pub mod interrupts;
 pub mod memory;
+pub mod monitor;
 pub mod panic;
 pub mod stack;
 

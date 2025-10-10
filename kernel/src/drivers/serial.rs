@@ -17,6 +17,7 @@
 
 use crate::display::kernel_write_line;
 use crate::drivers::traits::{Device, DeviceId, Driver};
+use alloc::collections::VecDeque;
 use spin::Mutex;
 use theseus_shared::constants::io_ports::com1;
 use x86_64::instructions::port::Port;
@@ -26,6 +27,9 @@ pub struct SerialDriver {
     /// Protects concurrent access to the serial port
     state: Mutex<SerialState>,
 }
+
+/// Ring buffer size for received data
+const RX_BUFFER_SIZE: usize = 1024;
 
 /// Internal state for the serial port
 struct SerialState {
@@ -41,11 +45,13 @@ struct SerialState {
     modem_ctrl: Port<u8>,
     /// Line status register port
     line_status: Port<u8>,
+    /// Ring buffer for received data (interrupt-driven)
+    rx_buffer: VecDeque<u8>,
 }
 
 impl SerialState {
     /// Create a new uninitialized serial state
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
             initialized: false,
             data: Port::new(com1::DATA),
@@ -53,6 +59,7 @@ impl SerialState {
             line_ctrl: Port::new(com1::LINE_CTRL),
             modem_ctrl: Port::new(com1::MODEM_CTRL),
             line_status: Port::new(com1::LINE_STATUS),
+            rx_buffer: VecDeque::with_capacity(RX_BUFFER_SIZE),
         }
     }
 
@@ -103,10 +110,63 @@ impl SerialState {
             // If serial is not faulty, set it in normal operation mode
             // (not-loopback with IRQs enabled and OUT#1 and OUT#2 bits enabled)
             self.modem_ctrl.write(0x0F);
+            
+            // Enable receive data available interrupt (bit 0)
+            // This allows interrupt-driven I/O for incoming data
+            self.int_enable.write(0x01);
         }
 
         self.initialized = true;
         true
+    }
+    
+    /// Handle serial port interrupt
+    ///
+    /// This function is called from the IRQ handler to process serial events.
+    /// It reads the Interrupt Identification Register (IIR) to determine the
+    /// cause and handles received data by buffering it in the ring buffer.
+    ///
+    /// # Interrupt Types Handled
+    /// - 0b010: Received data available
+    /// - 0b110: Receiver line status error
+    fn handle_interrupt(&mut self) {
+        unsafe {
+            // Read IIR (Interrupt Identification Register) at base+2
+            let mut iir_port: Port<u8> = Port::new(com1::DATA + 2);
+            let iir = iir_port.read();
+            
+            // Check interrupt type (bits 1-3)
+            match (iir >> 1) & 0x07 {
+                0b010 => {
+                    // Received data available - read all available bytes
+                    while self.data_available() {
+                        if let Some(byte) = self.read_byte_direct() {
+                            if self.rx_buffer.len() < RX_BUFFER_SIZE {
+                                self.rx_buffer.push_back(byte);
+                            }
+                            // If buffer is full, drop the byte (overflow)
+                        }
+                    }
+                }
+                0b110 => {
+                    // Receiver line status error - read LSR to clear
+                    let _ = self.line_status.read();
+                }
+                0b100 => {
+                    // Character timeout - read any pending data
+                    while self.data_available() {
+                        if let Some(byte) = self.read_byte_direct() {
+                            if self.rx_buffer.len() < RX_BUFFER_SIZE {
+                                self.rx_buffer.push_back(byte);
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // Unknown or transmitter holding register empty - ignore
+                }
+            }
+        }
     }
 
     /// Check if the transmit buffer is empty
@@ -132,27 +192,41 @@ impl SerialState {
         unsafe { (self.line_status.read() & 0x01) != 0 }
     }
 
-    /// Read a single byte from the serial port
+    /// Read a single byte directly from the serial port hardware
     ///
     /// Returns `None` if no data is available
-    fn read_byte(&mut self) -> Option<u8> {
+    fn read_byte_direct(&mut self) -> Option<u8> {
         if self.data_available() {
             unsafe { Some(self.data.read()) }
         } else {
             None
         }
     }
+    
+    /// Read a byte from the ring buffer (interrupt-driven)
+    ///
+    /// Returns `None` if buffer is empty
+    fn read_byte_buffered(&mut self) -> Option<u8> {
+        self.rx_buffer.pop_front()
+    }
 }
 
 /// Global serial driver instance
-static SERIAL_DRIVER: SerialDriver = SerialDriver::new();
+static SERIAL_DRIVER: SpinOnce<SerialDriver> = SpinOnce::new();
+
+use spin::Once as SpinOnce;
 
 impl SerialDriver {
     /// Create a new serial driver instance
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             state: Mutex::new(SerialState::new()),
         }
+    }
+    
+    /// Get or initialize the global serial driver instance
+    fn get() -> &'static Self {
+        SERIAL_DRIVER.call_once(|| SerialDriver::new())
     }
 
     /// Write a string to the serial port
@@ -184,7 +258,7 @@ impl SerialDriver {
         buf.len()
     }
 
-    /// Read bytes from the serial port
+    /// Read bytes from the serial port (uses interrupt-driven ring buffer)
     ///
     /// Returns the number of bytes actually read (may be 0 if no data available)
     pub fn read_bytes(&'static self, buf: &mut [u8]) -> usize {
@@ -195,7 +269,7 @@ impl SerialDriver {
 
         let mut count = 0;
         for slot in buf.iter_mut() {
-            if let Some(byte) = state.read_byte() {
+            if let Some(byte) = state.read_byte_buffered() {
                 *slot = byte;
                 count += 1;
             } else {
@@ -203,6 +277,14 @@ impl SerialDriver {
             }
         }
         count
+    }
+    
+    /// Handle serial interrupt - must be called from IRQ handler
+    pub fn handle_irq(&'static self) {
+        let mut state = self.state.lock();
+        if state.initialized {
+            state.handle_interrupt();
+        }
     }
 }
 
@@ -266,8 +348,7 @@ impl Driver for SerialDriver {
     fn irq_handler(&'static self, dev: &mut Device, irq: u32) -> bool {
         // COM1 typically uses IRQ 4
         if dev.driver_data == Some(0xC041) && irq == 4 {
-            // Handle serial interrupt (data received, transmit buffer empty, etc.)
-            // For now, we just acknowledge we could handle it
+            self.handle_irq();
             true
         } else {
             false
@@ -275,12 +356,17 @@ impl Driver for SerialDriver {
     }
 }
 
+/// Get the global serial driver instance
+pub fn serial_driver() -> &'static SerialDriver {
+    SerialDriver::get()
+}
+
 /// Register the COM1 serial driver with the driver manager
 pub fn register_serial_driver() {
     use crate::drivers::manager::driver_manager;
 
     kernel_write_line("[serial] registering COM1 driver");
-    driver_manager().lock().register_driver(&SERIAL_DRIVER);
+    driver_manager().lock().register_driver(SerialDriver::get());
 }
 
 /// Create and register a COM1 device for the driver to bind to
