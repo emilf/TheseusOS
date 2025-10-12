@@ -51,7 +51,8 @@ use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
 static IDT_X86: SpinOnce<InterruptDescriptorTable> = SpinOnce::new();
-const APIC_TIMER_VECTOR: u8 = 0x40; // 64
+pub const APIC_TIMER_VECTOR: u8 = 0x40; // 64
+pub const SERIAL_RX_VECTOR: u8 = APIC_TIMER_VECTOR + 1;
 const APIC_ERROR_VECTOR: u8 = 0xFE; // APIC error interrupts
 pub static TIMER_TICKS: AtomicU32 = AtomicU32::new(0);
 pub static mut DOUBLE_FAULT_CONTEXT: Option<DoubleFaultContext> = None;
@@ -301,6 +302,8 @@ pub unsafe fn setup_idt() {
                     .set_stack_index(IST_INDEX_PF);
             }
         }
+        // Serial RX vector
+        idt[SERIAL_RX_VECTOR as usize].set_handler_fn(handler_serial_rx);
         idt
     });
     idt.load();
@@ -471,6 +474,22 @@ extern "x86-interrupt" fn handler_timer(_stack: InterruptStackFrame) {
     unsafe {
         if let Some(handoff) = get_handoff_for_timer() {
             crate::framebuffer::update_heart_animation(handoff);
+        }
+    }
+}
+
+extern "x86-interrupt" fn handler_serial_rx(_stack: InterruptStackFrame) {
+    let handled = {
+        let mut mgr = crate::drivers::manager::driver_manager().lock();
+        mgr.handle_irq(4)
+    };
+    unsafe {
+        let apic_base = get_apic_base();
+        write_apic_register(apic_base, 0xB0, 0);
+    }
+    if !handled {
+        unsafe {
+            print_str_0xe9("[serial] irq but no handler\n");
         }
     }
 }

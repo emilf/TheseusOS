@@ -8,6 +8,7 @@ pub mod serial;
 pub mod system;
 pub mod traits;
 
+pub use super::interrupts::{APIC_TIMER_VECTOR, SERIAL_RX_VECTOR};
 pub use manager::DriverManager;
-pub use serial::register_serial_driver;
+pub use serial::{init_serial, register_serial_driver};
 pub use traits::{Device, DeviceClass, DeviceId, Driver};

@@ -7,7 +7,7 @@ use crate::display::kernel_write_line;
 use crate::handoff::handoff_phys_ptr;
 use crate::memory::{
     current_pml4_phys, map_range_with_policy, phys_to_virt_pa, BootFrameAllocator, PageTable,
-    PHYS_OFFSET, PTE_GLOBAL, PTE_NO_EXEC, PTE_PRESENT, PTE_WRITABLE,
+    PTE_GLOBAL, PTE_NO_EXEC, PTE_PRESENT, PTE_WRITABLE,
 };
 use acpi::{sdt::SdtHeader, AcpiHandler, AcpiTables, PhysicalMapping};
 use core::{
@@ -77,7 +77,7 @@ fn ensure_acpi_virtual_mapping(phys_addr: u64, size: usize) -> u64 {
             PHYS_OFFSET_FALLBACK_WARNED.store(true, Ordering::Relaxed);
             kernel_write_line("  [acpi/debug] using PHYS_OFFSET mapping for ACPI access");
         }
-        return PHYS_OFFSET + phys_addr;
+        return phys_to_virt_pa(phys_addr);
     }
 
     let page_size = crate::memory::PAGE_SIZE as u64;

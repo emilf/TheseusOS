@@ -90,13 +90,12 @@ impl DriverManager {
     }
 
     /// Simple IRQ dispatch helper. Returns true if handled.
-    pub fn handle_irq(&self, irq: u32) -> bool {
-        for dev in self.devices.iter() {
+    pub fn handle_irq(&mut self, irq: u32) -> bool {
+        for dev in self.devices.iter_mut() {
             if let Some(dev_irq) = dev.irq {
                 if dev_irq == irq {
                     for drv in self.drivers.iter() {
-                        // Ask every driver; in the MVP we expect a single binding
-                        if drv.irq_handler(&mut dev.clone(), irq) {
+                        if drv.irq_handler(dev, irq) {
                             return true;
                         }
                     }

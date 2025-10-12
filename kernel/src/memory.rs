@@ -357,6 +357,13 @@ impl MemoryManager {
             crate::display::kernel_write_line("  [vm/new] map LAPIC MMIO done");
         }
 
+        // Map IO APIC MMIO region (0xFEC00000-0xFECFFFFF)
+        {
+            crate::display::kernel_write_line("  [vm/new] map IO APIC MMIO begin");
+            mapping::map_io_apic_mmio_alloc(pml4, &mut early_frame_alloc);
+            crate::display::kernel_write_line("  [vm/new] map IO APIC MMIO done");
+        }
+
         let kernel_heap_start = KERNEL_HEAP_BASE;
         let kernel_heap_end = kernel_heap_start + KERNEL_HEAP_SIZE as u64;
 

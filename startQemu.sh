@@ -109,6 +109,7 @@ if [[ "$TIMEOUT" -gt 0 ]]; then
 else
   echo "Running QEMU (no timeout)..."
   TMP_OUT=$(mktemp)
+  echo "${QEMU_CMD[@]}"
   "${QEMU_CMD[@]}" 2>&1 | tee "$TMP_OUT"
   EXIT_CODE=$?
   if grep -q "Kernel environment test completed successfully" "$TMP_OUT"; then

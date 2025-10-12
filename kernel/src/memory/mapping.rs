@@ -183,6 +183,26 @@ pub unsafe fn map_lapic_mmio_alloc(pml4: &mut PageTable, fa: &mut BootFrameAlloc
     }
 }
 
+/// Map the IO APIC MMIO region at a high-half address derived from `PHYS_OFFSET`.
+/// Most PC platforms place the first IO APIC at physical 0xFEC0_0000. We map an entire
+/// 1MiB window so that all redirection table registers are covered.
+pub unsafe fn map_io_apic_mmio_alloc(pml4: &mut PageTable, fa: &mut BootFrameAllocator) {
+    const IOAPIC_PHYS_BASE: u64 = 0xFEC0_0000;
+    const IOAPIC_VIRT_BASE: u64 = PHYS_OFFSET + IOAPIC_PHYS_BASE;
+    const IOAPIC_SIZE: u64 = 0x100000;
+    for i in 0..(IOAPIC_SIZE / PAGE_SIZE as u64) {
+        let virt_addr = IOAPIC_VIRT_BASE + (i * PAGE_SIZE as u64);
+        let phys_addr = IOAPIC_PHYS_BASE + (i * PAGE_SIZE as u64);
+        map_page_alloc(
+            pml4,
+            virt_addr,
+            phys_addr,
+            PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_PCD | PTE_PWT,
+            fa,
+        );
+    }
+}
+
 /// Map kernel to high-half using a single 2 MiB page
 /// Map the first 1GiB into the kernel high-half using 2MiB pages.
 pub unsafe fn map_high_half_1gb_2mb(pml4: &mut PageTable, fa: &mut BootFrameAllocator) {
