@@ -11,11 +11,41 @@ use crate::drivers::traits::{Device, DeviceClass, Driver};
 use crate::kernel_write_line;
 
 static SERIAL_DRIVER: SerialDriver = SerialDriver;
+static SERIAL_DRIVER_STATE: SerialDriverState = SerialDriverState::new();
+
+struct SerialDriverState {
+    irq_enabled: core::sync::atomic::AtomicBool,
+}
+
+impl SerialDriverState {
+    const fn new() -> Self {
+        Self {
+            irq_enabled: core::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn enable_irq(&self) {
+        self.irq_enabled
+            .store(true, core::sync::atomic::Ordering::Release);
+    }
+
+    fn interrupt_enabled(&self) -> bool {
+        self.irq_enabled.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    fn notify(&self, byte: u8) {
+        crate::monitor::notify_serial_byte(byte);
+    }
+}
 
 static SERIAL_STATE: Mutex<Option<SerialPort>> = Mutex::new(None);
 
 pub fn register_serial_driver() {
     driver_manager().lock().register_driver(&SERIAL_DRIVER);
+}
+
+pub fn notify_serial_byte(byte: u8) {
+    SERIAL_DRIVER.notify_byte(byte);
 }
 
 pub fn init_serial() {
@@ -26,6 +56,14 @@ pub fn init_serial() {
 }
 
 struct SerialDriver;
+
+impl SerialDriver {
+    fn notify_byte(&self, byte: u8) {
+        if SERIAL_DRIVER_STATE.interrupt_enabled() {
+            SERIAL_DRIVER_STATE.notify(byte);
+        }
+    }
+}
 
 struct SerialPort {
     base: u16,
@@ -50,6 +88,14 @@ impl SerialPort {
             let mut port = Port::new(self.base + 5);
             port.read()
         }
+    }
+
+    fn configure(&mut self) {
+        unsafe {
+            let mut int_enable = Port::<u8>::new(self.base + 1);
+            int_enable.write(0x01);
+        }
+        SERIAL_DRIVER_STATE.enable_irq();
     }
 
     fn write_buffer(&self, buf: &[u8]) {
@@ -109,7 +155,8 @@ impl Driver for SerialDriver {
             .phys_addr
             .map(|addr| addr as u16)
             .unwrap_or(SerialPort::DEFAULT_BASE);
-        let port = self.init_port(base)?;
+        let mut port = self.init_port(base)?;
+        port.configure();
         {
             let mut guard = SERIAL_STATE.lock();
             *guard = Some(port);

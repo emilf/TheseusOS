@@ -23,6 +23,7 @@ pub mod gdt;
 pub mod handoff;
 pub mod interrupts;
 pub mod memory;
+pub mod monitor;
 pub mod panic;
 pub mod stack;
 

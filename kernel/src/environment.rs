@@ -682,6 +682,9 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
     crate::display::kernel_write_line("Kernel initialization complete");
     crate::display::kernel_write_serial("Kernel initialization complete");
 
+    // Activate serial monitor (if enabled)
+    crate::monitor::init();
+
     if crate::config::KERNEL_SHOULD_IDLE {
         crate::display::kernel_write_line("Entering idle loop - heart animation active");
         crate::display::kernel_write_line("Kill QEMU to stop the kernel");

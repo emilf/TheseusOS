@@ -11,6 +11,7 @@ use crate::handoff::handoff_phys_ptr;
 use super::manager::driver_manager;
 use super::serial;
 use super::traits::{Device, DeviceClass, DeviceId};
+use crate::monitor;
 
 /// Result type for driver system operations
 pub type DriverResult<T> = Result<T, &'static str>;
@@ -69,6 +70,9 @@ pub fn init() -> DriverResult<PlatformInfo> {
         }
         driver_manager().lock().add_device(device);
     }
+
+    monitor::init();
+    kernel_write_line("[monitor] activated");
 
     Ok(platform_info)
 }

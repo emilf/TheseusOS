@@ -53,7 +53,7 @@ use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, Pag
 static IDT_X86: SpinOnce<InterruptDescriptorTable> = SpinOnce::new();
 const APIC_TIMER_VECTOR: u8 = 0x40; // 64
 const APIC_ERROR_VECTOR: u8 = 0xFE; // APIC error interrupts
-static TIMER_TICKS: AtomicU32 = AtomicU32::new(0);
+pub static TIMER_TICKS: AtomicU32 = AtomicU32::new(0);
 pub static mut DOUBLE_FAULT_CONTEXT: Option<DoubleFaultContext> = None;
 
 #[derive(Copy, Clone)]
@@ -827,14 +827,14 @@ unsafe fn has_apic() -> bool {
 /// - We are running in kernel mode with sufficient privileges
 /// - The MSR is accessible and not corrupted
 #[allow(dead_code)]
-unsafe fn get_apic_base() -> u64 {
+pub unsafe fn get_apic_base() -> u64 {
     // Assume default LAPIC base address. Avoid RDMSR to keep boot stable across hosts.
     0xFEE0_0000u64
 }
 
 /// Read APIC register
 #[allow(dead_code)]
-unsafe fn read_apic_register(apic_base: u64, offset: u32) -> u32 {
+pub unsafe fn read_apic_register(apic_base: u64, offset: u32) -> u32 {
     // The LAPIC MMIO is mapped at PHYS_OFFSET + physical address
     let vbase = crate::memory::phys_to_virt_pa(apic_base & 0xFFFFF000);
     let addr = vbase + (offset as u64);
