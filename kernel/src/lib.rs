@@ -25,6 +25,7 @@ pub mod interrupts;
 pub mod memory;
 pub mod monitor;
 pub mod panic;
+pub mod serial_debug;
 pub mod stack;
 
 // Re-export commonly used types and functions

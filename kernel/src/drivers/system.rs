@@ -5,6 +5,7 @@
 //! them into the manager so that concrete drivers can bind.
 
 use crate::acpi::{self, PlatformInfo};
+use crate::config;
 use crate::display::kernel_write_line;
 use crate::handoff::handoff_phys_ptr;
 
@@ -20,13 +21,25 @@ pub type DriverResult<T> = Result<T, &'static str>;
 pub fn init() -> DriverResult<PlatformInfo> {
     kernel_write_line("[driver] initializing driver system");
 
-    serial::init_serial();
-    kernel_write_line("[driver] serial driver registered");
-
     let handoff = unsafe { &*(handoff_phys_ptr() as *const theseus_shared::handoff::Handoff) };
 
     let platform_info = acpi::initialize_acpi(handoff.acpi_rsdp)?;
     kernel_write_line("[driver] ACPI initialization complete");
+
+    if let Some(madt) = &platform_info.madt_info {
+        if let Some(io_apic) = madt.io_apics.first() {
+            serial::install_io_apic_info(io_apic.address, io_apic.gsi_base);
+            kernel_write_line("[driver] serial IO APIC info installed");
+            kernel_write_line("  address: 0x");
+            theseus_shared::print_hex_u64_0xe9!(io_apic.address);
+            kernel_write_line(" gsi_base: ");
+            theseus_shared::print_hex_u64_0xe9!(io_apic.gsi_base as u64);
+            kernel_write_line("\n");
+        }
+    }
+
+    serial::init_serial();
+    kernel_write_line("[driver] serial driver registered");
 
     if handoff.hardware_device_count == 0 || handoff.hardware_inventory_ptr == 0 {
         kernel_write_line("[driver] hardware inventory missing");
@@ -67,12 +80,22 @@ pub fn init() -> DriverResult<PlatformInfo> {
         let mut device = Device::new(device_id);
         if entry.device_type == theseus_shared::handoff::DEVICE_TYPE_SERIAL {
             device.class = DeviceClass::Serial;
+            if let Some(addr) = entry.address {
+                device.phys_addr = Some(addr);
+            }
+            if let Some(irq) = entry.irq {
+                device.irq = Some(irq);
+            }
         }
         driver_manager().lock().add_device(device);
     }
 
     monitor::init();
-    kernel_write_line("[monitor] activated");
+    if config::ENABLE_KERNEL_MONITOR {
+        kernel_write_line("[monitor] activated");
+    } else {
+        kernel_write_line("[monitor] disabled via config");
+    }
 
     Ok(platform_info)
 }

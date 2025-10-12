@@ -9,6 +9,7 @@ use crate::interrupts::{disable_all_interrupts, setup_idt};
 use crate::memory::{
     activate_virtual_memory, MemoryManager, KERNEL_VIRTUAL_BASE, TEMP_HEAP_VIRTUAL_BASE,
 };
+use crate::serial_debug;
 use theseus_shared::handoff::Handoff;
 
 // Small helpers to keep unsafe/asm in tiny, reviewable boundaries.
@@ -682,8 +683,14 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
     crate::display::kernel_write_line("Kernel initialization complete");
     crate::display::kernel_write_serial("Kernel initialization complete");
 
-    // Activate serial monitor (if enabled)
-    crate::monitor::init();
+    if crate::config::ENABLE_KERNEL_MONITOR {
+        crate::monitor::init();
+    }
+
+    if crate::config::RUN_POST_BOOT_SERIAL_REVERSE_ECHO {
+        crate::display::kernel_write_line("⚠ Kernel COM1 reverse echo enabled");
+        serial_debug::run_reverse_echo_session();
+    }
 
     if crate::config::KERNEL_SHOULD_IDLE {
         crate::display::kernel_write_line("Entering idle loop - heart animation active");

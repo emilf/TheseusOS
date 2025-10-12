@@ -10,7 +10,7 @@ use spin::Mutex;
 
 use crate::display::kernel_write_line;
 
-use super::traits::{Device, DeviceClass, Driver};
+use super::traits::{Device, DeviceClass, DeviceId, Driver};
 
 /// Global driver manager instance used across the kernel
 static DRIVER_MANAGER: Mutex<DriverManager> = Mutex::new(DriverManager::new());
@@ -125,5 +125,94 @@ impl DriverManager {
             }
         }
         Err("no driver able to write to class")
+    }
+
+    pub fn read_class(
+        &mut self,
+        class: DeviceClass,
+        buf: &mut [u8],
+    ) -> Result<usize, &'static str> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let mut last_err: Option<&'static str> = None;
+        for dev in self.devices.iter_mut() {
+            if dev.class != class {
+                continue;
+            }
+            if dev.driver_data.is_none() {
+                continue;
+            }
+            for drv in self.drivers.iter() {
+                if !drv.supports_class(class) {
+                    continue;
+                }
+                match drv.read(dev, buf) {
+                    Ok(read) => return Ok(read),
+                    Err(e) => last_err = Some(e),
+                }
+            }
+        }
+        if let Some(err) = last_err {
+            Err(err)
+        } else {
+            Ok(0)
+        }
+    }
+
+    /// Write to a specific device by identifier.
+    pub fn write_to_device(&mut self, id: &DeviceId, buf: &[u8]) -> Result<usize, &'static str> {
+        let mut last_err: Option<&'static str> = None;
+        for dev in self.devices.iter_mut() {
+            if &dev.id != id {
+                continue;
+            }
+            if dev.driver_data.is_none() {
+                return Err("device not bound to driver");
+            }
+            for drv in self.drivers.iter() {
+                if !drv.supports_class(dev.class) {
+                    continue;
+                }
+                match drv.write(dev, buf) {
+                    Ok(written) => return Ok(written),
+                    Err(e) => last_err = Some(e),
+                }
+            }
+            return Err(last_err.unwrap_or("no driver able to write to device"));
+        }
+        Err("device not found")
+    }
+
+    /// Read from a specific device by identifier.
+    pub fn read_from_device(
+        &mut self,
+        id: &DeviceId,
+        buf: &mut [u8],
+    ) -> Result<usize, &'static str> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let mut last_err: Option<&'static str> = None;
+        for dev in self.devices.iter_mut() {
+            if &dev.id != id {
+                continue;
+            }
+            if dev.driver_data.is_none() {
+                return Err("device not bound to driver");
+            }
+            for drv in self.drivers.iter() {
+                if !drv.supports_class(dev.class) {
+                    continue;
+                }
+                match drv.read(dev, buf) {
+                    Ok(read) => return Ok(read),
+                    Err(e) => last_err = Some(e),
+                }
+            }
+            return Err(last_err.unwrap_or("no driver able to read from device"));
+        }
+        Err("device not found")
     }
 }

@@ -3,8 +3,9 @@
 //! This module provides a simple driver that programs the COM1 UART and
 //! exposes it through the generic driver interfaces for other subsystems to use.
 
+use alloc::vec::Vec;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
@@ -20,9 +21,13 @@ const IOAPIC_REGSEL_OFFSET: u64 = 0x00;
 const IOAPIC_WINDOW_OFFSET: u64 = 0x10;
 const IOAPIC_REDIRECTION_TABLE_BASE: u32 = 0x10;
 
+#[allow(dead_code)]
 struct SerialDriverState {
     port: SerialPort,
     irq_enabled: AtomicBool,
+    rx_buffer: spin::Mutex<[u8; RX_BUFFER_SIZE]>,
+    head: AtomicUsize,
+    tail: AtomicUsize,
 }
 
 #[derive(Clone, Copy)]
@@ -34,6 +39,8 @@ struct IoApicInfo {
 static SERIAL_DRIVER: SerialDriver = SerialDriver;
 static SERIAL_STATE: Mutex<Option<SerialDriverState>> = Mutex::new(None);
 static IO_APIC_INFO: Mutex<Option<IoApicInfo>> = Mutex::new(None);
+
+const RX_BUFFER_SIZE: usize = 1024;
 
 pub fn register_serial_driver() {
     driver_manager().lock().register_driver(&SERIAL_DRIVER);
@@ -56,6 +63,25 @@ pub fn write_bytes_direct(buf: &[u8]) -> Result<usize, &'static str> {
     } else {
         Err("serial port not initialized")
     }
+}
+
+#[allow(dead_code)]
+fn with_serial_state<F, R>(f: F) -> Result<R, &'static str>
+where
+    F: FnOnce(&SerialDriverState) -> R,
+{
+    let guard = SERIAL_STATE.lock();
+    let state = guard.as_ref().ok_or("serial port not initialized")?;
+    Ok(f(state))
+}
+
+fn with_serial_state_mut<F, R>(f: F) -> Result<R, &'static str>
+where
+    F: FnOnce(&mut SerialDriverState) -> R,
+{
+    let mut guard = SERIAL_STATE.lock();
+    let state = guard.as_mut().ok_or("serial port not initialized")?;
+    Ok(f(state))
 }
 
 struct SerialDriver;
@@ -128,7 +154,12 @@ impl SerialDriver {
         unsafe {
             let mut data = Port::<u8>::new(base);
             let mut int_enable = Port::<u8>::new(base + 1);
+            let mut fifo_ctrl = Port::<u8>::new(base + 2);
             let mut line_ctrl = Port::<u8>::new(base + 3);
+            let mut modem_ctrl = Port::<u8>::new(base + 4);
+
+            // Disable interrupts while configuring.
+            int_enable.write(0x00);
 
             // Enable DLAB to program baud divisor.
             line_ctrl.write(0x80);
@@ -138,6 +169,12 @@ impl SerialDriver {
 
             // 8 data bits, no parity, one stop bit; DLAB cleared.
             line_ctrl.write(0x03);
+
+            // Enable FIFO, clear RX/TX queues, set 14-byte threshold.
+            fifo_ctrl.write(0xC7);
+
+            // Assert DTR/RTS/OUT2 to enable IRQ signaling.
+            modem_ctrl.write(0x0B);
         }
 
         Ok(SerialPort::new(base))
@@ -211,10 +248,16 @@ impl Driver for SerialDriver {
         let state = SerialDriverState {
             port,
             irq_enabled: AtomicBool::new(true),
+            rx_buffer: spin::Mutex::new([0u8; RX_BUFFER_SIZE]),
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
         };
         {
             let mut guard = SERIAL_STATE.lock();
             *guard = Some(state);
+            if let Some(stored) = guard.as_ref() {
+                dev.driver_data = Some(stored as *const SerialDriverState as usize);
+            }
         }
         kernel_write_line("[serial] initialized");
         Ok(())
@@ -224,30 +267,90 @@ impl Driver for SerialDriver {
         if !crate::config::ENABLE_SERIAL_OUTPUT {
             return false;
         }
-        let mut handled = false;
-        let mut guard = SERIAL_STATE.lock();
-        let Some(state) = guard.as_mut() else {
-            return false;
-        };
-        if !state.irq_enabled.load(Ordering::Relaxed) {
-            return false;
+        match with_serial_state_mut(|state| {
+            let mut handled = false;
+            let mut collected = Vec::new();
+            while let Some(byte) = state.port.read_byte() {
+                handled = true;
+                enqueue_byte(state, byte);
+                collected.push(byte);
+            }
+            (handled, collected)
+        }) {
+            Ok((handled, collected)) => {
+                for byte in collected {
+                    crate::monitor::push_serial_byte(byte);
+                }
+                handled
+            }
+            Err(_) => false,
         }
-
-        while let Some(byte) = state.port.read_byte() {
-            handled = true;
-            crate::monitor::notify_serial_byte(byte);
-        }
-        handled
     }
 
     fn write(&'static self, _dev: &mut Device, buf: &[u8]) -> Result<usize, &'static str> {
         write_bytes_direct(buf)
+    }
+
+    fn read(&'static self, _dev: &mut Device, buf: &mut [u8]) -> Result<usize, &'static str> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        with_serial_state_mut(|state| {
+            fill_rx_buffer(state);
+            dequeue_bytes(state, buf)
+        })
+    }
+}
+
+fn enqueue_byte(state: &mut SerialDriverState, byte: u8) {
+    let mut buf = state.rx_buffer.lock();
+    let head = state.head.load(Ordering::Relaxed);
+    let tail = state.tail.load(Ordering::Acquire);
+    let next_head = (head + 1) % RX_BUFFER_SIZE;
+    if next_head == tail {
+        // overwrite oldest byte when buffer full
+        buf[head] = byte;
+        state.head.store(next_head, Ordering::Release);
+        state
+            .tail
+            .store((tail + 1) % RX_BUFFER_SIZE, Ordering::Release);
+    } else {
+        buf[head] = byte;
+        state.head.store(next_head, Ordering::Release);
+    }
+}
+
+fn dequeue_bytes(state: &SerialDriverState, out: &mut [u8]) -> usize {
+    let buf_lock = state.rx_buffer.lock();
+    let mut tail = state.tail.load(Ordering::Acquire);
+    let head = state.head.load(Ordering::Acquire);
+    if head == tail {
+        return 0;
+    }
+    let mut read = 0usize;
+    while tail != head && read < out.len() {
+        out[read] = buf_lock[tail];
+        tail = (tail + 1) % RX_BUFFER_SIZE;
+        read += 1;
+    }
+    state.tail.store(tail, Ordering::Release);
+    read
+}
+
+fn fill_rx_buffer(state: &mut SerialDriverState) {
+    while let Some(byte) = state.port.read_byte() {
+        enqueue_byte(state, byte);
     }
 }
 
 pub fn install_io_apic_info(address: u64, gsi_base: u32) {
     let mut guard = IO_APIC_INFO.lock();
     *guard = Some(IoApicInfo { address, gsi_base });
+}
+
+pub fn current_irq_number() -> Option<u32> {
+    let guard = IO_APIC_INFO.lock();
+    guard.as_ref().map(|info| info.gsi_base + LEGACY_COM1_IRQ)
 }
 
 unsafe fn program_io_apic_entry(address: u64, pin: u32, vector: u8, destination_apic_id: u8) {

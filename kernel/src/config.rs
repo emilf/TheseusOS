@@ -17,6 +17,13 @@ pub const PRINT_HARDWARE_INVENTORY: bool = true;
 /// When `true`, enable serial output to COM1.
 pub const ENABLE_SERIAL_OUTPUT: bool = true;
 
+/// When `true`, activate the interactive kernel monitor on COM1.
+pub const ENABLE_KERNEL_MONITOR: bool = true;
+
+/// When `true`, run the raw COM1 reverse-echo loop after high-half transition.
+/// This is intended for temporary debugging; the kernel will not progress while enabled.
+pub const RUN_POST_BOOT_SERIAL_REVERSE_ECHO: bool = false;
+
 /// When `true`, keep the legacy 1 GiB PHYS_OFFSET identity mapping.
 /// When `false`, rely on per-table ACPI mappings and tighter PHYS_OFFSET coverage.
 pub const MAP_LEGACY_PHYS_OFFSET_1GIB: bool = true;

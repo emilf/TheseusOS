@@ -479,10 +479,11 @@ extern "x86-interrupt" fn handler_timer(_stack: InterruptStackFrame) {
 }
 
 extern "x86-interrupt" fn handler_serial_rx(_stack: InterruptStackFrame) {
-    let handled = {
+    let mut handled = false;
+    if let Some(irq) = crate::drivers::serial::current_irq_number() {
         let mut mgr = crate::drivers::manager::driver_manager().lock();
-        mgr.handle_irq(4)
-    };
+        handled = mgr.handle_irq(irq);
+    }
     unsafe {
         let apic_base = get_apic_base();
         write_apic_register(apic_base, 0xB0, 0);
