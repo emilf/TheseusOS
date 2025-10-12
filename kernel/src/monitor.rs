@@ -1,21 +1,65 @@
-//! Kernel Monitor - Interactive debugging console
+//! # Kernel Monitor - Interactive Debugging Console
 //!
-//! Inspired by Wozmon but extended with modern debugging features:
-//! - Memory examination and modification
-//! - Register inspection
-//! - Stack traces
-//! - ACPI table dumps
-//! - Device enumeration  
-//! - Execution control
-//! - I/O port access
-//! - MSR reading
+//! This module implements an interactive serial monitor inspired by the legendary **Wozmon**
+//! (the Apple I monitor program written by Steve Wozniak in 1976). While maintaining the
+//! spirit of Wozmon's simplicity and direct hardware access, this implementation extends
+//! the concept for modern x86-64 systems.
 //!
-//! # Usage
+//! ## Features
+//!
+//! ### Memory Operations
+//! - **Examination**: View memory contents in hex and ASCII
+//! - **Modification**: Write individual bytes or fill regions
+//! - **Dumping**: Large memory region dumps with formatting
+//! - **Continuation**: Press Enter without arguments to continue from last address
+//!
+//! ### System Inspection
+//! - **Registers**: View general-purpose, control, and segment registers
+//! - **Stack Traces**: Walk frame pointers to display call chain
+//! - **ACPI**: Display platform configuration information
+//! - **CPU Info**: Show processor features via CPUID
+//! - **Device List**: Enumerate all registered hardware devices
+//!
+//! ### Low-Level Access
+//! - **I/O Ports**: Read/write to x86 I/O space
+//! - **MSRs**: Read Model-Specific Registers
+//! - **Interrupts**: Trigger software interrupts (carefully!)
+//! - **Function Calls**: Execute arbitrary code (dangerous!)
+//!
+//! ### System Control
+//! - **Reset**: Reboot the system
+//! - **Halt**: Stop CPU execution
+//! - **Clear**: Clear terminal screen
+//!
+//! ## Usage
+//!
 //! The monitor provides an interactive command-line interface over the COM1 serial port.
-//! Connect via QEMU serial (-serial stdio) or physical serial cable to interact.
+//! Connect using:
 //!
-//! # Commands
-//! Type 'help' in the monitor to see all available commands.
+//! - QEMU: `-serial stdio` or `-serial unix:/tmp/qemu.sock,server,nowait`
+//! - Physical hardware: `minicom -D /dev/ttyS0 -b 115200` or `screen /dev/ttyS0 115200`
+//!
+//! Type 'help' at the prompt to see all available commands.
+//!
+//! ## Design
+//!
+//! The monitor operates entirely in kernel mode with full privileges. It receives input
+//! via serial interrupts (IRQ 4), processes commands synchronously, and outputs results
+//! back through the serial port. The implementation is deliberately simple, avoiding
+//! complex buffering or asynchronous processing.
+//!
+//! ### Thread Safety
+//!
+//! The monitor state is protected by a spin mutex (`MONITOR`), allowing safe access
+//! from both the serial IRQ handler and the main kernel thread. Commands execute
+//! atomically while holding the lock.
+//!
+//! ## History
+//!
+//! Wozmon was written in 1976 by Steve Wozniak for the Apple I computer. It provided
+//! a minimalist interface for examining and modifying memory, entering programs, and
+//! executing code - all in just 256 bytes. This implementation honors that legacy while
+//! adapting to 64-bit architectures and modern debugging needs.
 
 use crate::config;
 use crate::display::kernel_write_line;
@@ -96,14 +140,42 @@ pub fn start_monitor() -> ! {
 }
 
 /// Kernel monitor state
+///
+/// This structure maintains the state for a single monitor session. The monitor
+/// is designed to be lightweight and stateless between commands, storing only
+/// the minimal information needed for interactive use.
+///
+/// # Thread Safety
+///
+/// Monitor instances are protected by the `MONITOR` mutex and should never be
+/// accessed without acquiring the lock first. The serial driver may call into
+/// the monitor from IRQ context.
 pub struct Monitor {
     /// Current input line buffer
+    ///
+    /// Accumulates characters as the user types. The buffer has a maximum size
+    /// of `MAX_LINE` (128) characters to prevent unbounded growth. When the user
+    /// presses Enter, this buffer is parsed as a command and then cleared.
     line_buffer: String,
+
     /// Last memory address examined (for continuation)
+    ///
+    /// The `mem` command uses this to implement Wozmon-style continuation: if you
+    /// examine memory at address X, then press Enter without specifying an address,
+    /// the monitor continues from X+16. This allows quickly scanning through memory.
     last_addr: u64,
+
     /// Serial device class for communication
+    ///
+    /// Always set to `DeviceClass::Serial`. Used when calling the driver manager
+    /// to output text. This allows the monitor to work with any serial driver
+    /// registered under the Serial class.
     serial_class: DeviceClass,
+
     /// Tracks whether the banner/prompt has been shown
+    ///
+    /// The monitor lazily activates on first use. This flag prevents showing the
+    /// welcome banner multiple times if the monitor is reinitialized.
     active: bool,
 }
 
@@ -153,47 +225,79 @@ impl Monitor {
     }
 
     /// Handle a single input character
+    ///
+    /// This is the core input processing function, called by the serial IRQ handler
+    /// whenever a byte arrives. It implements a simple line editor with basic
+    /// terminal control character support.
+    ///
+    /// # Character Handling
+    ///
+    /// - **Printable (0x20-0x7E)**: Added to line buffer and echoed back
+    /// - **Enter (CR/LF)**: Process the current line as a command
+    /// - **Backspace (0x08/0x7F)**: Remove last character with visual feedback
+    /// - **Ctrl+C (0x03)**: Cancel current line
+    /// - **Ctrl+L (0x0C)**: Clear screen using ANSI escape sequences
+    /// - **Other control characters**: Silently ignored
+    ///
+    /// # Echo Behavior
+    ///
+    /// Most terminals expect immediate echo of typed characters. The monitor provides
+    /// this by writing each printable character back as it's received. For special
+    /// keys, visual feedback is provided (e.g., "^C" for Ctrl+C, or backspace sequence).
     fn handle_char(&mut self, ch: u8) {
+        // Ensure monitor is activated (show banner on first input)
         self.activate();
+
         match ch {
             b'\r' | b'\n' => {
                 // Enter key - process command
+                // Echo newline for proper terminal formatting
                 self.write_bytes(b"\r\n");
+
                 if !self.line_buffer.is_empty() {
+                    // Execute the command synchronously
                     self.process_command();
                     self.line_buffer.clear();
                 }
+
+                // Show prompt for next command
                 self.write(PROMPT);
             }
             0x08 | 0x7F => {
-                // Backspace / DEL
+                // Backspace (0x08) or DEL (0x7F) - delete last character
                 if !self.line_buffer.is_empty() {
                     self.line_buffer.pop();
-                    self.write_bytes(b"\x08 \x08"); // Backspace, space, backspace
+                    // Visual feedback: move cursor back, write space, move back again
+                    // This erases the character on most terminals
+                    self.write_bytes(b"\x08 \x08");
                 }
             }
             0x03 => {
-                // Ctrl+C - clear line and show new prompt
+                // Ctrl+C - cancel current line and start fresh
                 self.line_buffer.clear();
-                self.write("^C");
+                self.write("^C"); // Show ^C to indicate cancellation
                 self.write(PROMPT);
             }
             0x0C => {
                 // Ctrl+L - clear screen
-                self.write_bytes(b"\x1B[2J\x1B[H"); // ANSI clear screen + home
+                // ANSI escape sequence: ESC[2J (clear screen) + ESC[H (cursor home)
+                self.write_bytes(b"\x1B[2J\x1B[H");
                 self.line_buffer.clear();
                 self.write(PROMPT);
             }
             byte if byte >= 0x20 && byte < 0x7F => {
-                // Printable character
+                // Printable ASCII character (space through tilde)
                 if self.line_buffer.len() < MAX_LINE {
                     self.line_buffer.push(byte as char);
-                    // Echo the character
+                    // Echo the character back for terminal display
                     self.write_bytes(&[byte]);
                 }
+                // Silently ignore if buffer is full (could add bell character here)
             }
             _ => {
-                // Ignore other control characters
+                // Ignore other control characters (ESC sequences, arrow keys, etc.)
+                // A more sophisticated implementation could handle arrow keys for
+                // cursor movement and command history
             }
         }
     }

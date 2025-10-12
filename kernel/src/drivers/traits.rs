@@ -1,9 +1,95 @@
-//! Core driver traits and device descriptions
+//! # Core Driver Traits and Device Descriptions
 //!
-//! The driver system is intentionally small for the MVP. We model devices as
-//! lightweight descriptors that hold identity, resources and driver-specific
-//! opaque data. Drivers implement a trait with lifecycle hooks so the kernel can
-//! probe and later remove devices, as well as deliver IRQs or simple I/O.
+//! This module defines the fundamental abstractions for the kernel's driver framework.
+//! The design philosophy emphasizes simplicity and flexibility:
+//!
+//! - **Lightweight**: Minimal overhead for device representation
+//! - **Generic**: Works for diverse hardware types (serial, storage, network, etc.)
+//! - **Composable**: Drivers can layer on top of each other
+//! - **Type-Safe**: Uses Rust's type system to ensure correctness
+//!
+//! ## Architecture Overview
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────┐
+//! │         Driver Manager (registry)            │
+//! │  - Maintains list of drivers and devices     │
+//! │  - Runs probe logic on device registration   │
+//! │  - Dispatches IRQs to appropriate drivers    │
+//! └─────────────────────────────────────────────┘
+//!                        │
+//!         ┌──────────────┼──────────────┐
+//!         ▼              ▼              ▼
+//!    ┌────────┐    ┌────────┐    ┌────────┐
+//!    │Driver 1│    │Driver 2│    │Driver N│
+//!    │(Serial)│    │(Block) │    │ (...) │
+//!    └────────┘    └────────┘    └────────┘
+//!         │              │              │
+//!         ▼              ▼              ▼
+//!    ┌────────┐    ┌────────┐    ┌────────┐
+//!    │Device 1│    │Device 2│    │Device N│
+//!    │COM1    │    │ SATA  │    │ (...) │
+//!    └────────┘    └────────┘    └────────┘
+//! ```
+//!
+//! ## Device Lifecycle
+//!
+//! 1. **Discovery**: Hardware is discovered (via ACPI, PCI scan, etc.)
+//! 2. **Registration**: A `Device` descriptor is created and registered
+//! 3. **Probing**: Driver manager asks each driver if it supports the device
+//! 4. **Initialization**: First matching driver's `init()` is called
+//! 5. **Operation**: Driver handles I/O and IRQs for the device
+//! 6. **Removal**: Driver's `remove()` is called when device is removed
+//!
+//! ## Device Classes
+//!
+//! Devices are categorized into broad classes (Serial, Block, Network, etc.).
+//! This allows:
+//! - Generic code to work with "any serial port" without knowing specifics
+//! - Multiple drivers to implement the same class (e.g., 16550 UART, USB CDC-ACM)
+//! - Fallback behavior when specific device isn't available
+//!
+//! ## Driver-Specific State
+//!
+//! Drivers can store arbitrary state in the device descriptor via `driver_data`.
+//! This is an opaque `usize` that drivers typically use as a pointer to their
+//! own state structure. The framework doesn't interpret this data; it just
+//! preserves it.
+//!
+//! ## Example Usage
+//!
+//! ```rust,no_run
+//! // Define a driver
+//! struct MyDriver;
+//!
+//! impl Driver for MyDriver {
+//!     fn supported_classes(&self) -> &'static [DeviceClass] {
+//!         &[DeviceClass::Serial]
+//!     }
+//!
+//!     fn probe(&'static self, dev: &mut Device) -> Result<(), &'static str> {
+//!         // Check if this is a device we support
+//!         match dev.id {
+//!             DeviceId::Acpi("PNP0501") => Ok(()),  // 16550-compatible UART
+//!             _ => Err("not supported"),
+//!         }
+//!     }
+//!
+//!     fn init(&'static self, dev: &mut Device) -> Result<(), &'static str> {
+//!         // Initialize hardware
+//!         // ...
+//!         Ok(())
+//!     }
+//!
+//!     fn irq_handler(&'static self, dev: &mut Device, irq: u32) -> bool {
+//!         // Handle interrupt
+//!         true  // Indicate we handled it
+//!     }
+//! }
+//!
+//! // Register with driver manager
+//! driver_manager().lock().register_driver(&MyDriver);
+//! ```
 
 use core::fmt;
 
