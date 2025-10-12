@@ -10,7 +10,7 @@ use spin::Mutex;
 
 use crate::display::kernel_write_line;
 
-use super::traits::{Device, Driver};
+use super::traits::{Device, DeviceClass, Driver};
 
 /// Global driver manager instance used across the kernel
 static DRIVER_MANAGER: Mutex<DriverManager> = Mutex::new(DriverManager::new());
@@ -68,8 +68,16 @@ impl DriverManager {
                 continue;
             }
             for drv in self.drivers.iter() {
+                if !drv.supports_class(dev.class) {
+                    continue;
+                }
                 match drv.probe(dev) {
                     Ok(()) => {
+                        if let Err(e) = drv.init(dev) {
+                            kernel_write_line("[driver] device init failed:");
+                            kernel_write_line(e);
+                            continue;
+                        }
                         kernel_write_line("[driver] device bound successfully");
                         break;
                     }
@@ -103,75 +111,20 @@ impl DriverManager {
         &self.devices
     }
 
-    /// Find a device by ID
-    pub fn find_device(&self, id: &super::traits::DeviceId) -> Option<&Device> {
-        self.devices.iter().find(|dev| &dev.id == id)
-    }
-
-    /// Find a mutable device by ID
-    pub fn find_device_mut(&mut self, id: &super::traits::DeviceId) -> Option<&mut Device> {
-        self.devices.iter_mut().find(|dev| &dev.id == id)
-    }
-
-    /// Get the driver bound to a specific device
-    pub fn get_driver_for_device(&self, id: &super::traits::DeviceId) -> Option<&'static dyn super::traits::Driver> {
-        // First find the device
-        let device = self.find_device(id)?;
-        
-        // Check if it has driver data (meaning it's bound)
-        if device.driver_data.is_none() {
-            return None;
-        }
-
-        // Find the driver that can handle this device
-        // In our simple system, we iterate through drivers and ask them to identify themselves
-        // A more sophisticated system would store driver references in the device
-        for drv in self.drivers.iter() {
-            // Create a clone of the device for testing
-            let mut test_dev = device.clone();
-            if drv.probe(&mut test_dev).is_ok() {
-                return Some(*drv);
+    pub fn write_class(&mut self, class: DeviceClass, buf: &[u8]) -> Result<usize, &'static str> {
+        for dev in self.devices.iter_mut() {
+            if dev.class != class {
+                continue;
+            }
+            for drv in self.drivers.iter() {
+                if !drv.supports_class(class) {
+                    continue;
+                }
+                if let Ok(written) = drv.write(dev, buf) {
+                    return Ok(written);
+                }
             }
         }
-
-        None
-    }
-
-    /// Write data to a device by ID
-    pub fn write_to_device(&mut self, id: &super::traits::DeviceId, buf: &[u8]) -> Result<usize, &'static str> {
-        // Find the device index first to avoid borrow conflicts
-        let device_idx = self.devices.iter()
-            .position(|dev| &dev.id == id)
-            .ok_or("Device not found")?;
-        
-        // Try each driver with the device
-        for drv in self.drivers.iter() {
-            let device = &mut self.devices[device_idx];
-            match drv.write(device, buf) {
-                Ok(n) => return Ok(n),
-                Err(_) => continue,
-            }
-        }
-
-        Err("No driver can write to this device")
-    }
-
-    /// Read data from a device by ID
-    pub fn read_from_device(&mut self, id: &super::traits::DeviceId, buf: &mut [u8]) -> Result<usize, &'static str> {
-        // Find the device index first to avoid borrow conflicts
-        let device_idx = self.devices.iter()
-            .position(|dev| &dev.id == id)
-            .ok_or("Device not found")?;
-        
-        // Try each driver with the device
-        for drv in self.drivers.iter() {
-            let device = &mut self.devices[device_idx];
-            match drv.read(device, buf) {
-                Ok(n) => return Ok(n),
-                Err(_) => continue,
-            }
-        }
-
-        Err("No driver can read from this device")
+        Err("no driver able to write to class")
     }
 }

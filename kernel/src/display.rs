@@ -199,3 +199,11 @@ pub fn display_handoff_info(_handoff: &Handoff) {
     kernel_write_line("└─────────────────────────────────────────────────────────┘");
     kernel_write_line("");
 }
+
+pub fn kernel_write_serial(msg: &str) {
+    use crate::drivers::manager::driver_manager;
+    use crate::drivers::traits::DeviceClass;
+
+    let mut manager = driver_manager().lock();
+    let _ = manager.write_class(DeviceClass::Serial, msg.as_bytes());
+}

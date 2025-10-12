@@ -230,6 +230,8 @@ pub const DEVICE_TYPE_UFS: u32 = 24;
 /// UFS storage
 pub const DEVICE_TYPE_UART: u32 = 25;
 /// Serial ports
+pub const DEVICE_TYPE_SERIAL: u32 = 26;
+/// Serial console/UART terminal
 
 impl HardwareDevice {
     /// Create a `HardwareDevice` from a byte buffer at the specified index.

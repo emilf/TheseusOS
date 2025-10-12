@@ -9,4 +9,5 @@ pub mod system;
 pub mod traits;
 
 pub use manager::DriverManager;
-pub use traits::{Device, DeviceId, Driver};
+pub use serial::register_serial_driver;
+pub use traits::{Device, DeviceClass, DeviceId, Driver};

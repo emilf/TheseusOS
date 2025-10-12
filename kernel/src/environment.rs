@@ -645,53 +645,8 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         }
     }
 
-    // Test serial driver
-    {
-        use crate::display::kernel_write_line;
-        use crate::drivers::manager::driver_manager;
-        use crate::drivers::traits::DeviceId;
-
-        kernel_write_line("[driver] testing serial driver");
-
-        // Try to write to COM1
-        let com1_id = DeviceId::Raw("com1");
-        match driver_manager().lock().write_to_device(&com1_id, b"Serial driver test message\r\n") {
-            Ok(n) => {
-                kernel_write_line("[driver] serial test: wrote ");
-                theseus_shared::print_hex_u64_0xe9!(n as u64);
-                kernel_write_line(" bytes to COM1");
-            }
-            Err(e) => {
-                kernel_write_line("[driver] serial test failed: ");
-                kernel_write_line(e);
-            }
-        }
-
-        // Try to write another message
-        match driver_manager().lock().write_to_device(&com1_id, b"Second test message: Hello from TheseusOS!\r\n") {
-            Ok(_) => {
-                kernel_write_line("[driver] serial test: second write successful");
-            }
-            Err(e) => {
-                kernel_write_line("[driver] serial test: second write failed: ");
-                kernel_write_line(e);
-            }
-        }
-    }
-
     crate::display::kernel_write_line("=== Kernel environment setup complete ===");
     crate::display::kernel_write_line("Kernel environment test completed successfully");
-
-    // Enter kernel monitor if configured
-    if crate::config::ENABLE_KERNEL_MONITOR {
-        crate::display::kernel_write_line("[monitor] ENABLE_KERNEL_MONITOR=true, entering monitor...");
-        // Unmask COM1 IRQ 4 for interrupt-driven I/O
-        unsafe {
-            crate::interrupts::unmask_pic_irq(4);
-        }
-        crate::monitor::start_monitor();
-        // Never returns
-    }
 
     // Set up framebuffer drawing and timer
     crate::display::kernel_write_line("Setting up framebuffer drawing...");
@@ -725,6 +680,7 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
 
     // Choose behavior based on centralized kernel configuration
     crate::display::kernel_write_line("Kernel initialization complete");
+    crate::display::kernel_write_serial("Kernel initialization complete");
 
     if crate::config::KERNEL_SHOULD_IDLE {
         crate::display::kernel_write_line("Entering idle loop - heart animation active");

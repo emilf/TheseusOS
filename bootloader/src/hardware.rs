@@ -3,23 +3,26 @@ extern crate alloc;
 use crate::drivers::manager::write_line;
 use alloc::boxed::Box;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use theseus_shared::constants::hardware;
 use theseus_shared::handoff::{
-    HardwareDevice, DEVICE_TYPE_ACPI, DEVICE_TYPE_BLUETOOTH, DEVICE_TYPE_CDROM,
-    DEVICE_TYPE_CONTROLLER, DEVICE_TYPE_DISK, DEVICE_TYPE_FILE_PATH, DEVICE_TYPE_IPV4,
-    DEVICE_TYPE_IPV6, DEVICE_TYPE_MAC, DEVICE_TYPE_MEDIA, DEVICE_TYPE_MESSAGING, DEVICE_TYPE_NVME,
-    DEVICE_TYPE_PCI, DEVICE_TYPE_RAMDISK, DEVICE_TYPE_SATA, DEVICE_TYPE_SD, DEVICE_TYPE_UART,
-    DEVICE_TYPE_UFS, DEVICE_TYPE_UNKNOWN, DEVICE_TYPE_USB, DEVICE_TYPE_VENDOR, DEVICE_TYPE_WIFI,
+    HardwareDevice, DEVICE_TYPE_ACPI, DEVICE_TYPE_SERIAL, DEVICE_TYPE_UNKNOWN,
+};
+use uefi::proto::device_path::{
+    acpi, hardware::MemoryMapped, DevicePathNode, DeviceSubType, DeviceType,
 };
 use uefi::proto::device_path::{
     text::{AllowShortcuts, DevicePathToText, DisplayOnly},
     DevicePath,
 };
-use uefi::proto::device_path::{DeviceSubType, DeviceType};
 use uefi::proto::loaded_image::LoadedImage;
 use uefi::{boot::SearchType, Identify};
+
+struct ClassifiedDevice {
+    device: HardwareDevice,
+    summary: String,
+}
 
 /// Static storage for hardware device inventory data.
 ///
@@ -100,7 +103,7 @@ pub struct HardwareInventory {
 pub fn collect_hardware_inventory(verbose: bool) -> Option<HardwareInventory> {
     write_line("Collecting hardware inventory using device paths...");
 
-    let mut devices: Vec<HardwareDevice> = Vec::new();
+    let mut devices: Vec<ClassifiedDevice> = Vec::new();
 
     // Find all handles that support DevicePath protocol (more comprehensive)
     let handles = match uefi::boot::locate_handle_buffer(SearchType::ByProtocol(&DevicePath::GUID))
@@ -145,25 +148,18 @@ pub fn collect_hardware_inventory(verbose: bool) -> Option<HardwareInventory> {
 
     // Enumerate all handles and get device path information
     for (index, handle) in handles.iter().enumerate() {
-        let handle_addr = handle.as_ptr() as usize as u64;
-        let (device_type, summary) =
-            classify_device(handle, device_path_to_text.as_ref().map(|p| &**p));
-        let entry = HardwareDevice {
-            device_type,
-            address: Some(handle_addr),
-            irq: None,
-        };
+        let classified = classify_device(handle, device_path_to_text.as_ref().map(|p| &**p));
 
         if verbose {
             write_line(&format!(
                 "  Device {}: Handle 0x{:016x} -> {}",
                 index + 1,
-                handle_addr,
-                summary
+                classified.device.address.unwrap_or(0),
+                classified.summary
             ));
         }
 
-        devices.push(entry);
+        devices.push(classified);
 
         if devices.len() >= hardware::MAX_HARDWARE_DEVICES {
             if verbose {
@@ -181,7 +177,8 @@ pub fn collect_hardware_inventory(verbose: bool) -> Option<HardwareInventory> {
         return None;
     }
 
-    let boxed_devices = devices.into_boxed_slice();
+    let boxed_devices: Vec<HardwareDevice> = devices.iter().map(|c| c.device).collect();
+    let boxed_devices = boxed_devices.into_boxed_slice();
     let device_count = boxed_devices.len();
     let devices_ptr = boxed_devices.as_ptr() as u64;
     let total_size = (device_count * core::mem::size_of::<HardwareDevice>()) as u64;
@@ -280,155 +277,196 @@ pub fn collect_hardware_inventory(verbose: bool) -> Option<HardwareInventory> {
 fn classify_device(
     handle: &uefi::Handle,
     device_path_to_text: Option<&DevicePathToText>,
-) -> (u32, String) {
-    let mut kind = DEVICE_TYPE_UNKNOWN;
-    let mut summary = String::from("unknown");
+) -> ClassifiedDevice {
+    let mut result = ClassifiedDevice {
+        device: HardwareDevice {
+            device_type: DEVICE_TYPE_UNKNOWN,
+            address: Some(handle.as_ptr() as usize as u64),
+            irq: None,
+        },
+        summary: String::from("unknown"),
+    };
 
     if let Ok(device_path) = uefi::boot::open_protocol_exclusive::<DevicePath>(*handle) {
-        let mut parts = Vec::new();
-        let mut detected = DEVICE_TYPE_UNKNOWN;
-
-        for node in device_path.node_iter() {
-            let node_summary = match (node.device_type(), node.sub_type()) {
-                (DeviceType::HARDWARE, DeviceSubType::HARDWARE_PCI) => {
-                    detected = DEVICE_TYPE_PCI;
-                    "hardware/pci"
-                }
-                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_SCSI) => {
-                    detected = DEVICE_TYPE_SATA;
-                    "messaging/scsi"
-                }
-                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_USB) => {
-                    detected = DEVICE_TYPE_USB;
-                    "messaging/usb"
-                }
-                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_SATA) => {
-                    detected = DEVICE_TYPE_SATA;
-                    "messaging/sata"
-                }
-                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_NVME_OF_NAMESPACE) => {
-                    detected = DEVICE_TYPE_NVME;
-                    "messaging/nvme-of"
-                }
-                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_MAC_ADDRESS) => {
-                    detected = DEVICE_TYPE_MAC;
-                    "messaging/mac"
-                }
-                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_IPV4) => {
-                    detected = DEVICE_TYPE_IPV4;
-                    "messaging/ipv4"
-                }
-                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_IPV6) => {
-                    detected = DEVICE_TYPE_IPV6;
-                    "messaging/ipv6"
-                }
-                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_USB_CLASS) => {
-                    detected = DEVICE_TYPE_USB;
-                    "messaging/usb-class"
-                }
-                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_SCSI_SAS_EX) => {
-                    detected = DEVICE_TYPE_SATA;
-                    "messaging/sas"
-                }
-                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_UART) => {
-                    detected = DEVICE_TYPE_UART;
-                    "messaging/uart"
-                }
-                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_BLUETOOTH) => {
-                    detected = DEVICE_TYPE_BLUETOOTH;
-                    "messaging/bluetooth"
-                }
-                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_WIFI) => {
-                    detected = DEVICE_TYPE_WIFI;
-                    "messaging/wifi"
-                }
-                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_SD) => {
-                    detected = DEVICE_TYPE_SD;
-                    "messaging/sd"
-                }
-                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_UFS) => {
-                    detected = DEVICE_TYPE_UFS;
-                    "messaging/ufs"
-                }
-                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_URI) => {
-                    detected = DEVICE_TYPE_MESSAGING;
-                    "messaging/uri"
-                }
-                (DeviceType::MESSAGING, DeviceSubType::MESSAGING_I2O) => {
-                    detected = DEVICE_TYPE_MESSAGING;
-                    "messaging/i2o"
-                }
-                (DeviceType::MEDIA, DeviceSubType::MEDIA_HARD_DRIVE) => {
-                    detected = DEVICE_TYPE_DISK;
-                    "media/hard-drive"
-                }
-                (DeviceType::MEDIA, DeviceSubType::MEDIA_CD_ROM) => {
-                    detected = DEVICE_TYPE_CDROM;
-                    "media/cdrom"
-                }
-                (DeviceType::MEDIA, DeviceSubType::MEDIA_FILE_PATH) => {
-                    detected = DEVICE_TYPE_FILE_PATH;
-                    "media/file"
-                }
-                (DeviceType::MEDIA, DeviceSubType::MEDIA_RELATIVE_OFFSET_RANGE) => {
-                    detected = DEVICE_TYPE_MEDIA;
-                    "media/relative-offset"
-                }
-                (DeviceType::MEDIA, DeviceSubType::MEDIA_RAM_DISK) => {
-                    detected = DEVICE_TYPE_RAMDISK;
-                    "media/ramdisk"
-                }
-                (DeviceType::HARDWARE, DeviceSubType::HARDWARE_CONTROLLER) => {
-                    detected = DEVICE_TYPE_CONTROLLER;
-                    "hardware/controller"
-                }
-                (DeviceType::HARDWARE, DeviceSubType::HARDWARE_VENDOR) => {
-                    detected = DEVICE_TYPE_VENDOR;
-                    "hardware/vendor"
-                }
-                (DeviceType::ACPI, _) => {
-                    detected = DEVICE_TYPE_ACPI;
-                    "acpi/node"
-                }
-                (DeviceType::END, DeviceSubType::END_INSTANCE) => "end-instance",
-                (DeviceType::END, DeviceSubType::END_ENTIRE) => "end-entire",
-                (ty, subtype) => {
-                    detected = DEVICE_TYPE_MESSAGING;
-                    parts.push(format!("other({:?}/{:?})", ty, subtype));
-                    continue;
-                }
-            };
-            parts.push(node_summary.to_string());
-            if detected != DEVICE_TYPE_UNKNOWN {
-                kind = detected;
+        let mut classified = classify_device_path(&device_path);
+        if let Some(text) = device_path_to_text.and_then(|to_text| {
+            to_text
+                .convert_device_path_to_text(&device_path, DisplayOnly(false), AllowShortcuts(true))
+                .ok()
+        }) {
+            let mut buf = String::new();
+            if text.as_str_in_buf(&mut buf).is_ok() {
+                classified.summary = buf;
             }
         }
-
-        if kind == DEVICE_TYPE_UNKNOWN {
-            kind = DEVICE_TYPE_UNKNOWN;
+        if classified.device.device_type != DEVICE_TYPE_UNKNOWN {
+            result.device.device_type = classified.device.device_type;
         }
+        if classified.device.address.is_some() {
+            result.device.address = classified.device.address;
+        }
+        result.summary = classified.summary;
+    }
 
-        if let Some(to_text) = device_path_to_text {
-            if let Ok(text) = to_text.convert_device_path_to_text(
-                &device_path,
-                DisplayOnly(false),
-                AllowShortcuts(true),
-            ) {
-                let mut path_buf = String::new();
-                if text.as_str_in_buf(&mut path_buf).is_ok() {
-                    summary = path_buf;
-                } else {
-                    summary = parts.join(" -> ");
-                }
-            } else {
-                summary = parts.join(" -> ");
-            }
-        } else {
-            summary = parts.join(" -> ");
+    result
+}
+
+fn classify_device_path(path: &DevicePath) -> ClassifiedDevice {
+    let mut device = HardwareDevice {
+        device_type: DEVICE_TYPE_UNKNOWN,
+        address: None,
+        irq: None,
+    };
+    let mut parts = Vec::new();
+    let mut found_serial = false;
+
+    for node in path.node_iter() {
+        let info = classify_device_node(&node);
+        if info.device.device_type == DEVICE_TYPE_SERIAL {
+            found_serial = true;
+        }
+        if device.device_type == DEVICE_TYPE_UNKNOWN
+            && info.device.device_type != DEVICE_TYPE_UNKNOWN
+        {
+            device.device_type = info.device.device_type;
+        }
+        if device.address.is_none() && info.device.address.is_some() {
+            device.address = info.device.address;
+        }
+        if info.device.irq.is_some() {
+            device.irq = info.device.irq;
+        }
+        parts.push(info.summary);
+    }
+
+    if found_serial {
+        device.device_type = DEVICE_TYPE_SERIAL;
+        if device.address.is_none() {
+            device.address = Some(0x3F8);
         }
     }
 
-    (kind, summary)
+    ClassifiedDevice {
+        device,
+        summary: parts.join(" -> "),
+    }
+}
+
+fn classify_device_node(node: &DevicePathNode) -> ClassifiedDevice {
+    match node.full_type() {
+        (DeviceType::ACPI, DeviceSubType::ACPI) => classify_acpi_node(node),
+        (DeviceType::MESSAGING, DeviceSubType::MESSAGING_UART) => classify_uart_node(),
+        (DeviceType::HARDWARE, DeviceSubType::HARDWARE_MEMORY_MAPPED) => {
+            classify_memory_mapped_node(node)
+        }
+        _ => ClassifiedDevice {
+            device: HardwareDevice {
+                device_type: DEVICE_TYPE_UNKNOWN,
+                address: None,
+                irq: None,
+            },
+            summary: format!("other({:?}/{:?})", node.device_type(), node.sub_type()),
+        },
+    }
+}
+
+fn classify_acpi_node(node: &DevicePathNode) -> ClassifiedDevice {
+    let acpi: &acpi::Acpi = node.try_into().unwrap();
+    let hid = acpi.hid();
+    let uid = acpi.uid();
+    let eisa = decode_eisa_id(hid);
+    let summary = if let Some(ref code) = eisa {
+        format!("acpi(hid={}, uid={})", code, uid)
+    } else {
+        format!("acpi(hid={:08x}, uid={})", hid, uid)
+    };
+    let device_type = if let Some(ref code) = eisa {
+        if is_serial_eisa(code) {
+            DEVICE_TYPE_SERIAL
+        } else {
+            DEVICE_TYPE_ACPI
+        }
+    } else {
+        DEVICE_TYPE_ACPI
+    };
+    ClassifiedDevice {
+        device: HardwareDevice {
+            device_type,
+            address: None,
+            irq: None,
+        },
+        summary,
+    }
+}
+
+fn classify_uart_node() -> ClassifiedDevice {
+    ClassifiedDevice {
+        device: HardwareDevice {
+            device_type: DEVICE_TYPE_SERIAL,
+            address: None,
+            irq: None,
+        },
+        summary: String::from("messaging/uart"),
+    }
+}
+
+fn classify_memory_mapped_node(node: &DevicePathNode) -> ClassifiedDevice {
+    let mmio: &MemoryMapped = node.try_into().unwrap();
+    let summary = format!(
+        "memory-mapped(type={:?}, start=0x{:x}, end=0x{:x})",
+        mmio.memory_type(),
+        mmio.start_address(),
+        mmio.end_address()
+    );
+    ClassifiedDevice {
+        device: HardwareDevice {
+            device_type: DEVICE_TYPE_UNKNOWN,
+            address: Some(mmio.start_address()),
+            irq: None,
+        },
+        summary,
+    }
+}
+
+fn is_serial_eisa(code: &str) -> bool {
+    SERIAL_EISA_CODES.contains(&code)
+}
+
+const SERIAL_EISA_CODES: &[&str] = &[
+    "PNP0500", "PNP0501", "PNP0502", "PNP0503", "PNP0504", "PNP0505", "PNP0506", "PNP0507",
+    "PNP0508", "PNP0509", "PNP0510", "PNP0511", "PNP0512", "PNP0513", "PNP0514", "PNP0515",
+    "PNP0516", "PNP0517", "PNP0518", "PNP0519", "PNP0520", "PNP0521", "PNP0522", "PNP0523",
+    "PNP0524", "PNP0525", "PNP0526", "PNP0527", "PNP0528", "PNP0529", "PNP052A", "PNP052B",
+    "PNP052C", "PNP052D", "PNP052E", "PNP052F", "PNP0530", "PNP0531", "PNP0532", "PNP0533",
+    "PNP0534", "PNP0535", "PNP0536", "PNP0537", "PNP0538", "PNP0539", "PNP053A", "PNP053B",
+    "PNP053C", "PNP053D", "PNP053E", "PNP053F", "PNP0540", "PNP0541", "PNP0542", "PNP0543",
+    "PNP0544", "PNP0545", "PNP0546", "PNP0547", "PNP0548", "PNP0549", "PNP054A", "PNP054B",
+    "PNP054C", "PNP054D", "PNP054E", "PNP054F", "PNP0550", "PNP0551", "PNP0552", "PNP0553",
+    "PNP0554", "PNP0555", "PNP0556", "PNP0557", "PNP0558", "PNP0559", "PNP055A", "PNP055B",
+    "PNP055C", "PNP055D", "PNP055E", "PNP055F", "PNP0560", "PNP0561", "PNP0562", "PNP0563",
+    "PNP0564", "PNP0565", "PNP0566", "PNP0567", "PNP0568", "PNP0569", "PNP056A", "PNP056B",
+    "PNP056C", "PNP056D", "PNP056E", "PNP056F", "PNP0570", "PNP0571", "PNP0572", "PNP0573",
+    "PNP0574", "PNP0575", "PNP0576", "PNP0577", "PNP0578", "PNP0579", "PNP057A", "PNP057B",
+    "PNP057C", "PNP057D", "PNP057E", "PNP057F", "IBM0004", "IBM0005", "IBM0006", "IBM0007",
+    "IBM0008", "IBM0009", "IBM000A", "IBM000B", "IBM000C", "IBM000D", "IBM000E", "IBM000F",
+    "PNP0001", "PNP0103", "PNP0C07", "PNP0C09", "PNP0A03", "PNP0A08", "PNP0C0F", "PNP0F13",
+    "PNP0F0E", "PNP0F0D", "PNP0F0C", "PNP0F0B", "PNP0F0A", "PNP0F09", "PNP0F08", "PNP0F07",
+    "PNP0F06", "PNP0F05", "PNP0F04", "PNP0F03", "PNP0F02", "PNP0F01", "PNP0F00", "PNP0000",
+];
+
+fn decode_eisa_id(raw: u32) -> Option<String> {
+    let mut chars = [0u8; 3];
+    chars[0] = ((((raw >> 10) & 0x1F) + 0x40) as u8).to_ascii_uppercase();
+    chars[1] = ((((raw >> 5) & 0x1F) + 0x40) as u8).to_ascii_uppercase();
+    chars[2] = ((((raw >> 0) & 0x1F) + 0x40) as u8).to_ascii_uppercase();
+    if !chars.iter().all(|&c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let product = ((raw >> 16) & 0xFFFF) as u16;
+    Some(format!(
+        "{}{}{}{:04X}",
+        chars[0] as char, chars[1] as char, chars[2] as char, product
+    ))
 }
 
 /// Display hardware inventory in a formatted table.

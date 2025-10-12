@@ -9,7 +9,8 @@ use crate::display::kernel_write_line;
 use crate::handoff::handoff_phys_ptr;
 
 use super::manager::driver_manager;
-use super::traits::{Device, DeviceId};
+use super::serial;
+use super::traits::{Device, DeviceClass, DeviceId};
 
 /// Result type for driver system operations
 pub type DriverResult<T> = Result<T, &'static str>;
@@ -18,10 +19,8 @@ pub type DriverResult<T> = Result<T, &'static str>;
 pub fn init() -> DriverResult<PlatformInfo> {
     kernel_write_line("[driver] initializing driver system");
 
-    // Register core drivers first
-    kernel_write_line("[driver] registering core drivers");
-    super::serial::register_serial_driver();
-    super::serial::register_com1_device();
+    serial::init_serial();
+    kernel_write_line("[driver] serial driver registered");
 
     let handoff = unsafe { &*(handoff_phys_ptr() as *const theseus_shared::handoff::Handoff) };
 
@@ -60,9 +59,14 @@ pub fn init() -> DriverResult<PlatformInfo> {
             kernel_write_line("");
         }
 
-        let mut device = Device::new(DeviceId::Raw(entry.device_type_str()));
-        device.phys_addr = entry.address;
-        device.irq = entry.irq;
+        let device_id = match entry.device_type {
+            theseus_shared::handoff::DEVICE_TYPE_SERIAL => DeviceId::Class(DeviceClass::Serial),
+            _ => DeviceId::Raw(entry.device_type_str()),
+        };
+        let mut device = Device::new(device_id);
+        if entry.device_type == theseus_shared::handoff::DEVICE_TYPE_SERIAL {
+            device.class = DeviceClass::Serial;
+        }
         driver_manager().lock().add_device(device);
     }
 
