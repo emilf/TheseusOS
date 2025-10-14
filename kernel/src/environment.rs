@@ -1,8 +1,11 @@
 //! Kernel environment setup module
 //!
 //! This module provides functions for setting up the complete kernel environment
-//! including interrupts, GDT, CPU features, and virtual memory.
+//! including interrupts, GDT, CPU features, virtual memory, and UEFI runtime hooks.
 
+use alloc::{format, vec::Vec};
+use alloc::string::String;
+use core::slice;
 use crate::cpu::{setup_control_registers, setup_floating_point, setup_msrs};
 use crate::gdt::setup_gdt;
 use crate::interrupts::{disable_all_interrupts, setup_idt};
@@ -11,6 +14,8 @@ use crate::memory::{
 };
 use crate::serial_debug;
 use theseus_shared::handoff::Handoff;
+use uefi::mem::memory_map::{MemoryAttribute, MemoryDescriptor};
+use uefi::Status;
 
 // Small helpers to keep unsafe/asm in tiny, reviewable boundaries.
 #[allow(dead_code)]
@@ -211,6 +216,7 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
                 );
             }
         }
+        // Map all UEFI runtime regions into the high-half PHYS_OFFSET window
     }
     // Early LAPIC timer smoke test (before enabling SSE/MSRs/allocators) to isolate issues
     {
@@ -600,6 +606,29 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
             crate::display::kernel_write_line("  Global allocator switched to permanent heap");
         }
 
+        // With the allocator live, hand runtime services their virtual map
+        match unsafe { set_virtual_address_map_runtime(handoff_phys_ptr(), verbose) } {
+            Ok(()) => {
+                if verbose {
+                    crate::display::kernel_write_line("  [rt] SetVirtualAddressMap completed");
+                }
+            }
+            Err(status) => {
+                crate::display::kernel_write_line("  [rt] SetVirtualAddressMap failed: ");
+                theseus_shared::print_hex_u64_0xe9!(status.0 as u64);
+                crate::display::kernel_write_line("\n");
+                crate::boot::abort_with_context(
+                    "UEFI SetVirtualAddressMap failed",
+                    file!(),
+                    line!(),
+                    Some(status.0 as u64),
+                );
+            }
+        }
+
+        // Runtime services now operate via virtual addresses; capture firmware RTC output.
+        log_uefi_firmware_time();
+
         // Optionally unmap the temporary heap to catch stale references
         const UNMAP_TEMP_HEAP: bool = true;
         if UNMAP_TEMP_HEAP {
@@ -911,4 +940,196 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64, v
     // Unreachable if jump succeeds; if we get here, panic to avoid continuing in low-half
     theseus_shared::qemu_println!("PANIC: High-half jump did not transfer control");
     panic!("High-half jump did not transfer control");
+}
+
+/// Query the firmware's RTC via UEFI runtime services and log the result.
+///
+/// This runs after we transition runtime services to virtual addressing, giving
+/// immediate feedback that the virtual mapping is valid.
+fn log_uefi_firmware_time() {
+    use crate::display::kernel_write_line;
+
+    match uefi::runtime::get_time() {
+        Ok(time) => {
+            let tz_display = match time.time_zone() {
+                Some(offset_minutes) => {
+                    let sign = if offset_minutes >= 0 { '+' } else { '-' };
+                    let mut minutes = offset_minutes;
+                    if minutes < 0 {
+                        minutes = -minutes;
+                    }
+                    let hours = minutes / 60;
+                    let mins = minutes % 60;
+                    format!("UTC{}{:02}:{:02}", sign, hours, mins)
+                }
+                None => String::from("local"),
+            };
+            let daylight_bits = time.daylight().bits();
+            let message = format!(
+                "[rt] Firmware time {year:04}-{month:02}-{day:02} \
+                 {hour:02}:{minute:02}:{second:02}.{nanos:09} {tz} daylight=0x{dl:02X}",
+                year = time.year(),
+                month = time.month(),
+                day = time.day(),
+                hour = time.hour(),
+                minute = time.minute(),
+                second = time.second(),
+                nanos = time.nanosecond(),
+                tz = tz_display,
+                dl = daylight_bits,
+            );
+            kernel_write_line(&message);
+        }
+        Err(err) => {
+            let status = err.status();
+            let message = format!(
+                "[rt] Firmware time unavailable (status {:?})",
+                status
+            );
+            kernel_write_line(&message);
+        }
+    }
+}
+
+/// Call UEFI's `SetVirtualAddressMap` runtime service after the kernel has established
+/// permanent mappings for all runtime regions.
+unsafe fn set_virtual_address_map_runtime(
+    handoff_phys: u64,
+    verbose: bool,
+) -> Result<(), Status> {
+    use core::mem::{align_of, size_of};
+
+    let handoff = &mut *(handoff_phys as *mut Handoff);
+    if handoff.uefi_system_table == 0 {
+        if verbose {
+            crate::display::kernel_write_line("  [rt] No UEFI system table; skipping SetVirtualAddressMap");
+        }
+        return Ok(());
+    }
+    if handoff.uefi_system_table >= crate::memory::PHYS_OFFSET {
+        // Already virtualised previously.
+        if verbose {
+            crate::display::kernel_write_line("  [rt] System table already virtual; skipping");
+        }
+        return Ok(());
+    }
+    if handoff.memory_map_buffer_ptr == 0
+        || handoff.memory_map_entries == 0
+        || handoff.memory_map_descriptor_size == 0
+    {
+        return Err(Status::UNSUPPORTED);
+    }
+
+    let desc_size = handoff.memory_map_descriptor_size as usize;
+    let count = handoff.memory_map_entries as usize;
+    let page_size = crate::memory::PAGE_SIZE as u64;
+    let mut runtime_ranges: Vec<(u64, u64)> = Vec::new();
+    let raw_ptr = handoff.memory_map_buffer_ptr;
+    let phys_ptr = if raw_ptr >= crate::memory::PHYS_OFFSET {
+        raw_ptr.wrapping_sub(crate::memory::PHYS_OFFSET)
+    } else {
+        raw_ptr
+    };
+    let phys_base = phys_ptr as usize;
+    let memmap_len = handoff.memory_map_size as u64;
+
+    // Update runtime descriptors to point at PHYS_OFFSET and track coverage.
+    for idx in 0..count {
+        let desc_ptr = (phys_base + idx * desc_size) as *mut MemoryDescriptor;
+        let desc = unsafe { &mut *desc_ptr };
+        if desc.att.contains(MemoryAttribute::RUNTIME) {
+            let bytes = desc.page_count.saturating_mul(page_size);
+            runtime_ranges.push((desc.phys_start, bytes));
+            desc.virt_start = crate::memory::PHYS_OFFSET.wrapping_add(desc.phys_start);
+        } else {
+            desc.virt_start = desc.phys_start;
+        }
+    }
+    crate::display::kernel_write_line("[rt] runtime descriptors prepared");
+
+    let virt_ptr = crate::memory::PHYS_OFFSET.wrapping_add(phys_ptr);
+    let map_base = virt_ptr as usize;
+    handoff.memory_map_buffer_ptr = virt_ptr;
+    crate::display::kernel_write_line("[rt] memory map pointer updated");
+
+    let mut temp_vec: Vec<MemoryDescriptor> = Vec::new();
+    let descriptors_slice: &mut [MemoryDescriptor] =
+        if desc_size == size_of::<MemoryDescriptor>()
+            && map_base % align_of::<MemoryDescriptor>() == 0
+        {
+            slice::from_raw_parts_mut(map_base as *mut MemoryDescriptor, count)
+        } else {
+            temp_vec.reserve_exact(count);
+            for idx in 0..count {
+                let src =
+                    (map_base + idx * desc_size) as *const MemoryDescriptor;
+            temp_vec.push(*src);
+        }
+        temp_vec.as_mut_slice()
+    };
+    crate::display::kernel_write_line("[rt] descriptor slice ready");
+
+    // Ensure PHYS_OFFSET covers the memory map buffer and each runtime range.
+    {
+        use crate::memory::{
+            map_range_with_policy, BootFrameAllocator, PageTable, PTE_PRESENT, PTE_WRITABLE,
+        };
+        use x86_64::registers::control::Cr3;
+
+        let mut frame_alloc = unsafe { BootFrameAllocator::from_handoff(handoff) };
+        let (frame, _) = Cr3::read();
+        let pml4_pa = frame.start_address().as_u64();
+        let pml4: &mut PageTable = unsafe { &mut *(pml4_pa as *mut PageTable) };
+
+        if memmap_len != 0 {
+            let phys_page_base = phys_ptr & !(page_size - 1);
+            let offset = phys_ptr - phys_page_base;
+            let total = ((offset + memmap_len + page_size - 1) / page_size) * page_size;
+            unsafe {
+                map_range_with_policy(
+                    pml4,
+                    crate::memory::PHYS_OFFSET.wrapping_add(phys_page_base),
+                    phys_page_base,
+                    total,
+                    PTE_PRESENT | PTE_WRITABLE,
+                    &mut frame_alloc,
+                );
+            }
+        }
+
+        for (phys_start, bytes) in runtime_ranges.iter().copied() {
+            if bytes == 0 {
+                continue;
+            }
+            unsafe {
+                map_range_with_policy(
+                    pml4,
+                    crate::memory::PHYS_OFFSET.wrapping_add(phys_start),
+                    phys_start,
+                    bytes,
+                    PTE_PRESENT | PTE_WRITABLE,
+                    &mut frame_alloc,
+                );
+            }
+        }
+    }
+    crate::display::kernel_write_line("[rt] runtime mapping ensured");
+
+    let system_table_phys = handoff.uefi_system_table;
+    let system_table_virt = crate::memory::PHYS_OFFSET.wrapping_add(system_table_phys)
+        as *const uefi_raw::table::system::SystemTable;
+
+    if verbose {
+        crate::display::kernel_write_line("  [rt] Calling SetVirtualAddressMap...");
+    }
+    match uefi::runtime::set_virtual_address_map(descriptors_slice, system_table_virt) {
+        Ok(()) => {
+            handoff.uefi_system_table = system_table_virt as u64;
+            if verbose {
+                crate::display::kernel_write_line("  [rt] Runtime services remapped");
+            }
+            Ok(())
+        }
+        Err(err) => Err(err.status()),
+    }
 }
