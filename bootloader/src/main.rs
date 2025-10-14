@@ -94,6 +94,16 @@ use uefi::mem::memory_map::MemoryType;
 use uefi::Status;
 // (no additional shared imports)
 
+#[cfg(all(target_arch = "x86_64", target_os = "uefi"))]
+// Provide the Windows-style stack probing symbol expected by LLVM when we rebuild
+// the bootloader with our custom DWARF-emitting target. The implementation lives
+// in compiler_builtins as `___chkstk_ms`, so we just export the legacy name.
+core::arch::global_asm!(
+    ".globl __chkstk",
+    "__chkstk:",
+    "    jmp ___chkstk_ms",
+);
+
 // Note: Panic handler is provided by the kernel library to avoid duplicate lang items
 
 /// Main UEFI entry point for the unified bootloader+kernel binary

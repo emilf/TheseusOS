@@ -110,6 +110,7 @@ Before running TheseusOS, you need to install a few things:
 - **Rust**: The programming language TheseusOS is written in
   - Install from [rustup.rs](https://rustup.rs/)
   - Add UEFI target: `rustup target add x86_64-unknown-uefi`
+- **GNU objcopy (binutils)**: Used to convert the EFI PE/COFF binary into an ELF symbol file for GDB. Install via your binutils package (`sudo pacman -S binutils` / `sudo apt install binutils` / `brew install binutils`).
 
 ### If Something Goes Wrong
 
@@ -184,6 +185,7 @@ make PROFILE=debug debug
 - The Makefile copies the unified `BOOTX64.EFI` binary to `EFI/BOOT/BOOTX64.EFI`
 - When you build with `PROFILE=debug`, the debug artifact from `target/x86_64-unknown-uefi/debug` is copied
 - No separate kernel file needed; everything is in `BOOTX64.EFI`
+- Bootloader builds use the workspace target spec `x86_64-unknown-uefi-dwarf.json`, which is a copy of the upstream UEFI target tweaked to emit DWARF debug info instead of PDB. Cargo is invoked with `-Z build-std=core,alloc` (nightly toolchain and `rust-src` component) so no manual setup is required beyond `rustup toolchain install` handled in `rust-toolchain.toml`.
 
 ### OVMF / Firmware handling
 
@@ -202,6 +204,13 @@ gdb -ex 'target remote :1234'
 ```
 
 You can also start QEMU manually with the `startQemu.sh` helper and pass `QEMU_OPTS="-S -s"` if you prefer.
+
+- EFI builds now emit a companion ELF symbol file at `build/BOOTX64.SYM` using GNU `objcopy`. This file carries DWARF debug info in a format that GDB understands while the firmware-friendly `BOOTX64.EFI` stays unchanged.
+- The Makefile exports `RUSTFLAGS += -C debuginfo=2` so release and debug builds carry full DWARF info for symbol generation. You can append more flags by setting `RUSTFLAGS` in the environment; they will be merged.
+- When you launch `gdb` with the provided `debug.gdb` script, it automatically loads `build/BOOTX64.SYM` before attaching to QEMU, so symbol lookup and breakpoints work without manual `add-symbol-file` commands.
+- Rust symbols keep their crate/module path in DWARF. Break on `'theseus_efi::efi_main'` (note the single quotes) if you set breakpoints manually; the bundled `debug.gdb` script already uses this form, automatically discovers the EFI image base in guest memory, and requests hardware breakpoints so firmware relocation does not interfere with inserting traps.
+- If you previously built with the stock `x86_64-unknown-uefi` target, run `make clean` once so new DWARF-enabled artifacts replace the old PDB-based ones; otherwise GDB may complain about missing `.dwo` files.
+- If you regenerate the bootloader with a different profile or feature set, re-run `make esp` (or any target that depends on it) to refresh both `BOOTX64.EFI` and the matching `BOOTX64.SYM`.
 
 ### Troubleshooting / common issues
 

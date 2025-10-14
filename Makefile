@@ -1,17 +1,29 @@
 BOOTLOADER_PROJECT := theseus-bootloader
 KERNEL_PROJECT := theseus-kernel
-BOOTLOADER_TARGET := x86_64-unknown-uefi
+BOOTLOADER_TARGET := x86_64-unknown-uefi-dwarf
+BOOTLOADER_TARGET_SPEC := $(BOOTLOADER_TARGET).json
 KERNEL_TARGET := x86_64-unknown-none
 PROFILE ?= release
+BOOTLOADER_CARGO_FLAGS := -Z build-std=core,alloc
 BOOTLOADER_BUILD_DIR := target/$(BOOTLOADER_TARGET)/$(PROFILE)
 EFI_DIR := build/EFI/BOOT
 ESP_DIR := build
 EFI_BIN := $(BOOTLOADER_BUILD_DIR)/theseus_efi.efi
 EFI_OUTPUT := $(EFI_DIR)/BOOTX64.EFI
+SYMBOL_OUTPUT := $(ESP_DIR)/BOOTX64.SYM
 OVMF_DIR := OVMF
 OVMF_CODE := $(OVMF_DIR)/OVMF_CODE.fd
 OVMF_VARS_ORIG := $(OVMF_DIR)/OVMF_VARS.fd
 OVMF_VARS_RW := $(ESP_DIR)/OVMF_VARS.fd
+OBJCOPY ?= objcopy
+
+ifeq ($(strip $(shell command -v $(OBJCOPY) >/dev/null 2>&1 && echo ok)),)
+$(error objcopy not found. Install GNU binutils (provides objcopy) or set OBJCOPY to a compatible tool.)
+endif
+
+RUSTFLAGS += -C debuginfo=2
+RUSTFLAGS += -C split-debuginfo=off
+export RUSTFLAGS
 
 # Map PROFILE to the correct cargo flag. Cargo uses `--release` for release
 # builds and no flag for debug builds. Set `PROFILE=debug` to build debug.
@@ -29,9 +41,9 @@ all: build esp bios
 build: build-bootloader
 
 build-bootloader:
-	cargo build --package $(BOOTLOADER_PROJECT) --target $(BOOTLOADER_TARGET) $(CARGO_PROFILE_FLAG) $(if $(FEATURES),--features $(FEATURES),)
+	cargo build $(BOOTLOADER_CARGO_FLAGS) --package $(BOOTLOADER_PROJECT) --target $(BOOTLOADER_TARGET_SPEC) $(CARGO_PROFILE_FLAG) $(if $(FEATURES),--features $(FEATURES),)
 
-esp: $(EFI_OUTPUT)
+esp: $(EFI_OUTPUT) $(SYMBOL_OUTPUT)
 
 $(EFI_OUTPUT): $(EFI_BIN)
 	@echo "Creating EFI System Partition..."
@@ -54,6 +66,18 @@ $(EFI_OUTPUT): $(EFI_BIN)
 	@# Copy the bootloader and kernel
 	@mcopy -i $(ESP_DIR)/disk.img -s $(EFI_BIN) ::EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
 	@echo "✓ Created GPT disk image with EFI System Partition"
+
+$(SYMBOL_OUTPUT): $(EFI_OUTPUT)
+	@mkdir -p $(dir $(SYMBOL_OUTPUT))
+	@echo "Generating ELF symbol file for GDB..."
+	@$(OBJCOPY) --input-target=pei-x86-64 --output-target=elf64-x86-64 $(EFI_BIN) $(SYMBOL_OUTPUT)
+	@printf '\177ELF' | cmp -s -n 4 - $(SYMBOL_OUTPUT) || { \
+		echo "Error: failed to generate ELF symbols with $(OBJCOPY)." >&2; \
+		echo "Install GNU binutils objcopy or set OBJCOPY=<path-to-gnu-objcopy>." >&2; \
+		rm -f $(SYMBOL_OUTPUT); \
+		exit 1; \
+	}
+	@echo "✓ Generated ELF symbol file for GDB"
 
 # Automatically copy BIOS files if needed
 bios: $(OVMF_CODE) $(OVMF_VARS_ORIG) $(OVMF_VARS_RW)
@@ -325,5 +349,3 @@ define run_test_qemu
 		exit 1; \
 	fi
 endef
-
-
