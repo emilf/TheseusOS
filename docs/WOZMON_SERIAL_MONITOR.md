@@ -64,7 +64,7 @@ The serial driver configures the 16550 UART on COM1 (I/O base 0x3F8) with:
 The serial driver uses IRQ 4 (GSI 4 on legacy systems) to receive data asynchronously:
 
 1. Hardware asserts IRQ when data arrives
-2. IOAPIC routes IRQ 4 to vector 0x24 (SERIAL_RX_VECTOR)
+2. IOAPIC routes IRQ 4 to vector 0x41 (SERIAL_RX_VECTOR)
 3. Interrupt handler reads all available bytes from UART
 4. Bytes are enqueued into circular buffer
 5. Monitor is notified of new data
@@ -77,7 +77,7 @@ The driver maintains a 1024-byte circular buffer for received data:
 - **Head**: Write position (atomic, modified by IRQ handler)
 - **Tail**: Read position (atomic, modified by application)
 - **Overflow Behavior**: When full, oldest byte is overwritten
-- **Thread Safety**: Lock-free for single reader/writer, mutex for port access
+- **Thread Safety**: `spin::Mutex` protects buffer storage; atomic head/tail indices coordinate producer/consumer
 
 ### Key Functions
 
@@ -87,8 +87,8 @@ Registers the serial driver with the kernel driver manager.
 #### `init_serial()`
 Initializes the serial subsystem:
 - Checks configuration flags
-- Registers driver
-- Discovers and binds COM1 device
+- Registers driver with the manager
+- Relies on driver system enumeration to discover and bind COM1 devices
 
 #### `write_bytes_direct(buf: &[u8])`
 Direct write path bypassing driver manager (useful in IRQ context):
@@ -436,7 +436,7 @@ The monitor uses several synchronization mechanisms:
 
 1. **MONITOR** static: Spin mutex protecting monitor state
 2. **SERIAL_STATE**: Spin mutex protecting driver state
-3. **Circular Buffer**: Lock-free atomic head/tail pointers
+3. **Circular Buffer**: `spin::Mutex` guards data; atomic head/tail indices track positions
 4. **IRQ Context**: Uses `write_bytes_direct()` to avoid reentrancy
 
 ### Performance Considerations

@@ -15,6 +15,7 @@ This document summarizes the initial serial terminal driver built on the kernel 
 ## Driver Capabilities
 - Configurable via `config::ENABLE_SERIAL_OUTPUT` flag.
 - Initializes port 0x3F8 (COM1) with 115200 baud, 8-N-1, FIFO enabled.
+- Handles interrupt-driven reception with a 1024-byte circular buffer feeding the monitor.
 - Provides buffered write support that converts `\n` into CRLF for terminal compatibility.
 
 ## Driver Framework Enhancements
@@ -27,6 +28,6 @@ This document summarizes the initial serial terminal driver built on the kernel 
 - Use helper `display::kernel_write_serial("message")` to send data through the framework to the serial terminal.
 
 ## Future Work
-- Add interrupt-driven RX/TX support.
+- Add interrupt- or DMA-driven transmit support.
 - Expose a higher-level console abstraction with buffering.
 - Extend bootloader classification to include additional UART variants.

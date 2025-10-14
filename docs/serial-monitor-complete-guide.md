@@ -36,7 +36,7 @@ This document provides a high-level overview of the serial communication system 
 │              (IOAPIC → LAPIC → CPU)                              │
 └───────────────────────────┬─────────────────────────────────────┘
                             │
-                            │ Vector 0x24
+                            │ Vector 0x41 (SERIAL_RX_VECTOR)
                             │
 ┌───────────────────────────┴─────────────────────────────────────┐
 │               Serial Driver IRQ Handler                          │
@@ -185,7 +185,7 @@ The 16550 UART is:
 
 A circular buffer is ideal for serial I/O because:
 - Fixed size (no dynamic allocation in IRQ context)
-- Lock-free operation (with atomic head/tail)
+- Mutex-protected storage with atomic head/tail indices (safe in IRQ + task contexts)
 - Efficient wraparound (modulo arithmetic)
 - Natural FIFO behavior
 - Handles bursty traffic well
@@ -462,4 +462,3 @@ for inspecting and manipulating system state when more sophisticated tools aren'
 available or practical.
 
 Happy debugging! 🔧
-

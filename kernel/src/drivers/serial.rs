@@ -85,8 +85,8 @@
 //! - **Full**: (head + 1) % size == tail
 //! - **Overflow**: Oldest data is overwritten when buffer fills
 //!
-//! The head and tail are atomic variables, enabling lock-free operation between the
-//! IRQ handler (producer) and application (consumer).
+//! The head and tail indices are atomic so both contexts observe consistent positions,
+//! while a `spin::Mutex` guards the backing array to prevent concurrent writes.
 //!
 //! ## Driver Framework Integration
 //!
@@ -110,9 +110,9 @@
 //!
 //! ## Thread Safety
 //!
-//! - `SERIAL_STATE`: Protected by Mutex for hardware access
-//! - Circular buffer: Lock-free atomics for head/tail
-//! - IRQ handler: Can safely interleave with application reads
+//! - `SERIAL_STATE`: Protected by `Mutex` for hardware access
+//! - Circular buffer: `spin::Mutex` guards data; atomic head/tail indices coordinate positions
+//! - IRQ handler: Short critical sections keep responsiveness even with shared locking
 //!
 //! ## References
 //!
@@ -145,9 +145,9 @@ const IOAPIC_REDIRECTION_TABLE_BASE: u32 = 0x10;
 ///
 /// # Thread Safety
 ///
-/// The state is protected by `SERIAL_STATE` mutex. The circular buffer uses
-/// lock-free atomics for head/tail pointers, allowing the IRQ handler to
-/// write while the application reads without additional synchronization.
+/// The state is protected by the `SERIAL_STATE` mutex. The circular buffer stores
+/// bytes inside a `spin::Mutex`, while atomic head/tail pointers ensure the IRQ
+/// handler and readers agree on ordering once the lock is released.
 #[allow(dead_code)]
 struct SerialDriverState {
     /// Hardware port abstraction
@@ -163,8 +163,7 @@ struct SerialDriverState {
 
     /// Circular buffer for received data
     ///
-    /// Protected by mutex for structural access, but the actual buffer is
-    /// accessed via lock-free atomics (head/tail indices).
+    /// Protected by a `spin::Mutex`; atomic indices define read/write offsets.
     rx_buffer: spin::Mutex<[u8; RX_BUFFER_SIZE]>,
 
     /// Write position in circular buffer (modified by IRQ handler)
@@ -500,7 +499,8 @@ impl Driver for SerialDriver {
 ///
 /// This function is called from the IRQ handler to store received data. It implements
 /// a circular buffer with overflow handling: when the buffer is full, the oldest data
-/// is discarded to make room for new data.
+/// is discarded to make room for new data. The underlying byte array is protected by
+/// a `spin::Mutex`, so producer and consumer take short turns while mutating the buffer.
 ///
 /// # Algorithm
 ///
@@ -548,7 +548,8 @@ fn enqueue_byte(state: &mut SerialDriverState, byte: u8) {
 /// This function is called from the read() method to retrieve received data for
 /// the application. It copies as many bytes as possible (up to the output buffer
 /// size or the number of available bytes, whichever is smaller) and advances the
-/// tail pointer.
+/// tail pointer. The buffer storage remains under a `spin::Mutex` guard during the copy
+/// to prevent concurrent modifications from the IRQ handler.
 ///
 /// # Algorithm
 ///
@@ -653,7 +654,7 @@ pub fn current_irq_number() -> Option<u32> {
 /// ```text
 /// Bit(s)  | Field              | Value for Serial
 /// --------|-------------------|------------------
-/// 0-7     | Interrupt Vector  | 0x24 (SERIAL_RX_VECTOR)
+/// 0-7     | Interrupt Vector  | 0x41 (SERIAL_RX_VECTOR)
 /// 8-10    | Delivery Mode     | 000 (Fixed)
 /// 11      | Destination Mode  | 0 (Physical)
 /// 12      | Delivery Status   | 0 (Idle)
