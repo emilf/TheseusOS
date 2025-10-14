@@ -168,37 +168,36 @@ Fill a memory region with a byte value.
 
 **`regs` / `r`**  
 Display CPU registers:
-- General purpose: RAX, RBX, RCX, RDX, RSI, RDI, RSP, RBP
-- Control: CR0, CR2, CR3, CR4
-- Segments: CS, DS, SS, ES
+- General purpose: RAX–R15, RSP, RBP
+- Instruction pointer and flags: RIP, RFLAGS
+- Control: CR0, CR2, CR3, CR4, CR8
+- Segments: CS, DS, SS, ES, FS, GS
 
 **`devices` / `dev`**  
 List all registered devices with their class, binding status, MMIO address, and IRQ.
 
 **`acpi`**  
-Display ACPI information from handoff structure:
-- RSDP address
-- CPU count
+Display ACPI information pulled from the handoff and cached tables:
+- RSDP signature, OEM ID, checksum status, RSDT/XSDT pointers
+- Platform summary (CPU count, IO APICs, local APIC base, legacy PIC)
+- MADT details (APIC IDs, IO APIC entries) when available
 
-**`mmap`**  
-Show UEFI memory map metadata.
+**`mmap [summary|entries [N]|entry INDEX]`**  
+Show UEFI memory map summary and descriptor details. By default prints a summary plus the first few entries. Use `mmap entries` to list all descriptors or `mmap entry 5` for a specific one.
 
 **`cpuid`**  
 Display CPU identification and features:
-- Vendor string
-- Family/Model/Stepping
-- Feature flags (FPU, PAE, APIC, MSR, TSC, SSE, x2APIC, etc.)
+- Vendor/brand strings, family/model/stepping, APIC information
+- Standard feature flags (FPU, PAE, SSE family, AVX, x2APIC, hypervisor, etc.)
+- Extended flags (FSGSBASE, BMI, AVX2, SMEP/SMAP, RDSEED, RTM, NX, LM, RDTSCP, 1GiB pages)
 
 #### System Tables
 
-**`idt`**  
-Show Interrupt Descriptor Table information:
-- IDTR base and limit
-- Key interrupt vector descriptions
+**`idt [N]`**  
+Show IDT base/limit and dump the first *N* descriptors (default 16) including selector, target address, gate type, DPL, and IST slot.
 
-**`gdt`**  
-Show Global Descriptor Table information:
-- GDTR base and limit
+**`gdt [N]`**  
+Show GDT base/limit and dump segment descriptors (default all). Includes base, limit, descriptor type, privilege level, presence, and flags. Long system descriptors automatically consume both entries.
 
 #### Debugging
 
@@ -210,22 +209,19 @@ Frame # 1: RIP=0xFFFF800000101234 RBP=0xFFFF800000205E80
 ...
 ```
 
-**`msr ADDR`**  
-Read Model-Specific Register (MSR).
+**`msr [r|w] ADDR [VALUE]`**  
+Read or write Model-Specific Registers. `msr 0x1B` reads IA32_APIC_BASE, `msr w 0x1B 0x...` writes a new value (dangerous).
 
 Common MSRs:
 - 0x1B: IA32_APIC_BASE
 - 0x10: IA32_TIME_STAMP_COUNTER
 - 0xC0000080: IA32_EFER
 
-**`io r PORT`**  
-Read byte from I/O port.
-
-**`io w PORT VALUE`**  
-Write byte to I/O port.
+**`io (r|w)[8|16|32] PORT [VALUE]`**  
+Read/write I/O ports at byte, word, or dword granularity, e.g. `io r16 0x64`, `io w32 0xCF8 0x80000010`.
 
 **`int NUM`**  
-Trigger software interrupt (currently only INT3 is enabled for safety).
+Trigger software interrupt (INT3 breakpoint or INT 0x80 syscall stub allowed for safety).
 
 **`call ADDR`**  
 Call a function at the specified address (⚠️ DANGEROUS - can crash system).
@@ -499,4 +495,3 @@ Some commands (especially `halt`, `reset`, `call`) are designed to be destructiv
 ## License
 
 This documentation and the TheseusOS kernel monitor are released under the same license as the TheseusOS project.
-

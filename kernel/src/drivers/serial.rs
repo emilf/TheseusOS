@@ -343,8 +343,8 @@ impl SerialDriver {
             // Divisor = 115200 / desired_baud_rate
             // For 115200 bps, divisor = 1
             let divisor = theseus_shared::constants::hardware::COM1_BAUD_DIVISOR;
-            data.write((divisor & 0xFF) as u8);         // Divisor low byte
-            int_enable.write((divisor >> 8) as u8);     // Divisor high byte
+            data.write((divisor & 0xFF) as u8); // Divisor low byte
+            int_enable.write((divisor >> 8) as u8); // Divisor high byte
 
             // Configure line control: 8 data bits, no parity, 1 stop bit
             // Also clears DLAB to access normal registers again
@@ -368,7 +368,7 @@ impl SerialDriver {
             // Bit 2: OUT1 - not used
             // Bit 3: OUT2 - MUST be high for interrupts to reach CPU
             // Bit 4: Loopback mode - disabled
-            modem_ctrl.write(0x0B);  // DTR=1, RTS=1, OUT2=1
+            modem_ctrl.write(0x0B); // DTR=1, RTS=1, OUT2=1
         }
 
         Ok(SerialPort::new(base))
@@ -704,8 +704,8 @@ unsafe fn program_io_apic_entry(address: u64, pin: u32, vector: u8, destination_
     let mut lower = ptr::read_volatile(window);
 
     // Set interrupt vector (bits 0-7)
-    lower &= !0xFF;                 // Clear existing vector
-    lower |= vector as u32;         // Set new vector
+    lower &= !0xFF; // Clear existing vector
+    lower |= vector as u32; // Set new vector
 
     // Set delivery mode to Fixed (bits 8-10 = 000)
     // Fixed mode delivers the interrupt to the specified CPU
@@ -737,8 +737,8 @@ unsafe fn program_io_apic_entry(address: u64, pin: u32, vector: u8, destination_
     let mut upper = ptr::read_volatile(window);
 
     // Set destination APIC ID (bits 24-31)
-    upper &= !(0xFF << 24);                     // Clear existing destination
-    upper |= (destination_apic_id as u32) << 24;  // Set new destination
+    upper &= !(0xFF << 24); // Clear existing destination
+    upper |= (destination_apic_id as u32) << 24; // Set new destination
 
     // Write back the configured upper dword
     ptr::write_volatile(window, upper);

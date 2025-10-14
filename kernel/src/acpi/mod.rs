@@ -162,6 +162,20 @@ impl PlatformInfo {
     }
 }
 
+static PLATFORM_INFO_CACHE: Mutex<Option<PlatformInfo>> = Mutex::new(None);
+
+/// Retrieve the cached platform summary gathered during ACPI initialization.
+///
+/// Returns `None` if ACPI has not been initialized successfully yet.
+pub fn cached_platform_info() -> Option<PlatformInfo> {
+    PLATFORM_INFO_CACHE.lock().clone()
+}
+
+fn update_platform_cache(info: &PlatformInfo) {
+    let mut cache = PLATFORM_INFO_CACHE.lock();
+    *cache = Some(info.clone());
+}
+
 /// Initialize ACPI parsing from handoff structure
 ///
 /// This function extracts the ACPI RSDP address from the handoff structure
@@ -214,6 +228,7 @@ pub fn initialize_acpi(acpi_rsdp: u64) -> Result<PlatformInfo, &'static str> {
 
     // Extract platform information
     let platform_info = extract_platform_info(&tables)?;
+    update_platform_cache(&platform_info);
 
     kernel_write_line("✓ ACPI initialization completed successfully");
     Ok(platform_info)

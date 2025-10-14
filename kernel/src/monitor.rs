@@ -61,14 +61,18 @@
 //! executing code - all in just 256 bytes. This implementation honors that legacy while
 //! adapting to 64-bit architectures and modern debugging needs.
 
+use crate::acpi;
 use crate::config;
 use crate::display::kernel_write_line;
 use crate::drivers::manager::driver_manager;
 use crate::drivers::serial;
 use crate::drivers::traits::DeviceClass;
+use crate::memory;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::cmp::min;
+use core::str;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
@@ -322,9 +326,9 @@ impl Monitor {
             "devices" | "dev" => self.cmd_devices(),
             "acpi" => self.cmd_acpi(),
             "stack" | "bt" => self.cmd_stack_trace(),
-            "idt" => self.cmd_idt(),
-            "gdt" => self.cmd_gdt(),
-            "mmap" => self.cmd_memory_map(),
+            "idt" => self.cmd_idt(&parts[1..]),
+            "gdt" => self.cmd_gdt(&parts[1..]),
+            "mmap" => self.cmd_memory_map(&parts[1..]),
             "cpuid" => self.cmd_cpuid(),
             "msr" => self.cmd_msr(&parts[1..]),
             "io" => self.cmd_io(&parts[1..]),
@@ -345,111 +349,144 @@ impl Monitor {
         self.writeln("Available commands:");
         self.writeln("");
         self.writeln("Memory Operations:");
-        self.writeln("  mem ADDR           - Examine 16 bytes at ADDR");
-        self.writeln("  dump ADDR [LEN]    - Hex dump memory region");
-        self.writeln("  write ADDR VAL     - Write byte to memory");
-        self.writeln("  fill ADDR LEN VAL  - Fill memory region");
+        self.writeln(
+            "  mem [ADDR]             - Examine 16 bytes (continues from prior if omitted)",
+        );
+        self.writeln("  dump ADDR [LEN]        - Hex dump memory region");
+        self.writeln("  write ADDR VAL         - Write byte to memory");
+        self.writeln("  fill ADDR LEN VAL      - Fill memory region with byte");
         self.writeln("");
         self.writeln("System Information:");
-        self.writeln("  regs, r            - Display CPU registers");
-        self.writeln("  devices, dev       - List hardware devices");
-        self.writeln("  acpi               - ACPI platform info");
-        self.writeln("  mmap               - Memory map from UEFI");
-        self.writeln("  cpuid              - CPU identification");
+        self.writeln("  regs                 - Display general/control/segment registers");
+        self.writeln("  devices, dev         - List registered hardware devices");
+        self.writeln("  acpi                 - ACPI RSDP + platform summary");
+        self.writeln("  mmap [summary|entries [N]|entry IDX]");
+        self.writeln("                       - Inspect UEFI memory map");
+        self.writeln("  cpuid                - CPU identification and feature flags");
         self.writeln("");
         self.writeln("System Tables:");
-        self.writeln("  idt                - Show IDT information");
-        self.writeln("  gdt                - Show GDT information");
+        self.writeln("  idt [N]              - Show first N IDT descriptors (default 16)");
+        self.writeln("  gdt [N]              - Show first N GDT descriptors (default all)");
         self.writeln("");
         self.writeln("Debugging:");
-        self.writeln("  stack, bt          - Stack backtrace");
-        self.writeln("  msr ADDR           - Read model-specific register");
-        self.writeln("  io r PORT          - Read from I/O port");
-        self.writeln("  io w PORT VAL      - Write to I/O port");
-        self.writeln("  int NUM            - Trigger software interrupt");
-        self.writeln("  call ADDR          - Call function at address");
+        self.writeln("  stack, bt           - Stack backtrace");
+        self.writeln("  msr [r|w] ADDR [VAL]- Read/write model-specific register");
+        self.writeln("  io (r|w)[8|16|32] PORT [VAL]");
+        self.writeln("                       - Read/write I/O port with width selection");
+        self.writeln("  int NUM             - Trigger software interrupt (limited set)");
+        self.writeln("  call ADDR           - Call function at address");
         self.writeln("");
         self.writeln("System Control:");
-        self.writeln("  reset              - Reset system");
-        self.writeln("  halt               - Halt CPU");
-        self.writeln("  clear, cls         - Clear screen");
+        self.writeln("  reset               - Reset system");
+        self.writeln("  halt                - Halt CPU");
+        self.writeln("  clear, cls          - Clear screen");
         self.writeln("");
-        self.writeln("Addresses can be in hex (0x...) or decimal");
+        self.writeln("Numbers accept hex (0x...) or decimal input.");
     }
 
     /// Display CPU registers
     fn cmd_registers(&self) {
         self.writeln("CPU Registers:");
 
+        macro_rules! read_gpr {
+            ($reg:tt) => {{
+                let value: u64;
+                unsafe {
+                    core::arch::asm!(
+                        concat!("mov {0}, ", stringify!($reg)),
+                        out(reg) value,
+                        options(nomem, preserves_flags, nostack)
+                    );
+                }
+                value
+            }};
+        }
+
+        let rax = read_gpr!(rax);
+        let rbx = read_gpr!(rbx);
+        let rcx = read_gpr!(rcx);
+        let rdx = read_gpr!(rdx);
+        let rsi = read_gpr!(rsi);
+        let rdi = read_gpr!(rdi);
+        let rsp = read_gpr!(rsp);
+        let rbp = read_gpr!(rbp);
+        let r8 = read_gpr!(r8);
+        let r9 = read_gpr!(r9);
+        let r10 = read_gpr!(r10);
+        let r11 = read_gpr!(r11);
+        let r12 = read_gpr!(r12);
+        let r13 = read_gpr!(r13);
+        let r14 = read_gpr!(r14);
+        let r15 = read_gpr!(r15);
+
+        let rip: u64;
         unsafe {
-            let rsp: u64;
-            let rbp: u64;
-            let rax: u64;
-            let rbx: u64;
-            let rcx: u64;
-            let rdx: u64;
-            let rsi: u64;
-            let rdi: u64;
-
             core::arch::asm!(
-                "mov {rsp}, rsp",
-                "mov {rbp}, rbp",
-                "mov {rax}, rax",
-                "mov {rbx}, rbx",
-                "mov {rcx}, rcx",
-                "mov {rdx}, rdx",
-                "mov {rsi}, rsi",
-                "mov {rdi}, rdi",
-                rsp = out(reg) rsp,
-                rbp = out(reg) rbp,
-                rax = out(reg) rax,
-                rbx = out(reg) rbx,
-                rcx = out(reg) rcx,
-                rdx = out(reg) rdx,
-                rsi = out(reg) rsi,
-                rdi = out(reg) rdi,
-                options(nostack)
+                "lea {0}, [rip]",
+                out(reg) rip,
+                options(nomem, preserves_flags)
             );
+        }
 
-            self.writeln(&format!("  RAX: 0x{:016X}  RBX: 0x{:016X}", rax, rbx));
-            self.writeln(&format!("  RCX: 0x{:016X}  RDX: 0x{:016X}", rcx, rdx));
-            self.writeln(&format!("  RSI: 0x{:016X}  RDI: 0x{:016X}", rsi, rdi));
-            self.writeln(&format!("  RSP: 0x{:016X}  RBP: 0x{:016X}", rsp, rbp));
+        self.writeln(&format!("  RAX: 0x{:016X}  RBX: 0x{:016X}", rax, rbx));
+        self.writeln(&format!("  RCX: 0x{:016X}  RDX: 0x{:016X}", rcx, rdx));
+        self.writeln(&format!("  RSI: 0x{:016X}  RDI: 0x{:016X}", rsi, rdi));
+        self.writeln(&format!("  RSP: 0x{:016X}  RBP: 0x{:016X}", rsp, rbp));
+        self.writeln(&format!("  R8 : 0x{:016X}  R9 : 0x{:016X}", r8, r9));
+        self.writeln(&format!("  R10: 0x{:016X}  R11: 0x{:016X}", r10, r11));
+        self.writeln(&format!("  R12: 0x{:016X}  R13: 0x{:016X}", r12, r13));
+        self.writeln(&format!("  R14: 0x{:016X}  R15: 0x{:016X}", r14, r15));
+        self.writeln(&format!("  RIP: 0x{:016X}", rip));
 
-            // Control registers
-            let cr0: u64;
-            let cr2: u64;
-            let cr3: u64;
-            let cr4: u64;
+        // Control registers
+        let cr0: u64;
+        let cr2: u64;
+        let cr3: u64;
+        let cr4: u64;
+        let cr8: u64;
 
+        unsafe {
             core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack));
             core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack));
             core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack));
             core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack));
+            core::arch::asm!("mov {}, cr8", out(reg) cr8, options(nomem, nostack));
+        }
 
-            self.writeln("");
-            self.writeln("Control Registers:");
-            self.writeln(&format!("  CR0: 0x{:016X}  CR2: 0x{:016X}", cr0, cr2));
-            self.writeln(&format!("  CR3: 0x{:016X}  CR4: 0x{:016X}", cr3, cr4));
+        self.writeln("");
+        self.writeln("Control Registers:");
+        self.writeln(&format!("  CR0: 0x{:016X}  CR2: 0x{:016X}", cr0, cr2));
+        self.writeln(&format!("  CR3: 0x{:016X}  CR4: 0x{:016X}", cr3, cr4));
+        self.writeln(&format!("  CR8: 0x{:016X}", cr8));
 
-            // Segment registers
-            let cs: u16;
-            let ds: u16;
-            let ss: u16;
-            let es: u16;
+        // Segment registers
+        let cs: u16;
+        let ds: u16;
+        let ss: u16;
+        let es: u16;
+        let fs: u16;
+        let gs: u16;
 
+        unsafe {
             core::arch::asm!("mov {:x}, cs", out(reg) cs, options(nomem, nostack));
             core::arch::asm!("mov {:x}, ds", out(reg) ds, options(nomem, nostack));
             core::arch::asm!("mov {:x}, ss", out(reg) ss, options(nomem, nostack));
             core::arch::asm!("mov {:x}, es", out(reg) es, options(nomem, nostack));
-
-            self.writeln("");
-            self.writeln("Segment Registers:");
-            self.writeln(&format!(
-                "  CS: 0x{:04X}  DS: 0x{:04X}  SS: 0x{:04X}  ES: 0x{:04X}",
-                cs, ds, ss, es
-            ));
+            core::arch::asm!("mov {:x}, fs", out(reg) fs, options(nomem, nostack));
+            core::arch::asm!("mov {:x}, gs", out(reg) gs, options(nomem, nostack));
         }
+
+        self.writeln("");
+        self.writeln("Segment Registers:");
+        self.writeln(&format!(
+            "  CS: 0x{:04X}  DS: 0x{:04X}  SS: 0x{:04X}  ES: 0x{:04X}",
+            cs, ds, ss, es
+        ));
+        self.writeln(&format!("  FS: 0x{:04X}  GS: 0x{:04X}", fs, gs));
+
+        let rflags = x86_64::registers::rflags::read().bits();
+        self.writeln("");
+        self.writeln(&format!("RFLAGS: 0x{:016X}", rflags));
     }
 
     /// Examine memory at address
@@ -636,9 +673,10 @@ impl Monitor {
 
     /// List registered devices
     fn cmd_devices(&self) {
-        self.writeln("Registered devices:");
         let mgr = driver_manager().lock();
         let devices = mgr.devices();
+
+        self.writeln(&format!("Registered devices ({}):", devices.len()));
 
         if devices.is_empty() {
             self.writeln("  (no devices registered)");
@@ -646,24 +684,26 @@ impl Monitor {
         }
 
         for (i, dev) in devices.iter().enumerate() {
-            let bound = if dev.driver_data.is_some() {
-                "[BOUND]"
-            } else {
-                ""
-            };
-            let addr_str = match dev.phys_addr {
-                Some(a) => format!("0x{:X}", a),
-                None => String::from("none"),
-            };
-            let irq_str = match dev.irq {
-                Some(i) => format!("{}", i),
-                None => String::from("none"),
-            };
-
             self.writeln(&format!(
-                "  [{:2}] {} {} addr:{} irq:{}",
-                i, dev.id, bound, addr_str, irq_str
+                "  [{:02}] {:<24} class:{:?} status:{} phys:{} irq:{}",
+                i,
+                format!("{}", dev.id),
+                dev.class,
+                if dev.driver_data.is_some() {
+                    "bound"
+                } else {
+                    "pending"
+                },
+                dev.phys_addr
+                    .map(|addr| format!("0x{:X}", addr))
+                    .unwrap_or_else(|| "none".into()),
+                dev.irq
+                    .map(|irq| format!("{}", irq))
+                    .unwrap_or_else(|| "none".into())
             ));
+            if let Some(state) = dev.driver_data {
+                self.writeln(&format!("      driver_state=0x{:016X}", state as u64));
+            }
         }
     }
 
@@ -675,11 +715,96 @@ impl Monitor {
             &*(crate::handoff::handoff_phys_ptr() as *const theseus_shared::handoff::Handoff)
         };
 
-        self.writeln(&format!("  RSDP Address: 0x{:X}", handoff.acpi_rsdp));
-        self.writeln(&format!("  CPU Count: {}", handoff.cpu_count));
+        if handoff.acpi_rsdp == 0 {
+            self.writeln("  RSDP: not present in handoff");
+        } else {
+            self.writeln(&format!(
+                "  RSDP Physical Address: 0x{:016X}",
+                handoff.acpi_rsdp
+            ));
 
-        // Could extend to show MADT, FADT, DSDT info
-        self.writeln("  (Extended ACPI table info would be displayed here)");
+            match parse_rsdp_info(handoff.acpi_rsdp) {
+                Ok(info) => {
+                    let oem_str = match str::from_utf8(&info.oem_id) {
+                        Ok(s) => s.trim_end_matches(char::from(0)),
+                        Err(_) => "???",
+                    };
+                    self.writeln(&format!(
+                        "  Signature: {}  Revision: {} ({})",
+                        info.signature_string(),
+                        info.revision,
+                        info.revision_label()
+                    ));
+                    self.writeln(&format!("  OEM ID: {}", oem_str));
+                    self.writeln(&format!("  RSDT Address: 0x{:016X}", info.rsdt_address));
+                    if let Some(xsdt) = info.xsdt_address {
+                        self.writeln(&format!("  XSDT Address: 0x{:016X}", xsdt));
+                    }
+                    self.writeln(&format!(
+                        "  Checksum: {}",
+                        if info.checksum_ok { "valid" } else { "INVALID" }
+                    ));
+                    if let Some(ok) = info.extended_checksum_ok {
+                        self.writeln(&format!(
+                            "  Extended Checksum: {}",
+                            if ok { "valid" } else { "INVALID" }
+                        ));
+                    }
+                }
+                Err(err) => {
+                    self.writeln(&format!("  RSDP decode failed: {}", err));
+                }
+            }
+        }
+
+        self.writeln("");
+        self.writeln("Platform Summary:");
+        if let Some(info) = acpi::cached_platform_info() {
+            self.writeln(&format!("  CPUs reported: {}", info.cpu_count));
+            self.writeln(&format!(
+                "  IO APICs: {} (present: {})",
+                info.io_apic_count,
+                if info.has_io_apic { "yes" } else { "no" }
+            ));
+            self.writeln(&format!("  Local APIC: 0x{:016X}", info.local_apic_address));
+            self.writeln(&format!(
+                "  Legacy PIC present: {}",
+                if info.has_legacy_pic { "yes" } else { "no" }
+            ));
+
+            if let Some(ref madt) = info.madt_info {
+                let apic_ids: Vec<String> = madt
+                    .cpu_apic_ids
+                    .iter()
+                    .map(|id| format!("0x{:02X}", id))
+                    .collect();
+                self.writeln("  MADT:");
+                if apic_ids.is_empty() {
+                    self.writeln("    CPU APIC IDs: (none)");
+                } else {
+                    self.writeln(&format!("    CPU APIC IDs: {}", apic_ids.join(", ")));
+                }
+                if madt.io_apics.is_empty() {
+                    self.writeln("    IO APICs: (none)");
+                } else {
+                    for entry in &madt.io_apics {
+                        self.writeln(&format!(
+                            "    IO APIC id:{} addr:0x{:016X} gsi_base:{}",
+                            entry.id, entry.address, entry.gsi_base
+                        ));
+                    }
+                }
+                self.writeln(&format!(
+                    "    Has 8259 PIC: {}",
+                    if madt.has_8259_pic { "yes" } else { "no" }
+                ));
+            } else {
+                self.writeln("  MADT: not parsed (platform info missing details)");
+            }
+        } else {
+            self.writeln("  (ACPI platform info cache is empty)");
+            self.writeln("  Hint: ensure driver system initialization has completed.");
+        }
     }
 
     /// Display stack backtrace
@@ -720,62 +845,389 @@ impl Monitor {
     }
 
     /// Display IDT information
-    fn cmd_idt(&self) {
+    fn cmd_idt(&self, args: &[&str]) {
         self.writeln("Interrupt Descriptor Table:");
 
         use x86_64::instructions::tables::sidt;
         let idtr = sidt();
-        self.writeln(&format!("  IDTR Base:  0x{:016X}", idtr.base.as_u64()));
+        let base = idtr.base.as_u64();
+        let total_bytes = (idtr.limit as usize) + 1;
+        let entry_size = core::mem::size_of::<RawIdtEntry>();
+        let entry_count = total_bytes / entry_size;
+
+        self.writeln(&format!("  IDTR Base:  0x{:016X}", base));
         self.writeln(&format!(
-            "  IDTR Limit: 0x{:04X} ({} entries)",
-            idtr.limit,
-            (idtr.limit + 1) / 16
+            "  IDTR Limit: 0x{:04X} ({} bytes, {} entries)",
+            idtr.limit, total_bytes, entry_count
         ));
 
-        // Show some key vectors
-        self.writeln("");
-        self.writeln("Key interrupt vectors:");
-        self.writeln("  0x00: Divide Error");
-        self.writeln("  0x03: Breakpoint");
-        self.writeln("  0x06: Invalid Opcode");
-        self.writeln("  0x0D: General Protection Fault");
-        self.writeln("  0x0E: Page Fault");
-        self.writeln("  0x24: COM1 Serial (IRQ 4)");
-        self.writeln("  0x40: APIC Timer");
-        self.writeln("  0xFE: APIC Error");
-        self.writeln("  0xFF: Spurious");
+        if entry_count == 0 {
+            self.writeln("  (IDT empty)");
+            return;
+        }
+
+        let max_entries = args
+            .get(0)
+            .and_then(|s| parse_number(s))
+            .map(|n| n as usize)
+            .unwrap_or(16);
+
+        let ptr = base as *const RawIdtEntry;
+        let count = min(entry_count, max_entries);
+
+        for idx in 0..count {
+            let entry = unsafe { core::ptr::read_unaligned(ptr.add(idx)) };
+            self.print_idt_entry(idx, &entry);
+        }
+
+        if entry_count > count {
+            self.writeln(&format!("  ({} entries not shown)", entry_count - count));
+        }
+    }
+
+    fn print_idt_entry(&self, index: usize, entry: &RawIdtEntry) {
+        let entry = *entry;
+        let empty = entry.offset_low == 0
+            && entry.offset_mid == 0
+            && entry.offset_high == 0
+            && entry.type_attr == 0
+            && entry.selector == 0;
+        if empty {
+            self.writeln(&format!("  [{:02}] <empty>", index));
+            return;
+        }
+
+        let selector = entry.selector;
+        let type_attr = entry.type_attr;
+        let ist = entry.ist & 0x7;
+        let offset = (entry.offset_low as u64)
+            | ((entry.offset_mid as u64) << 16)
+            | ((entry.offset_high as u64) << 32);
+        let gate_type = type_attr & 0x0F;
+        let present = (type_attr & 0x80) != 0;
+        let dpl = (type_attr >> 5) & 0x3;
+
+        self.writeln(&format!(
+            "  [{:02}] selector=0x{:04X} offset=0x{:016X} type:{} dpl:{} ist:{} attr=0x{:02X} {}",
+            index,
+            selector,
+            offset,
+            describe_idt_gate(gate_type),
+            dpl,
+            ist,
+            type_attr,
+            if present { "present" } else { "absent" }
+        ));
     }
 
     /// Display GDT information
-    fn cmd_gdt(&self) {
+    fn cmd_gdt(&self, args: &[&str]) {
         self.writeln("Global Descriptor Table:");
 
         use x86_64::instructions::tables::sgdt;
         let gdtr = sgdt();
-        self.writeln(&format!("  GDTR Base:  0x{:016X}", gdtr.base.as_u64()));
+        let base = gdtr.base.as_u64();
+        let total_bytes = (gdtr.limit as usize) + 1;
+        let mut entry_count = total_bytes / 8;
+        if total_bytes % 8 != 0 {
+            entry_count += 1;
+        }
+
+        self.writeln(&format!("  GDTR Base:  0x{:016X}", base));
         self.writeln(&format!(
-            "  GDTR Limit: 0x{:04X} ({} entries)",
-            gdtr.limit,
-            (gdtr.limit + 1) / 8
+            "  GDTR Limit: 0x{:04X} ({} bytes, {} entries)",
+            gdtr.limit, total_bytes, entry_count
         ));
+
+        if entry_count == 0 {
+            self.writeln("  (GDT empty)");
+            return;
+        }
+
+        let max_entries = args
+            .get(0)
+            .and_then(|s| parse_number(s))
+            .map(|n| n as usize)
+            .unwrap_or(entry_count);
+
+        let ptr = base as *const u8;
+        let mut idx = 0usize;
+        let mut shown = 0usize;
+
+        while idx < entry_count && shown < max_entries {
+            let entry_ptr = unsafe { ptr.add(idx * 8) } as *const u64;
+            let raw_low = unsafe { core::ptr::read_unaligned(entry_ptr) };
+            let next = if idx + 1 < entry_count {
+                Some(unsafe { core::ptr::read_unaligned(entry_ptr.add(1)) })
+            } else {
+                None
+            };
+            let consumed = self.print_gdt_entry(idx, raw_low, next);
+            shown += 1;
+            idx += if consumed { 2 } else { 1 };
+        }
+
+        if idx < entry_count {
+            self.writeln(&format!("  ({} descriptors not shown)", entry_count - idx));
+        }
+    }
+
+    fn print_gdt_entry(&self, index: usize, raw_low: u64, raw_next: Option<u64>) -> bool {
+        let uses_second = gdt_entry_needs_extra(raw_low);
+        let raw_high = if uses_second { raw_next } else { None };
+
+        if raw_low == 0 && raw_high.unwrap_or(0) == 0 {
+            self.writeln(&format!("  [{:02}] <null>", index));
+            return uses_second;
+        }
+
+        let access = ((raw_low >> 40) & 0xFF) as u8;
+        let s = (access & 0x10) != 0;
+        let typ = access & 0x0F;
+        let dpl = (access >> 5) & 0x03;
+        let present = (access & 0x80) != 0;
+
+        let limit_low = (raw_low & 0xFFFF) as u32;
+        let limit_high = ((raw_low >> 48) & 0xF) as u32;
+        let limit = (limit_low | (limit_high << 16)) as u32;
+
+        let base_low = ((raw_low >> 16) & 0xFFFFFF) as u32;
+        let base_high = ((raw_low >> 56) & 0xFF) as u32;
+        let mut base = ((base_high as u64) << 24) | base_low as u64;
+
+        let flags = ((raw_low >> 52) & 0xF) as u8;
+        let avl = (flags & 0x1) != 0;
+        let l = (flags & 0x2) != 0;
+        let db = (flags & 0x4) != 0;
+        let g = (flags & 0x8) != 0;
+
+        if let Some(high) = raw_high {
+            base |= ((high & 0xFFFF_FFFF) as u64) << 32;
+        }
+
+        let limit_bytes = if g {
+            ((limit as u64) << 12) | 0xFFF
+        } else {
+            limit as u64
+        };
+
+        let mut flag_parts = Vec::new();
+        if g {
+            flag_parts.push("G");
+        }
+        if l {
+            flag_parts.push("L");
+        }
+        if db {
+            flag_parts.push("DB");
+        }
+        if avl {
+            flag_parts.push("AVL");
+        }
+
+        let type_desc = describe_segment_type(s, typ);
+
+        self.writeln(&format!(
+            "  [{:02}] base=0x{:016X} limit=0x{:016X} type:{} dpl:{} attr=0x{:02X} {} flags:{}",
+            index,
+            base,
+            limit_bytes,
+            type_desc,
+            dpl,
+            access,
+            if present { "present" } else { "not-present" },
+            if flag_parts.is_empty() {
+                "-".into()
+            } else {
+                flag_parts.join("|")
+            }
+        ));
+
+        uses_second
     }
 
     /// Display memory map
-    fn cmd_memory_map(&self) {
+    fn cmd_memory_map(&self, args: &[&str]) {
         self.writeln("UEFI Memory Map:");
 
         let handoff = unsafe {
             &*(crate::handoff::handoff_phys_ptr() as *const theseus_shared::handoff::Handoff)
         };
 
+        let desc_size = handoff.memory_map_descriptor_size as usize;
+        let entry_count = handoff.memory_map_entries as usize;
+        let buffer_ptr = handoff.memory_map_buffer_ptr;
+
+        if buffer_ptr == 0 || entry_count == 0 || desc_size == 0 {
+            self.writeln("  (memory map not available in handoff)");
+            return;
+        }
+
+        if desc_size < 32 {
+            self.writeln(&format!(
+                "  Descriptor size {} is unexpectedly small (< 32)",
+                desc_size
+            ));
+            return;
+        }
+
+        let buffer = buffer_ptr as *const u8;
+        let mut total_pages: u128 = 0;
+        let mut type_totals: Vec<TypeSummary> = Vec::new();
+        let mut descriptors: Vec<UefiMemoryDescriptor> = Vec::with_capacity(entry_count);
+
+        for idx in 0..entry_count {
+            let desc = unsafe { read_uefi_descriptor(buffer, desc_size, idx) };
+            total_pages = total_pages.wrapping_add(desc.num_pages as u128);
+
+            if let Some(entry) = type_totals.iter_mut().find(|e| e.typ == desc.typ) {
+                entry.entries += 1;
+                entry.pages = entry.pages.wrapping_add(desc.num_pages);
+            } else {
+                type_totals.push(TypeSummary {
+                    typ: desc.typ,
+                    entries: 1,
+                    pages: desc.num_pages,
+                });
+            }
+
+            descriptors.push(desc);
+        }
+
+        type_totals.sort_by(|a, b| b.pages.cmp(&a.pages));
+
+        let total_bytes = total_pages.saturating_mul(EFI_PAGE_SIZE as u128);
+
+        enum MemoryMapMode {
+            SummaryOnly,
+            SummaryAndSample { sample: usize },
+            Entries { limit: Option<usize> },
+            Single { index: usize },
+        }
+
+        let mode = if let Some(first) = args.get(0) {
+            match *first {
+                "summary" => MemoryMapMode::SummaryOnly,
+                "entries" | "all" => {
+                    let limit = args
+                        .get(1)
+                        .and_then(|s| parse_number(s))
+                        .map(|n| n as usize);
+                    MemoryMapMode::Entries { limit }
+                }
+                "entry" => {
+                    if args.len() < 2 {
+                        self.writeln("Usage: mmap entry INDEX");
+                        return;
+                    }
+                    match parse_number(args[1]) {
+                        Some(idx) => MemoryMapMode::Single {
+                            index: idx as usize,
+                        },
+                        None => {
+                            self.writeln("Invalid index");
+                            return;
+                        }
+                    }
+                }
+                other => match parse_number(other) {
+                    Some(idx) => MemoryMapMode::Single {
+                        index: idx as usize,
+                    },
+                    None => {
+                        self.writeln("Usage: mmap [summary | entries [N] | entry INDEX]");
+                        return;
+                    }
+                },
+            }
+        } else {
+            MemoryMapMode::SummaryAndSample { sample: 8 }
+        };
+
         self.writeln(&format!(
-            "  Descriptor Size: {} bytes",
-            handoff.memory_map_descriptor_size
+            "  Entries: {}  Descriptor Size: {} bytes",
+            entry_count, desc_size
         ));
-        self.writeln(&format!("  Entry Count: {}", handoff.memory_map_entries));
-        self.writeln(&format!("  Total Size: {} bytes", handoff.memory_map_size));
-        self.writeln("");
-        self.writeln("  (Full memory map parsing would be displayed here)");
+        self.writeln(&format!("  Total reported: {}", format_bytes(total_bytes)));
+        self.writeln("  Per-type summary:");
+        for summary in &type_totals {
+            let bytes = (summary.pages as u128).saturating_mul(EFI_PAGE_SIZE as u128);
+            self.writeln(&format!(
+                "    {:>2} {:<20} entries:{:>2} pages:{:>8} size:{}",
+                summary.typ,
+                uefi_memory_type_to_str(summary.typ),
+                summary.entries,
+                summary.pages,
+                format_bytes(bytes)
+            ));
+        }
+
+        match mode {
+            MemoryMapMode::SummaryOnly => {}
+            MemoryMapMode::SummaryAndSample { sample } => {
+                self.writeln("");
+                let count = min(sample, descriptors.len());
+                self.writeln(&format!("  First {} descriptors:", count));
+                for (idx, desc) in descriptors.iter().take(count).enumerate() {
+                    self.print_memory_descriptor(idx, desc);
+                }
+                if descriptors.len() > count {
+                    self.writeln(&format!(
+                        "  ({} additional descriptors hidden; use 'mmap entries' to show all)",
+                        descriptors.len() - count
+                    ));
+                }
+            }
+            MemoryMapMode::Entries { limit } => {
+                self.writeln("");
+                let max = limit.unwrap_or(descriptors.len());
+                let count = min(max, descriptors.len());
+                self.writeln(&format!("  Listing {} descriptors:", count));
+                for (idx, desc) in descriptors.iter().take(count).enumerate() {
+                    self.print_memory_descriptor(idx, desc);
+                }
+                if descriptors.len() > count {
+                    self.writeln(&format!(
+                        "  ({} additional descriptors not shown)",
+                        descriptors.len() - count
+                    ));
+                }
+            }
+            MemoryMapMode::Single { index } => {
+                self.writeln("");
+                if let Some(desc) = descriptors.get(index) {
+                    self.writeln(&format!("  Descriptor {}:", index));
+                    self.print_memory_descriptor(index, desc);
+                } else {
+                    self.writeln("  Descriptor index out of range");
+                }
+            }
+        }
+    }
+
+    fn print_memory_descriptor(&self, index: usize, desc: &UefiMemoryDescriptor) {
+        let size_bytes = (desc.num_pages as u128).saturating_mul(EFI_PAGE_SIZE as u128);
+        let phys_end = if desc.num_pages == 0 {
+            desc.phys_start
+        } else {
+            desc.phys_start
+                .saturating_add(desc.num_pages.saturating_mul(EFI_PAGE_SIZE) - 1)
+        };
+        let attrs = describe_memory_attributes(desc.attributes);
+        self.writeln(&format!(
+            "  [{:03}] {:<20} phys:0x{:016X}-0x{:016X} pages:{:>6} size:{} attrs:{} (0x{:016X})",
+            index,
+            uefi_memory_type_to_str(desc.typ),
+            desc.phys_start,
+            phys_end,
+            desc.num_pages,
+            format_bytes(size_bytes),
+            attrs,
+            desc.attributes
+        ));
+        if desc.virt_start != 0 {
+            self.writeln(&format!("        virt:0x{:016X}", desc.virt_start));
+        }
     }
 
     /// Display CPUID information
@@ -789,82 +1241,335 @@ impl Monitor {
             self.writeln(&format!("  Vendor: {}", vi.as_str()));
         }
 
-        if let Some(fi) = cpuid.get_feature_info() {
-            self.writeln(&format!("  Family: 0x{:X}", fi.family_id()));
-            self.writeln(&format!("  Model: 0x{:X}", fi.model_id()));
-            self.writeln(&format!("  Stepping: 0x{:X}", fi.stepping_id()));
+        if let Some(brand) = cpuid.get_processor_brand_string() {
+            let text = brand.as_str().trim_end_matches(char::from(0));
+            if !text.is_empty() {
+                self.writeln(&format!("  Brand: {}", text));
+            }
+        }
 
-            self.writeln("");
-            self.writeln("Features:");
+        if let Some(fi) = cpuid.get_feature_info() {
+            self.writeln(&format!(
+                "  Family: 0x{:X}  Model: 0x{:X}  Stepping: 0x{:X}",
+                fi.family_id(),
+                fi.model_id(),
+                fi.stepping_id()
+            ));
+            self.writeln(&format!(
+                "  APIC ID: {}  Logical CPUs/package: {}",
+                fi.initial_local_apic_id(),
+                fi.max_logical_processor_ids()
+            ));
+            self.writeln(&format!(
+                "  CLFLUSH line size: {} bytes",
+                fi.cflush_cache_line_size() * 8
+            ));
+
+            let mut standard = Vec::new();
             if fi.has_fpu() {
-                self.writeln("  - FPU (Floating Point Unit)");
+                standard.push("FPU");
             }
-            if fi.has_pae() {
-                self.writeln("  - PAE (Physical Address Extension)");
+            if fi.has_vme() {
+                standard.push("VME");
             }
-            if fi.has_apic() {
-                self.writeln("  - APIC (Advanced PIC)");
+            if fi.has_de() {
+                standard.push("DE");
             }
-            if fi.has_msr() {
-                self.writeln("  - MSR (Model Specific Registers)");
+            if fi.has_pse() {
+                standard.push("PSE");
             }
             if fi.has_tsc() {
-                self.writeln("  - TSC (Time Stamp Counter)");
+                standard.push("TSC");
+            }
+            if fi.has_msr() {
+                standard.push("MSR");
+            }
+            if fi.has_pae() {
+                standard.push("PAE");
+            }
+            if fi.has_mce() {
+                standard.push("MCE");
+            }
+            if fi.has_cmpxchg8b() {
+                standard.push("CMPXCHG8B");
+            }
+            if fi.has_apic() {
+                standard.push("APIC");
+            }
+            if fi.has_sysenter_sysexit() {
+                standard.push("SYSENTER/SYSEXIT");
+            }
+            if fi.has_mtrr() {
+                standard.push("MTRR");
+            }
+            if fi.has_pge() {
+                standard.push("PGE");
+            }
+            if fi.has_mca() {
+                standard.push("MCA");
+            }
+            if fi.has_cmov() {
+                standard.push("CMOV");
+            }
+            if fi.has_pat() {
+                standard.push("PAT");
+            }
+            if fi.has_pse36() {
+                standard.push("PSE36");
+            }
+            if fi.has_clflush() {
+                standard.push("CLFLUSH");
+            }
+            if fi.has_mmx() {
+                standard.push("MMX");
+            }
+            if fi.has_fxsave_fxstor() {
+                standard.push("FXSAVE/FXRSTOR");
             }
             if fi.has_sse() {
-                self.writeln("  - SSE");
+                standard.push("SSE");
             }
             if fi.has_sse2() {
-                self.writeln("  - SSE2");
+                standard.push("SSE2");
+            }
+            if fi.has_sse3() {
+                standard.push("SSE3");
+            }
+            if fi.has_ssse3() {
+                standard.push("SSSE3");
+            }
+            if fi.has_sse41() {
+                standard.push("SSE4.1");
+            }
+            if fi.has_sse42() {
+                standard.push("SSE4.2");
+            }
+            if fi.has_avx() {
+                standard.push("AVX");
             }
             if fi.has_x2apic() {
-                self.writeln("  - x2APIC");
+                standard.push("x2APIC");
+            }
+            if fi.has_hypervisor() {
+                standard.push("HYPERVISOR");
+            }
+
+            if standard.is_empty() {
+                self.writeln("  Standard Features: (none)");
+            } else {
+                self.writeln(&format!("  Standard Features: {}", standard.join(", ")));
             }
         }
 
         if let Some(ef) = cpuid.get_extended_feature_info() {
+            let mut features = Vec::new();
             if ef.has_fsgsbase() {
-                self.writeln("  - FSGSBASE");
+                features.push("FSGSBASE");
+            }
+            if ef.has_bmi1() {
+                features.push("BMI1");
+            }
+            if ef.has_bmi2() {
+                features.push("BMI2");
+            }
+            if ef.has_avx2() {
+                features.push("AVX2");
+            }
+            if ef.has_smap() {
+                features.push("SMAP");
+            }
+            if ef.has_smep() {
+                features.push("SMEP");
+            }
+            if ef.has_rep_movsb_stosb() {
+                features.push("REP MOVSB/STOSB");
+            }
+            if ef.has_invpcid() {
+                features.push("INVPCID");
+            }
+            if ef.has_rdseed() {
+                features.push("RDSEED");
+            }
+            if ef.has_rtm() {
+                features.push("RTM");
+            }
+            if !features.is_empty() {
+                self.writeln(&format!(
+                    "  Extended Features (leaf 7): {}",
+                    features.join(", ")
+                ));
+            }
+        }
+
+        if let Some(ext) = cpuid.get_extended_processor_and_feature_identifiers() {
+            let mut features = Vec::new();
+            if ext.has_64bit_mode() {
+                features.push("LM");
+            }
+            if ext.has_execute_disable() {
+                features.push("NX");
+            }
+            if ext.has_1gib_pages() {
+                features.push("1GiB pages");
+            }
+            if ext.has_rdtscp() {
+                features.push("RDTSCP");
+            }
+            if ext.has_sse4a() {
+                features.push("SSE4A");
+            }
+            if ext.has_prefetchw() {
+                features.push("PREFETCHW");
+            }
+            if ext.has_lahf_sahf() {
+                features.push("LAHF/SAHF");
+            }
+            if ext.has_syscall_sysret() {
+                features.push("SYSCALL/SYSRET");
+            }
+            if ext.has_lzcnt() {
+                features.push("LZCNT");
+            }
+            if ext.has_mmx_extensions() {
+                features.push("MMXEXT");
+            }
+            if !features.is_empty() {
+                self.writeln(&format!(
+                    "  Extended Features (leaf 0x80000001): {}",
+                    features.join(", ")
+                ));
             }
         }
     }
 
-    /// Read a model-specific register
+    /// Read or write a model-specific register
     fn cmd_msr(&self, args: &[&str]) {
         if args.is_empty() {
-            self.writeln("Usage: msr ADDRESS");
-            self.writeln("  ADDRESS - MSR address in hex (e.g., 0x1B for APIC_BASE)");
-            self.writeln("");
-            self.writeln("Common MSRs:");
-            self.writeln("  0x1B  - IA32_APIC_BASE");
-            self.writeln("  0x10  - IA32_TIME_STAMP_COUNTER");
-            self.writeln("  0x174 - IA32_SYSENTER_CS");
-            self.writeln("  0xC0000080 - IA32_EFER");
+            self.writeln("Usage: msr [r|w] ADDRESS [VALUE]");
+            self.writeln("  r ADDRESS          - Read MSR (default operation)");
+            self.writeln("  w ADDRESS VALUE    - Write MSR");
+            self.writeln("Examples:");
+            self.writeln("  msr 0x1B                 # read IA32_APIC_BASE");
+            self.writeln("  msr w 0x1B 0x00000000    # write new value");
             return;
         }
 
-        let msr_addr = match parse_number(args[0]) {
-            Some(a) => a as u32,
-            None => {
-                self.writeln("Invalid MSR address");
-                return;
+        enum MsrOp {
+            Read(u32),
+            Write(u32, u64),
+        }
+
+        let op = match args[0] {
+            "r" | "read" => {
+                if args.len() < 2 {
+                    self.writeln("Missing MSR address");
+                    return;
+                }
+                match parse_number(args[1]) {
+                    Some(addr) => MsrOp::Read(addr as u32),
+                    None => {
+                        self.writeln("Invalid MSR address");
+                        return;
+                    }
+                }
             }
+            "w" | "write" => {
+                if args.len() < 3 {
+                    self.writeln("Usage: msr w ADDRESS VALUE");
+                    return;
+                }
+                let addr = match parse_number(args[1]) {
+                    Some(addr) => addr as u32,
+                    None => {
+                        self.writeln("Invalid MSR address");
+                        return;
+                    }
+                };
+                let value = match parse_number(args[2]) {
+                    Some(val) => val,
+                    None => {
+                        self.writeln("Invalid MSR value");
+                        return;
+                    }
+                };
+                MsrOp::Write(addr, value)
+            }
+            _ => match parse_number(args[0]) {
+                Some(addr) => MsrOp::Read(addr as u32),
+                None => {
+                    self.writeln("Invalid MSR address or operation");
+                    return;
+                }
+            },
         };
 
         unsafe {
-            let value = x86_64::registers::model_specific::Msr::new(msr_addr).read();
-            self.writeln(&format!("MSR 0x{:X} = 0x{:016X}", msr_addr, value));
+            match op {
+                MsrOp::Read(addr) => {
+                    let value = x86_64::registers::model_specific::Msr::new(addr).read();
+                    self.writeln(&format!("MSR 0x{:X} = 0x{:016X}", addr, value));
+                }
+                MsrOp::Write(addr, value) => {
+                    x86_64::registers::model_specific::Msr::new(addr).write(value);
+                    self.writeln(&format!("MSR 0x{:X} <- 0x{:016X}", addr, value));
+                }
+            }
         }
     }
 
     /// I/O port access
     fn cmd_io(&self, args: &[&str]) {
         if args.len() < 2 {
-            self.writeln("Usage: io r/w PORT [VALUE]");
-            self.writeln("  r PORT      - Read byte from port");
-            self.writeln("  w PORT VAL  - Write byte to port");
+            self.writeln("Usage: io (r|w)[8|16|32] PORT [VALUE]");
+            self.writeln("  io r0x10C         # read byte (default width 8)");
+            self.writeln("  io r16 0x64       # read 16-bit value");
+            self.writeln("  io w32 0xCF8 0x80000010");
             return;
         }
+
+        #[derive(Copy, Clone)]
+        enum IoOp {
+            Read,
+            Write,
+        }
+
+        fn parse_io_token(token: &str) -> Option<(IoOp, u8)> {
+            if token.eq_ignore_ascii_case("r") || token.eq_ignore_ascii_case("read") {
+                return Some((IoOp::Read, 8));
+            }
+            if token.eq_ignore_ascii_case("w") || token.eq_ignore_ascii_case("write") {
+                return Some((IoOp::Write, 8));
+            }
+
+            if token.len() > 1 {
+                let (prefix, width_str) = token.split_at(1);
+                let op = if prefix.eq_ignore_ascii_case("r") {
+                    IoOp::Read
+                } else if prefix.eq_ignore_ascii_case("w") {
+                    IoOp::Write
+                } else {
+                    return None;
+                };
+                match width_str.parse::<u8>() {
+                    Ok(8) => Some((op, 8)),
+                    Ok(16) => Some((op, 16)),
+                    Ok(32) => Some((op, 32)),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+
+        let (op, width) = match parse_io_token(args[0]) {
+            Some(res) => res,
+            None => {
+                self.writeln(
+                    "Invalid operation token (expected r|w optionally suffixed with 8/16/32)",
+                );
+                return;
+            }
+        };
 
         let port = match parse_number(args[1]) {
             Some(p) if p <= 0xFFFF => p as u16,
@@ -874,20 +1579,34 @@ impl Monitor {
             }
         };
 
-        match args[0] {
-            "r" | "read" => unsafe {
-                let mut p: Port<u8> = Port::new(port);
-                let value = p.read();
-                self.writeln(&format!("IN 0x{:X} = 0x{:02X}", port, value));
+        match op {
+            IoOp::Read => unsafe {
+                match width {
+                    8 => {
+                        let mut p: Port<u8> = Port::new(port);
+                        let value = p.read();
+                        self.writeln(&format!("IN8  0x{:04X} = 0x{:02X}", port, value));
+                    }
+                    16 => {
+                        let mut p: Port<u16> = Port::new(port);
+                        let value = p.read();
+                        self.writeln(&format!("IN16 0x{:04X} = 0x{:04X}", port, value));
+                    }
+                    32 => {
+                        let mut p: Port<u32> = Port::new(port);
+                        let value = p.read();
+                        self.writeln(&format!("IN32 0x{:04X} = 0x{:08X}", port, value));
+                    }
+                    _ => unreachable!(),
+                }
             },
-            "w" | "write" => {
+            IoOp::Write => {
                 if args.len() < 3 {
-                    self.writeln("Usage: io w PORT VALUE");
+                    self.writeln("Usage: io w[width] PORT VALUE");
                     return;
                 }
-
-                let value = match parse_number(args[2]) {
-                    Some(v) => (v & 0xFF) as u8,
+                let raw_value = match parse_number(args[2]) {
+                    Some(v) => v,
                     None => {
                         self.writeln("Invalid value");
                         return;
@@ -895,13 +1614,28 @@ impl Monitor {
                 };
 
                 unsafe {
-                    let mut p: Port<u8> = Port::new(port);
-                    p.write(value);
-                    self.writeln(&format!("OUT 0x{:X} = 0x{:02X}", port, value));
+                    match width {
+                        8 => {
+                            let mut p: Port<u8> = Port::new(port);
+                            let value = (raw_value & 0xFF) as u8;
+                            p.write(value);
+                            self.writeln(&format!("OUT8 0x{:04X} <- 0x{:02X}", port, value));
+                        }
+                        16 => {
+                            let mut p: Port<u16> = Port::new(port);
+                            let value = (raw_value & 0xFFFF) as u16;
+                            p.write(value);
+                            self.writeln(&format!("OUT16 0x{:04X} <- 0x{:04X}", port, value));
+                        }
+                        32 => {
+                            let mut p: Port<u32> = Port::new(port);
+                            let value = raw_value as u32;
+                            p.write(value);
+                            self.writeln(&format!("OUT32 0x{:04X} <- 0x{:08X}", port, value));
+                        }
+                        _ => unreachable!(),
+                    }
                 }
-            }
-            _ => {
-                self.writeln("Invalid operation (use 'r' or 'w')");
             }
         }
     }
@@ -928,15 +1662,16 @@ impl Monitor {
 
         unsafe {
             match vector {
-                3 => core::arch::asm!("int3", options(nostack)),
+                3 => core::arch::asm!("int3"),
+                0x80 => core::arch::asm!("int 0x80"),
                 _ => {
-                    self.writeln("Only INT3 is currently safe to trigger");
+                    self.writeln("Only INT3 and INT 0x80 are permitted from the monitor");
                     return;
                 }
             }
         }
 
-        self.writeln("Returned from interrupt");
+        self.writeln("Interrupt completed");
     }
 
     /// Call a function at an address
@@ -1007,6 +1742,307 @@ impl Monitor {
     /// Clear screen
     fn cmd_clear(&self) {
         self.write("\x1B[2J\x1B[H"); // ANSI clear screen + cursor home
+    }
+}
+
+const EFI_PAGE_SIZE: u64 = 4096;
+
+#[derive(Copy, Clone)]
+struct UefiMemoryDescriptor {
+    typ: u32,
+    phys_start: u64,
+    virt_start: u64,
+    num_pages: u64,
+    attributes: u64,
+}
+
+#[derive(Clone)]
+struct TypeSummary {
+    typ: u32,
+    entries: usize,
+    pages: u64,
+}
+
+unsafe fn read_uefi_descriptor(
+    buffer: *const u8,
+    desc_size: usize,
+    index: usize,
+) -> UefiMemoryDescriptor {
+    let ptr = buffer.add(index * desc_size);
+    let typ = core::ptr::read_unaligned(ptr as *const u32);
+    let phys_start = if desc_size >= 16 {
+        core::ptr::read_unaligned(ptr.add(8) as *const u64)
+    } else {
+        0
+    };
+    let virt_start = if desc_size >= 24 {
+        core::ptr::read_unaligned(ptr.add(16) as *const u64)
+    } else {
+        0
+    };
+    let num_pages = if desc_size >= 32 {
+        core::ptr::read_unaligned(ptr.add(24) as *const u64)
+    } else {
+        0
+    };
+    let attributes = if desc_size >= 40 {
+        core::ptr::read_unaligned(ptr.add(32) as *const u64)
+    } else {
+        0
+    };
+    UefiMemoryDescriptor {
+        typ,
+        phys_start,
+        virt_start,
+        num_pages,
+        attributes,
+    }
+}
+
+fn uefi_memory_type_to_str(typ: u32) -> &'static str {
+    match typ {
+        0 => "Reserved",
+        1 => "LoaderCode",
+        2 => "LoaderData",
+        3 => "BootServicesCode",
+        4 => "BootServicesData",
+        5 => "RuntimeServicesCode",
+        6 => "RuntimeServicesData",
+        7 => "ConventionalMemory",
+        8 => "UnusableMemory",
+        9 => "ACPIReclaim",
+        10 => "ACPINVS",
+        11 => "MMIO",
+        12 => "MMIOPort",
+        13 => "PalCode",
+        14 => "PersistentMemory",
+        15 => "Unaccepted",
+        _ => "Unknown",
+    }
+}
+
+fn describe_memory_attributes(attrs: u64) -> String {
+    const EFI_MEMORY_UC: u64 = 0x0000_0000_0000_0001;
+    const EFI_MEMORY_WC: u64 = 0x0000_0000_0000_0002;
+    const EFI_MEMORY_WT: u64 = 0x0000_0000_0000_0004;
+    const EFI_MEMORY_WP: u64 = 0x0000_0000_0000_0008;
+    const EFI_MEMORY_WB: u64 = 0x0000_0000_0000_0010;
+    const EFI_MEMORY_UCE: u64 = 0x0000_0000_0000_0020;
+    const EFI_MEMORY_RUNTIME: u64 = 0x8000_0000_0000_0000;
+    const EFI_MEMORY_XP: u64 = 0x1000_0000_0000_0000;
+
+    let mut flags = Vec::new();
+    if attrs & EFI_MEMORY_UC != 0 {
+        flags.push("UC");
+    }
+    if attrs & EFI_MEMORY_WC != 0 {
+        flags.push("WC");
+    }
+    if attrs & EFI_MEMORY_WT != 0 {
+        flags.push("WT");
+    }
+    if attrs & EFI_MEMORY_WP != 0 {
+        flags.push("WP");
+    }
+    if attrs & EFI_MEMORY_WB != 0 {
+        flags.push("WB");
+    }
+    if attrs & EFI_MEMORY_UCE != 0 {
+        flags.push("UCE");
+    }
+    if attrs & EFI_MEMORY_XP != 0 {
+        flags.push("XP");
+    }
+    if attrs & EFI_MEMORY_RUNTIME != 0 {
+        flags.push("RT");
+    }
+
+    if flags.is_empty() {
+        "-".into()
+    } else {
+        flags.join("|")
+    }
+}
+
+fn format_bytes(value: u128) -> String {
+    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    let mut scaled = value;
+    let mut unit = 0usize;
+    while scaled >= 1024 && unit < UNITS.len() - 1 {
+        scaled /= 1024;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{} {}", scaled, UNITS[unit])
+    } else {
+        format!("{} bytes (~{} {})", value, scaled, UNITS[unit])
+    }
+}
+
+struct RsdpInfo {
+    signature: [u8; 8],
+    oem_id: [u8; 6],
+    revision: u8,
+    rsdt_address: u64,
+    xsdt_address: Option<u64>,
+    checksum_ok: bool,
+    extended_checksum_ok: Option<bool>,
+}
+
+impl RsdpInfo {
+    fn signature_string(&self) -> String {
+        self.signature.iter().map(|&b| b as char).collect()
+    }
+
+    fn revision_label(&self) -> &'static str {
+        match self.revision {
+            0 | 1 => "ACPI 1.0",
+            2 | 3 => "ACPI 2.0+",
+            _ => "ACPI",
+        }
+    }
+}
+
+fn parse_rsdp_info(rsdp_phys: u64) -> Result<RsdpInfo, &'static str> {
+    if rsdp_phys == 0 {
+        return Err("RSDP address is zero");
+    }
+    if !memory::phys_offset_is_active() {
+        return Err("PHYS_OFFSET mapping inactive; RSDP inaccessible");
+    }
+
+    let rsdp_va = memory::phys_to_virt_pa(rsdp_phys);
+    let ptr = rsdp_va as *const u8;
+
+    unsafe {
+        let mut signature = [0u8; 8];
+        for i in 0..8 {
+            signature[i] = core::ptr::read_volatile(ptr.add(i));
+        }
+        if &signature != b"RSD PTR " {
+            return Err("Invalid RSDP signature");
+        }
+
+        let mut oem_id = [0u8; 6];
+        for i in 0..6 {
+            oem_id[i] = core::ptr::read_volatile(ptr.add(9 + i));
+        }
+        let revision = core::ptr::read_volatile(ptr.add(15));
+        let rsdt_address = core::ptr::read_unaligned(ptr.add(16) as *const u32) as u64;
+
+        let mut length = if revision >= 2 {
+            core::ptr::read_unaligned(ptr.add(20) as *const u32)
+        } else {
+            20
+        };
+        if length < 20 {
+            length = 20;
+        }
+        if revision >= 2 && length < 36 {
+            length = 36;
+        }
+
+        let xsdt_address = if revision >= 2 {
+            Some(core::ptr::read_unaligned(ptr.add(24) as *const u64))
+        } else {
+            None
+        };
+
+        let checksum_ok = verify_checksum(ptr, 20);
+        let extended_checksum_ok = if revision >= 2 {
+            Some(verify_checksum(ptr, length as usize))
+        } else {
+            None
+        };
+
+        Ok(RsdpInfo {
+            signature,
+            oem_id,
+            revision,
+            rsdt_address,
+            xsdt_address,
+            checksum_ok,
+            extended_checksum_ok,
+        })
+    }
+}
+
+fn verify_checksum(ptr: *const u8, len: usize) -> bool {
+    let mut sum: u8 = 0;
+    for i in 0..len {
+        unsafe {
+            sum = sum.wrapping_add(core::ptr::read_volatile(ptr.add(i)));
+        }
+    }
+    sum == 0
+}
+
+fn gdt_entry_needs_extra(raw_low: u64) -> bool {
+    let access = ((raw_low >> 40) & 0xFF) as u8;
+    let is_code_or_data = (access & 0x10) != 0;
+    if is_code_or_data {
+        false
+    } else {
+        match access & 0x0F {
+            0x2 | 0x9 | 0xB | 0xC | 0xE | 0xF => true,
+            _ => false,
+        }
+    }
+}
+
+fn describe_segment_type(is_code_or_data: bool, typ: u8) -> String {
+    if is_code_or_data {
+        let is_code = (typ & 0x8) != 0;
+        if is_code {
+            let readable = (typ & 0x2) != 0;
+            let conforming = (typ & 0x4) != 0;
+            format!(
+                "Code{}{}",
+                if readable { "+R" } else { "" },
+                if conforming { " (conf)" } else { "" }
+            )
+        } else {
+            let writable = (typ & 0x2) != 0;
+            let expand_down = (typ & 0x4) != 0;
+            format!(
+                "Data{}{}",
+                if writable { "+W" } else { "" },
+                if expand_down { " (exp-down)" } else { "" }
+            )
+        }
+    } else {
+        match typ {
+            0x2 => "LDT".into(),
+            0x9 => "TSS (available)".into(),
+            0xB => "TSS (busy)".into(),
+            0xC => "Call Gate".into(),
+            0xE => "Interrupt Gate".into(),
+            0xF => "Trap Gate".into(),
+            _ => "System".into(),
+        }
+    }
+}
+
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+struct RawIdtEntry {
+    offset_low: u16,
+    selector: u16,
+    ist: u8,
+    type_attr: u8,
+    offset_mid: u16,
+    offset_high: u32,
+    zero: u32,
+}
+
+fn describe_idt_gate(typ: u8) -> &'static str {
+    match typ {
+        0x5 => "Task Gate",
+        0x6 => "16-bit Interrupt",
+        0x7 => "16-bit Trap",
+        0xE => "Interrupt Gate",
+        0xF => "Trap Gate",
+        _ => "Reserved",
     }
 }
 
