@@ -1,15 +1,16 @@
 //! Boot helpers: centralize early-boot abort handling and helpers.
 #![allow(dead_code)]
 
+use crate::log_error;
+
 /// Abort the boot process with a message and optional address context.
 /// This prints the message to the kernel console, emits a QEMU error exit, and
 /// panics to stop execution.
 pub fn abort_boot(msg: &str, addr: Option<u64>) -> ! {
-    crate::display::kernel_write_line(msg);
     if let Some(a) = addr {
-        crate::display::kernel_write_line(" address=");
-        theseus_shared::print_hex_u64_0xe9!(a);
-        crate::display::kernel_write_line("\n");
+        log_error!("BOOT ABORT: {} address={:#x}", msg, a);
+    } else {
+        log_error!("BOOT ABORT: {}", msg);
     }
     theseus_shared::qemu_exit_error!();
     panic!("BOOT ABORT: {}", msg);
@@ -17,18 +18,10 @@ pub fn abort_boot(msg: &str, addr: Option<u64>) -> ! {
 
 /// Abort with file/line context and register/backtrace dump.
 pub fn abort_with_context(msg: &str, file: &str, line: u32, addr: Option<u64>) -> ! {
-    crate::display::kernel_write_line("BOOT ABORT: ");
-    crate::display::kernel_write_line(msg);
-    crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("  at ");
-    crate::display::kernel_write_line(file);
-    crate::display::kernel_write_line(":");
-    crate::display::kernel_write_line(&alloc::format!("{}", line));
-    crate::display::kernel_write_line("\n");
     if let Some(a) = addr {
-        crate::display::kernel_write_line("  address=");
-        theseus_shared::print_hex_u64_0xe9!(a);
-        crate::display::kernel_write_line("\n");
+        log_error!("BOOT ABORT: {} at {}:{} address={:#x}", msg, file, line, a);
+    } else {
+        log_error!("BOOT ABORT: {} at {}:{}", msg, file, line);
     }
 
     // Dump key registers
@@ -68,44 +61,15 @@ fn dump_registers() {
     let (cr3_frame, _f) = Cr3::read();
     let cr3 = cr3_frame.start_address().as_u64();
 
-    crate::display::kernel_write_line("  registers:\n");
-    crate::display::kernel_write_line("   RIP=");
-    theseus_shared::print_hex_u64_0xe9!(rip);
-    crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   RSP=");
-    theseus_shared::print_hex_u64_0xe9!(rsp);
-    crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   RBP=");
-    theseus_shared::print_hex_u64_0xe9!(rbp);
-    crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   RAX=");
-    theseus_shared::print_hex_u64_0xe9!(rax);
-    crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   RBX=");
-    theseus_shared::print_hex_u64_0xe9!(rbx);
-    crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   RCX=");
-    theseus_shared::print_hex_u64_0xe9!(rcx);
-    crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   RDX=");
-    theseus_shared::print_hex_u64_0xe9!(rdx);
-    crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   RSI=");
-    theseus_shared::print_hex_u64_0xe9!(rsi);
-    crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   RDI=");
-    theseus_shared::print_hex_u64_0xe9!(rdi);
-    crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   RFLAGS=");
-    theseus_shared::print_hex_u64_0xe9!(flags);
-    crate::display::kernel_write_line("\n");
-    crate::display::kernel_write_line("   CR3=");
-    theseus_shared::print_hex_u64_0xe9!(cr3);
-    crate::display::kernel_write_line("\n");
+    log_error!("  registers:");
+    log_error!("   RIP={:#x} RSP={:#x} RBP={:#x}", rip, rsp, rbp);
+    log_error!("   RAX={:#x} RBX={:#x} RCX={:#x} RDX={:#x}", rax, rbx, rcx, rdx);
+    log_error!("   RSI={:#x} RDI={:#x} RFLAGS={:#x}", rsi, rdi, flags);
+    log_error!("   CR3={:#x}", cr3);
 }
 
 fn dump_backtrace(max_frames: usize) {
-    crate::display::kernel_write_line("  backtrace:\n");
+    log_error!("  backtrace:");
     // Get initial RBP
     let mut rbp: u64;
     unsafe {
@@ -117,10 +81,7 @@ fn dump_backtrace(max_frames: usize) {
         }
         // saved return address is at [rbp + 8]
         let ret: u64 = unsafe { core::ptr::read_volatile((rbp + 8) as *const u64) };
-        crate::display::kernel_write_line("    #");
-        crate::display::kernel_write_line(&alloc::format!("{} ", i));
-        theseus_shared::print_hex_u64_0xe9!(ret);
-        crate::display::kernel_write_line("\n");
+        log_error!("    #{} {:#x}", i, ret);
         // next rbp is at [rbp]
         let next = unsafe { core::ptr::read_volatile(rbp as *const u64) };
         if next == rbp {

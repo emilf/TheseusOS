@@ -31,6 +31,8 @@
 use crate::{log_debug, log_trace};
 use core::sync::atomic::Ordering;
 use super::{get_apic_base, read_apic_register, write_apic_register};
+// Debug output functions kept for potential low-level debugging
+#[allow(unused_imports)]
 use super::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9};
 use super::{APIC_TIMER_VECTOR, TIMER_TICKS};
 use super::handler_timer;
@@ -158,9 +160,7 @@ pub unsafe fn lapic_timer_start_oneshot(initial_count: u32) {
     
     // Read current count for debugging
     let cur = read_apic_register(apic_base, 0x390);
-    print_str_0xe9("  [lapic] current=");
-    print_hex_u64_0xe9(cur as u64);
-    out_char_0xe9(b'\n');
+    log_debug!("LAPIC current count={:#x}", cur);
 }
 
 /// Start LAPIC timer in periodic mode
@@ -222,21 +222,14 @@ pub unsafe fn lapic_timer_mask() {
     let (frame, _f) = Cr3::read();
     let cr3pa = frame.start_address().as_u64();
     
-    print_str_0xe9("[lapic_mask] apic_base=");
-    print_hex_u64_0xe9(apic_base);
-    print_str_0xe9(" vbase=");
-    print_hex_u64_0xe9(vbase);
-    print_str_0xe9(" CR3=");
-    print_hex_u64_0xe9(cr3pa);
-    print_str_0xe9(" offset=0x320 addr=");
-    print_hex_u64_0xe9(vbase + 0x320);
-    out_char_0xe9(b'\n');
+    log_trace!(
+        "LAPIC mask: apic_base={:#x} vbase={:#x} CR3={:#x} LVT_addr={:#x}",
+        apic_base, vbase, cr3pa, vbase + 0x320
+    );
     
     // Read current LVT value
     let val = read_apic_register(apic_base, 0x320);
-    print_str_0xe9("[lapic_mask] lvt before=");
-    print_hex_u64_0xe9(val as u64);
-    out_char_0xe9(b'\n');
+    log_trace!("LAPIC LVT before mask={:#x}", val);
     
     // Set mask bit to disable timer
     let new = val | (1 << 16);
@@ -244,15 +237,11 @@ pub unsafe fn lapic_timer_mask() {
     
     // Verify the write succeeded
     let val2 = read_apic_register(apic_base, 0x320);
-    print_str_0xe9("[lapic_mask] lvt after=");
-    print_hex_u64_0xe9(val2 as u64);
-    out_char_0xe9(b'\n');
+    log_trace!("LAPIC LVT after mask={:#x}", val2);
     
     // Verify CR3 didn't change (helps debug page table issues)
     let (frame2, _f2) = Cr3::read();
-    print_str_0xe9("[lapic_mask] CR3 after=");
-    print_hex_u64_0xe9(frame2.start_address().as_u64());
-    out_char_0xe9(b'\n');
+    log_trace!("LAPIC mask CR3 after={:#x}", frame2.start_address().as_u64());
 }
 
 /// Get current timer tick count

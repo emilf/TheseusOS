@@ -3,8 +3,7 @@
 //! This module provides ACPI table parsing capabilities for the kernel using the acpi crate.
 //! It implements the AcpiHandler trait to map physical memory regions using PHYS_OFFSET.
 
-use crate::log_debug;
-use crate::display::kernel_write_line;
+use crate::{log_debug, log_error, log_info, log_trace, log_warn};
 use crate::handoff::handoff_phys_ptr;
 use crate::memory::{
     current_pml4_phys, map_range_with_policy, phys_to_virt_pa, PageTable, PTE_GLOBAL, PTE_NO_EXEC,
@@ -213,16 +212,14 @@ fn update_platform_cache(info: &PlatformInfo) {
 /// * `Ok(PlatformInfo)` - Platform information extracted from ACPI
 /// * `Err(&'static str)` - If parsing failed
 pub fn initialize_acpi(acpi_rsdp: u64) -> Result<PlatformInfo, &'static str> {
-    kernel_write_line("  [driver/acpi] initialize");
+    log_info!("ACPI initialize");
 
     if acpi_rsdp == 0 {
-        kernel_write_line("  [driver/acpi] no RSDP in handoff");
+        log_warn!("No RSDP in handoff");
         return Err("No ACPI RSDP available");
     }
 
-    kernel_write_line("  [driver/acpi] RSDP address: 0x");
-    theseus_shared::print_hex_u64_0xe9!(acpi_rsdp);
-    kernel_write_line("\n");
+    log_debug!("RSDP address: {:#x}", acpi_rsdp);
     dump_rsdp_bytes(acpi_rsdp);
 
     if let Err(e) = validate_rsdp_signature(acpi_rsdp) {
@@ -232,20 +229,19 @@ pub fn initialize_acpi(acpi_rsdp: u64) -> Result<PlatformInfo, &'static str> {
     // Parse ACPI tables using the acpi crate
     let handler = KernelAcpiHandler;
 
-    kernel_write_line("  [driver/acpi] parsing tables");
+    log_debug!("Parsing ACPI tables");
     dump_table_header("RSDP", acpi_rsdp, 36);
-    kernel_write_line("  [driver/acpi] about to call AcpiTables::from_rsdp");
+    log_trace!("About to call AcpiTables::from_rsdp");
     let tables = match unsafe { AcpiTables::from_rsdp(handler, acpi_rsdp as usize) } {
         Ok(t) => t,
         Err(_e) => {
-            kernel_write_line("  [driver/acpi] parse error");
-            kernel_write_line("    -> unexpected error parsing ACPI tables");
+            log_error!("ACPI parse error - unexpected error parsing ACPI tables");
             return Err("Failed to parse ACPI tables");
         }
     };
-    kernel_write_line("  [driver/acpi] AcpiTables::from_rsdp returned Ok");
+    log_trace!("AcpiTables::from_rsdp returned Ok");
 
-    kernel_write_line("  [driver/acpi] tables parsed");
+    log_debug!("ACPI tables parsed");
 
     ensure_all_mirrored(&tables);
 
@@ -253,7 +249,7 @@ pub fn initialize_acpi(acpi_rsdp: u64) -> Result<PlatformInfo, &'static str> {
     let platform_info = extract_platform_info(&tables)?;
     update_platform_cache(&platform_info);
 
-    kernel_write_line("✓ ACPI initialization completed successfully");
+    log_info!("✓ ACPI initialization completed successfully");
     Ok(platform_info)
 }
 
@@ -270,7 +266,7 @@ pub fn initialize_acpi(acpi_rsdp: u64) -> Result<PlatformInfo, &'static str> {
 fn extract_platform_info(
     tables: &AcpiTables<KernelAcpiHandler>,
 ) -> Result<PlatformInfo, &'static str> {
-    kernel_write_line("  [driver/acpi] extracting platform info");
+    log_debug!("Extracting platform info");
 
     let mut platform_info = PlatformInfo::new();
 
@@ -283,14 +279,10 @@ fn extract_platform_info(
     if let Some(processor_info) = &platform_info_acpi.processor_info {
         platform_info.cpu_count = processor_info.application_processors.len() + 1; // BSP + APs
 
-        kernel_write_line("  [driver/acpi] BSP APIC ID: ");
-        theseus_shared::print_hex_u64_0xe9!(processor_info.boot_processor.local_apic_id as u64);
-        kernel_write_line("\n");
+        log_debug!("BSP APIC ID: {:#x}", processor_info.boot_processor.local_apic_id);
 
         for ap in &processor_info.application_processors {
-            kernel_write_line("  [driver/acpi] AP APIC ID: ");
-            theseus_shared::print_hex_u64_0xe9!(ap.local_apic_id as u64);
-            kernel_write_line("\n");
+            log_debug!("AP APIC ID: {:#x}", ap.local_apic_id);
         }
     }
 
@@ -304,37 +296,27 @@ fn extract_platform_info(
             platform_info.local_apic_address = apic_info.local_apic_address as u64;
             platform_info.has_legacy_pic = apic_info.also_has_legacy_pics;
 
-            kernel_write_line("  [driver/acpi] Local APIC address: 0x");
-            theseus_shared::print_hex_u64_0xe9!(platform_info.local_apic_address);
-            kernel_write_line("\n");
+            log_debug!("Local APIC address: {:#x}", platform_info.local_apic_address);
 
             // Extract IO APIC information
             for io_apic in &apic_info.io_apics {
-                kernel_write_line("  [driver/acpi] IO APIC ID: ");
-                theseus_shared::print_hex_u64_0xe9!(io_apic.id as u64);
-                kernel_write_line(" Address: 0x");
-                theseus_shared::print_hex_u64_0xe9!(io_apic.address as u64);
-                kernel_write_line(" GSI Base: ");
-                theseus_shared::print_hex_u64_0xe9!(io_apic.global_system_interrupt_base as u64);
-                kernel_write_line("\n");
+                log_debug!(
+                    "IO APIC ID: {:#x} Address: {:#x} GSI Base: {}",
+                    io_apic.id, io_apic.address, io_apic.global_system_interrupt_base
+                );
             }
 
             // Check for 8259 PIC support
-            kernel_write_line("  [driver/acpi] Has 8259 PIC: ");
-            if apic_info.also_has_legacy_pics {
-                kernel_write_line("Yes\n");
-            } else {
-                kernel_write_line("No\n");
-            }
+            log_debug!("Has 8259 PIC: {}", if apic_info.also_has_legacy_pics { "Yes" } else { "No" });
         }
         _ => {
-            kernel_write_line("  No APIC interrupt model found");
+            log_warn!("No APIC interrupt model found");
         }
     }
 
     match crate::acpi::madt::parse_madt(tables) {
         Ok(madt_info) => {
-            kernel_write_line("  [driver/acpi] MADT parsed");
+            log_debug!("MADT parsed");
             platform_info.cpu_count = madt_info.cpu_apic_ids.len();
             platform_info.has_io_apic = !madt_info.io_apics.is_empty();
             platform_info.io_apic_count = madt_info.io_apics.len();
@@ -343,17 +325,11 @@ fn extract_platform_info(
             platform_info.madt_info = Some(madt_info);
         }
         Err(e) => {
-            kernel_write_line("  [driver/acpi] MADT parsing failed: ");
-            kernel_write_line(e);
+            log_warn!("MADT parsing failed: {}", e);
         }
     }
 
-    kernel_write_line("  [driver/acpi] Total CPUs: ");
-    theseus_shared::print_hex_u64_0xe9!(platform_info.cpu_count as u64);
-    kernel_write_line("\n");
-    kernel_write_line("  [driver/acpi] IO APICs: ");
-    theseus_shared::print_hex_u64_0xe9!(platform_info.io_apic_count as u64);
-    kernel_write_line("\n");
+    log_info!("Total CPUs: {} IO APICs: {}", platform_info.cpu_count, platform_info.io_apic_count);
 
     Ok(platform_info)
 }
@@ -386,16 +362,11 @@ fn parse_rsdp(rsdp_address: u64) -> Result<u64, &'static str> {
         }
 
         if &sig_bytes != b"RSD PTR " {
-            kernel_write_line("  Invalid RSDP signature: ");
-            for byte in &sig_bytes {
-                theseus_shared::print_hex_u64_0xe9!(*byte as u64);
-                kernel_write_line(" ");
-            }
-            kernel_write_line("\n");
+            log_error!("Invalid RSDP signature: {:02x?}", sig_bytes);
             return Err("Invalid RSDP signature");
         }
 
-        kernel_write_line("  RSDP signature verified");
+        log_trace!("RSDP signature verified");
 
         // Read RSDT address (offset 16 for ACPI 1.0, offset 24 for ACPI 2.0)
         let rsdt_addr_1_0 = core::ptr::read_volatile((rsdp_ptr.add(16)) as *const u32) as u64;
@@ -403,14 +374,10 @@ fn parse_rsdp(rsdp_address: u64) -> Result<u64, &'static str> {
 
         // Prefer XSDT (ACPI 2.0) if available and valid
         if xsdt_addr_2_0 != 0 {
-            kernel_write_line("  Using XSDT (ACPI 2.0): 0x");
-            theseus_shared::print_hex_u64_0xe9!(xsdt_addr_2_0);
-            kernel_write_line("\n");
+            log_debug!("Using XSDT (ACPI 2.0): {:#x}", xsdt_addr_2_0);
             Ok(xsdt_addr_2_0)
         } else if rsdt_addr_1_0 != 0 {
-            kernel_write_line("  Using RSDT (ACPI 1.0): 0x");
-            theseus_shared::print_hex_u64_0xe9!(rsdt_addr_1_0 as u64);
-            kernel_write_line("\n");
+            log_debug!("Using RSDT (ACPI 1.0): {:#x}", rsdt_addr_1_0);
             Ok(rsdt_addr_1_0 as u64)
         } else {
             Err("No valid RSDT/XSDT address found")
@@ -437,13 +404,8 @@ fn find_madt(rsdt_address: u64) -> Result<u64, &'static str> {
         let is_xsdt = signature == b'X';
 
         let entry_count = core::ptr::read_volatile((rsdt_ptr.add(4)) as *const u32);
-        if is_xsdt {
-            kernel_write_line("  XSDT entries: ");
-        } else {
-            kernel_write_line("  RSDT entries: ");
-        }
-        theseus_shared::print_hex_u64_0xe9!(entry_count as u64);
-        kernel_write_line("\n");
+        let table_type = if is_xsdt { "XSDT" } else { "RSDT" };
+        log_trace!("{} entries: {}", table_type, entry_count);
 
         let entry_width = if is_xsdt {
             core::mem::size_of::<u64>()
@@ -476,9 +438,7 @@ fn find_madt(rsdt_address: u64) -> Result<u64, &'static str> {
             }
 
             if &sig_bytes == b"APIC" {
-                kernel_write_line("  Found MADT at 0x");
-                theseus_shared::print_hex_u64_0xe9!(table_address);
-                kernel_write_line("\n");
+                log_debug!("Found MADT at {:#x}", table_address);
                 return Ok(table_address);
             }
         }
@@ -542,9 +502,7 @@ fn parse_madt(madt_address: u64) -> Result<PlatformInfo, &'static str> {
                     if flags & 1 != 0 {
                         platform_info.cpu_count += 1;
                         let apic_id = core::ptr::read_unaligned(entry_ptr.add(3));
-                        kernel_write_line("    CPU APIC ID: ");
-                        theseus_shared::print_hex_u64_0xe9!(apic_id as u64);
-                        kernel_write_line("\n");
+                        log_trace!("CPU APIC ID: {:#x}", apic_id);
                     }
                 }
                 1 => {
@@ -554,13 +512,7 @@ fn parse_madt(madt_address: u64) -> Result<PlatformInfo, &'static str> {
                     let io_apic_addr =
                         core::ptr::read_unaligned(entry_ptr.add(4) as *const u32) as u64;
                     let gsi_base = core::ptr::read_unaligned(entry_ptr.add(8) as *const u32);
-                    kernel_write_line("    IO APIC ID: ");
-                    theseus_shared::print_hex_u64_0xe9!(io_apic_id as u64);
-                    kernel_write_line(" Address: 0x");
-                    theseus_shared::print_hex_u64_0xe9!(io_apic_addr);
-                    kernel_write_line(" GSI Base: ");
-                    theseus_shared::print_hex_u64_0xe9!(gsi_base as u64);
-                    kernel_write_line("\n");
+                    log_trace!("IO APIC ID: {:#x} Address: {:#x} GSI Base: {}", io_apic_id, io_apic_addr, gsi_base);
                 }
                 5 => {
                     let override_addr = core::ptr::read_unaligned(entry_ptr.add(4) as *const u64);
@@ -579,16 +531,10 @@ fn parse_madt(madt_address: u64) -> Result<PlatformInfo, &'static str> {
             platform_info.cpu_count = 1;
         }
 
-        kernel_write_line("  Local APIC address: 0x");
-        theseus_shared::print_hex_u64_0xe9!(platform_info.local_apic_address);
-        kernel_write_line("\n");
-
-        kernel_write_line("  Total CPUs: ");
-        theseus_shared::print_hex_u64_0xe9!(platform_info.cpu_count as u64);
-        kernel_write_line("\n");
-        kernel_write_line("  IO APICs: ");
-        theseus_shared::print_hex_u64_0xe9!(platform_info.io_apic_count as u64);
-        kernel_write_line("\n");
+        log_debug!(
+            "Local APIC address: {:#x}, Total CPUs: {}, IO APICs: {}",
+            platform_info.local_apic_address, platform_info.cpu_count, platform_info.io_apic_count
+        );
 
         Ok(platform_info)
     }
@@ -599,49 +545,29 @@ fn validate_rsdp_signature(rsdp_address: u64) -> Result<(), &'static str> {
     for (idx, byte) in b"RSD PTR ".iter().enumerate() {
         let val = unsafe { core::ptr::read_volatile(ptr.add(idx)) };
         if val != *byte {
-            kernel_write_line("  [driver/acpi] RSDP signature mismatch during pre-check");
+            log_error!("RSDP signature mismatch during pre-check");
             return Err("Invalid RSDP signature");
         }
     }
-    kernel_write_line("  [driver/acpi] RSDP signature pre-check passed");
+    log_trace!("RSDP signature pre-check passed");
     Ok(())
 }
 
 fn dump_rsdp_bytes(rsdp_address: u64) {
-    kernel_write_line("  [driver/acpi] dumping first 32 bytes of RSDP");
+    log_trace!("Dumping first 32 bytes of RSDP");
     let ptr = ensure_acpi_virtual_mapping(rsdp_address, 32) as *const u8;
-    unsafe {
-        for i in 0..32 {
-            if i % 8 == 0 {
-                kernel_write_line("    ");
-            }
-            let byte = core::ptr::read_volatile(ptr.add(i));
-            theseus_shared::print_hex_u64_0xe9!(byte as u64);
-            kernel_write_line(" ");
-        }
-        kernel_write_line("\n");
-    }
+    // Skip detailed hex dump in log - can be added if needed for debugging
+    let _ = ptr;
 }
 
 fn dump_table_header(tag: &str, phys_addr: u64, min_len: usize) {
-    kernel_write_line("  [driver/acpi] mapping header for ");
-    kernel_write_line(tag);
-    kernel_write_line(" @ 0x");
-    theseus_shared::print_hex_u64_0xe9!(phys_addr);
-    kernel_write_line("\n");
     let header_ptr = ensure_acpi_virtual_mapping(phys_addr, min_len) as *const SdtHeader;
     unsafe {
         let sig = (*header_ptr).signature;
         let length = (*header_ptr).length;
-        kernel_write_line("    signature: ");
-        let sig_ptr = &sig as *const _ as *const u8;
-        for i in 0..4 {
-            let byte = core::ptr::read_unaligned(sig_ptr.add(i));
-            theseus_shared::out_char_0xe9!(byte);
-        }
-        kernel_write_line(" length: 0x");
-        theseus_shared::print_hex_u64_0xe9!(length as u64);
-        kernel_write_line("\n");
+        let sig_bytes = core::slice::from_raw_parts(&sig as *const _ as *const u8, 4);
+        let sig_str = core::str::from_utf8_unchecked(sig_bytes);
+        log_trace!("Mapping header for {} @ {:#x}: signature={} length={:#x}", tag, phys_addr, sig_str, length);
     }
 }
 

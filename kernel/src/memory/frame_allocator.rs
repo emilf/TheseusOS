@@ -19,6 +19,7 @@
 //! - LIFO allocation: Last frame reserved is first frame allocated
 //! - Fallback behavior: If reserved pool empty, falls back to general pool
 
+use crate::{log_debug, log_trace};
 use x86_64::{
     structures::paging::{FrameAllocator, PhysFrame, Size4KiB},
     PhysAddr,
@@ -69,17 +70,14 @@ impl BootFrameAllocator {
     }
 
     pub unsafe fn from_handoff(h: &theseus_shared::handoff::Handoff) -> Self {
-        crate::display::kernel_write_line("  [fa] from_handoff begin");
+        log_debug!("Frame allocator: from_handoff begin");
         let base_ptr = h.memory_map_buffer_ptr as *const u8;
         let desc_size = h.memory_map_descriptor_size as usize;
         let count = h.memory_map_entries as usize;
-        crate::display::kernel_write_line("  [fa] base_ptr=");
-        theseus_shared::print_hex_u64_0xe9!(base_ptr as u64);
-        crate::display::kernel_write_line(" desc_size=");
-        theseus_shared::print_hex_u64_0xe9!(desc_size as u64);
-        crate::display::kernel_write_line(" count=");
-        theseus_shared::print_hex_u64_0xe9!(count as u64);
-        crate::display::kernel_write_line("\n");
+        log_trace!(
+            "Frame allocator: base_ptr={:#x} desc_size={} count={}",
+            base_ptr as u64, desc_size, count
+        );
         // Memory map diagnostics: Compute summary statistics of the UEFI memory map
         // to verify the allocator sees the full system RAM. This helps debug memory
         // allocation issues and confirms we have sufficient conventional memory.
@@ -94,11 +92,10 @@ impl BootFrameAllocator {
                 conventional_pages = conventional_pages.wrapping_add(num_pages);
             }
         }
-        crate::display::kernel_write_line("  [fa] memmap total_pages=");
-        theseus_shared::print_hex_u64_0xe9!(total_pages as u64);
-        crate::display::kernel_write_line(" conv_pages=");
-        theseus_shared::print_hex_u64_0xe9!(conventional_pages as u64);
-        crate::display::kernel_write_line("\n");
+        log_debug!(
+            "Memory map: total_pages={:#x} conventional_pages={:#x}",
+            total_pages, conventional_pages
+        );
 
         let mut s = Self {
             base_ptr,
@@ -153,40 +150,14 @@ impl BootFrameAllocator {
     unsafe fn advance_to_next_region(&mut self) {
         while self.cur_index < self.count {
             let p = self.base_ptr.add(self.cur_index * self.desc_size);
-            if self.cur_index < 3 {
-                crate::display::kernel_write_line("  [fa] desc[");
-                let d = self.cur_index as u32;
-                let mut buf = [0u8; 3];
-                let mut n = d;
-                let mut c = 0usize;
-                if n == 0 {
-                    theseus_shared::out_char_0xe9!(b'0');
-                } else {
-                    while n > 0 {
-                        buf[c] = b'0' + (n % 10) as u8;
-                        n /= 10;
-                        c += 1;
-                    }
-                    while c > 0 {
-                        c -= 1;
-                        theseus_shared::out_char_0xe9!(buf[c]);
-                    }
-                }
-                crate::display::kernel_write_line("] @");
-                theseus_shared::print_hex_u64_0xe9!(p as u64);
-                crate::display::kernel_write_line("\n");
-            }
             let typ = read_u32(p, 0);
             let phys_start = read_u64(p, 8);
             let num_pages = read_u64(p, 24);
             if self.cur_index < 3 {
-                crate::display::kernel_write_line("    type=");
-                theseus_shared::print_hex_u64_0xe9!(typ as u64);
-                crate::display::kernel_write_line(" start=");
-                theseus_shared::print_hex_u64_0xe9!(phys_start);
-                crate::display::kernel_write_line(" pages=");
-                theseus_shared::print_hex_u64_0xe9!(num_pages);
-                crate::display::kernel_write_line("\n");
+                log_trace!(
+                    "desc[{}] @ {:#x}: type={} start={:#x} pages={}",
+                    self.cur_index, p as u64, typ, phys_start, num_pages
+                );
             }
             self.cur_index += 1;
             if typ == UEFI_CONVENTIONAL_MEMORY && num_pages > 0 {
@@ -210,11 +181,7 @@ impl BootFrameAllocator {
                     self.cur_next_addr = aligned_start;
                     self.cur_remaining_pages = adj_pages;
                 }
-                crate::display::kernel_write_line("  [fa] region start=");
-                theseus_shared::print_hex_u64_0xe9!(self.cur_next_addr);
-                crate::display::kernel_write_line(" pages=");
-                theseus_shared::print_hex_u64_0xe9!(self.cur_remaining_pages);
-                crate::display::kernel_write_line("\n");
+                log_trace!("Frame allocator region: start={:#x} pages={}", self.cur_next_addr, self.cur_remaining_pages);
                 return;
             }
         }

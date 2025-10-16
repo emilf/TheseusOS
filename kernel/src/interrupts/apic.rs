@@ -36,7 +36,7 @@
 //! - 0x390: Timer Current Count
 //! - 0x3E0: Timer Divide Configuration
 
-use crate::log_debug;
+use crate::{log_debug, log_trace};
 use x86_64::instructions::port::Port;
 
 /// APIC error interrupt vector
@@ -190,21 +190,13 @@ pub unsafe fn read_apic_register(apic_base: u64, offset: u32) -> u32 {
     let vbase = crate::memory::phys_to_virt_pa(apic_base & 0xFFFFF000);
     let addr = vbase + (offset as u64);
     
-    // Optional debug output (disabled for performance)
-    const APIC_MMIO_DEBUG: bool = false;
-    if APIC_MMIO_DEBUG {
-        super::print_str_0xe9("[lapic_mmio] READ addr=");
-        super::print_hex_u64_0xe9(addr);
-        super::out_char_0xe9(b'\n');
-    }
-    
     // Use volatile read to ensure the hardware access isn't optimized away
     let val = core::ptr::read_volatile(addr as *const u32);
     
+    // Debug MMIO operations if needed (disabled for performance)
+    const APIC_MMIO_DEBUG: bool = false;
     if APIC_MMIO_DEBUG {
-        super::print_str_0xe9("[lapic_mmio] READ val=");
-        super::print_hex_u64_0xe9(val as u64);
-        super::out_char_0xe9(b'\n');
+        log_trace!("LAPIC MMIO READ addr={:#x} val={:#x}", addr, val);
     }
     
     val
@@ -235,17 +227,14 @@ pub(super) unsafe fn write_apic_register(apic_base: u64, offset: u32, value: u32
     let vbase = crate::memory::phys_to_virt_pa(apic_base & 0xFFFFF000);
     let addr = vbase + (offset as u64);
     
-    const APIC_MMIO_DEBUG: bool = false;
-    if APIC_MMIO_DEBUG {
-        super::print_str_0xe9("[lapic_mmio] WRITE addr=");
-        super::print_hex_u64_0xe9(addr);
-        super::print_str_0xe9(" val=");
-        super::print_hex_u64_0xe9(value as u64);
-        super::out_char_0xe9(b'\n');
-    }
-    
     // Use volatile write to ensure the hardware access happens
     core::ptr::write_volatile(addr as *mut u32, value);
+    
+    // Debug MMIO operations if needed (disabled for performance)
+    const APIC_MMIO_DEBUG: bool = false;
+    if APIC_MMIO_DEBUG {
+        log_trace!("LAPIC MMIO WRITE addr={:#x} val={:#x}", addr, value);
+    }
 }
 
 /// Enable CPU interrupts

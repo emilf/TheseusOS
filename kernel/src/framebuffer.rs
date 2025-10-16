@@ -3,6 +3,7 @@
 //! This module provides functions for drawing to the framebuffer, including
 //! pixel manipulation and simple graphics primitives.
 
+use crate::log_trace;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use theseus_shared::handoff::Handoff;
 
@@ -100,19 +101,10 @@ unsafe fn draw_pixel_bgra(
             || (x == 300 && y == 50)
             || (x == 400 && y == 50))
     {
-        theseus_shared::qemu_print!("Pixel (");
-        theseus_shared::print_hex_u64_0xe9!(x as u64);
-        theseus_shared::qemu_print!(",");
-        theseus_shared::print_hex_u64_0xe9!(y as u64);
-        theseus_shared::qemu_print!(") offset=");
-        theseus_shared::print_hex_u64_0xe9!(get_pixel_offset(x, y, width, stride) as u64);
-        theseus_shared::qemu_print!(" stride=");
-        theseus_shared::print_hex_u64_0xe9!(stride as u64);
-        theseus_shared::qemu_print!(" fb_ptr=");
-        theseus_shared::print_hex_u64_0xe9!(get_framebuffer_ptr() as u64);
-        theseus_shared::qemu_print!(" bgra_color=");
-        theseus_shared::print_hex_u64_0xe9!(bgra_color as u64);
-        theseus_shared::qemu_println!("");
+        log_trace!(
+            "Pixel ({},{}) offset={:#x} stride={:#x} fb_ptr={:#x} bgra_color={:#x}",
+            x, y, get_pixel_offset(x, y, width, stride), stride, get_framebuffer_ptr() as u64, bgra_color
+        );
     }
 
     if x >= width || y >= height {

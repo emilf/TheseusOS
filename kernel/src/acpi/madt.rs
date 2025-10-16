@@ -3,7 +3,7 @@
 //! This module provides parsing capabilities for the MADT table, which contains
 //! information about APIC controllers, CPU entries, and interrupt sources.
 
-use crate::display::kernel_write_line;
+use crate::{log_debug, log_error, log_info};
 use acpi::AcpiTables;
 
 /// MADT information extracted from ACPI tables
@@ -44,7 +44,7 @@ pub struct IoApicEntry {
 /// * `Ok(MadtInfo)` - MADT information extracted successfully
 /// * `Err(&'static str)` - If parsing failed
 pub fn parse_madt(tables: &AcpiTables<impl acpi::AcpiHandler>) -> Result<MadtInfo, &'static str> {
-    kernel_write_line("Parsing MADT (Multiple APIC Description Table)...");
+    log_info!("Parsing MADT (Multiple APIC Description Table)...");
 
     let mut info = MadtInfo {
         cpu_apic_ids: alloc::vec::Vec::new(),
@@ -63,16 +63,12 @@ pub fn parse_madt(tables: &AcpiTables<impl acpi::AcpiHandler>) -> Result<MadtInf
         // Add BSP (Bootstrap Processor) - always present
         info.cpu_apic_ids
             .push(processor_info.boot_processor.local_apic_id as u8);
-        kernel_write_line("  BSP APIC ID: ");
-        theseus_shared::print_hex_u64_0xe9!(processor_info.boot_processor.local_apic_id as u64);
-        kernel_write_line("\n");
+        log_debug!("BSP APIC ID: {:#x}", processor_info.boot_processor.local_apic_id);
 
         // Add Application Processors (APs)
         for ap in &processor_info.application_processors {
             info.cpu_apic_ids.push(ap.local_apic_id as u8);
-            kernel_write_line("  AP APIC ID: ");
-            theseus_shared::print_hex_u64_0xe9!(ap.local_apic_id as u64);
-            kernel_write_line("\n");
+            log_debug!("AP APIC ID: {:#x}", ap.local_apic_id);
         }
     }
 
@@ -81,9 +77,7 @@ pub fn parse_madt(tables: &AcpiTables<impl acpi::AcpiHandler>) -> Result<MadtInf
         acpi::InterruptModel::Apic(apic_info) => {
             // Extract Local APIC information
             info.local_apic_address = apic_info.local_apic_address as u64;
-            kernel_write_line("  Local APIC address: 0x");
-            theseus_shared::print_hex_u64_0xe9!(info.local_apic_address);
-            kernel_write_line("\n");
+            log_debug!("Local APIC address: {:#x}", info.local_apic_address);
 
             // Extract IO APIC information
             for io_apic in &apic_info.io_apics {
@@ -93,35 +87,22 @@ pub fn parse_madt(tables: &AcpiTables<impl acpi::AcpiHandler>) -> Result<MadtInf
                     gsi_base: io_apic.global_system_interrupt_base,
                 };
                 info.io_apics.push(entry);
-                kernel_write_line("  IO APIC ID: ");
-                theseus_shared::print_hex_u64_0xe9!(io_apic.id as u64);
-                kernel_write_line(" Address: 0x");
-                theseus_shared::print_hex_u64_0xe9!(io_apic.address as u64);
-                kernel_write_line(" GSI Base: ");
-                theseus_shared::print_hex_u64_0xe9!(io_apic.global_system_interrupt_base as u64);
-                kernel_write_line("\n");
+                log_debug!(
+                    "IO APIC ID: {:#x} Address: {:#x} GSI Base: {}",
+                    io_apic.id, io_apic.address, io_apic.global_system_interrupt_base
+                );
             }
 
             // Check for 8259 PIC support
             info.has_8259_pic = apic_info.also_has_legacy_pics;
         }
         _ => {
-            kernel_write_line("  No APIC interrupt model found");
+            log_error!("No APIC interrupt model found");
         }
     }
-    kernel_write_line("  Has 8259 PIC: ");
-    if info.has_8259_pic {
-        kernel_write_line("true\n");
-    } else {
-        kernel_write_line("false\n");
-    }
+    log_debug!("Has 8259 PIC: {}", info.has_8259_pic);
 
-    kernel_write_line("  Total CPUs found: ");
-    theseus_shared::print_hex_u64_0xe9!(info.cpu_apic_ids.len() as u64);
-    kernel_write_line("\n");
-    kernel_write_line("  IO APICs found: ");
-    theseus_shared::print_hex_u64_0xe9!(info.io_apics.len() as u64);
-    kernel_write_line("\n");
+    log_info!("Total CPUs found: {}, IO APICs found: {}", info.cpu_apic_ids.len(), info.io_apics.len());
 
     Ok(info)
 }
@@ -177,3 +158,4 @@ pub fn get_local_apic_address(madt_info: &MadtInfo) -> u64 {
 pub fn get_io_apics(madt_info: &MadtInfo) -> &[IoApicEntry] {
     &madt_info.io_apics
 }
+

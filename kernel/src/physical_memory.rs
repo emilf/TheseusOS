@@ -31,6 +31,7 @@
 //! - [`stats`]: Query allocator statistics
 //! - [`record_boot_consumed_region`]: Mark early-boot allocations as consumed
 
+use crate::{log_debug, log_error, log_info};
 use alloc::vec::Vec;
 use spin::Mutex;
 use theseus_shared::handoff::Handoff;
@@ -229,7 +230,7 @@ impl PhysicalMemoryManager {
     /// `frame_count` are marked as allocated to prevent allocating
     /// non-existent frames.
     fn new(base_pfn: Pfn, frame_count: u64, bitmap: &'static mut [u64]) -> Self {
-        crate::display::kernel_write_line("[phys/manager] using provided bitmap storage");
+        log_debug!("Physical memory manager: using provided bitmap storage");
         
         // Calculate required bitmap size
         let required_words = ((frame_count + 63) / 64) as usize;
@@ -250,7 +251,7 @@ impl PhysicalMemoryManager {
             }
         }
         
-        crate::display::kernel_write_line("[phys/manager] bitmap ready");
+        log_debug!("Physical memory manager: bitmap ready");
         Self {
             base_pfn,
             bitmap,
@@ -465,26 +466,21 @@ where
         return Err(AllocError::NoMemoryMap);
     }
     
-    crate::display::kernel_write_line("[phys/init] collecting regions");
+    log_debug!("Physical memory init: collecting regions");
     let regions = collect_regions(handoff, memmap_ptr);
-    crate::display::kernel_write_line("[phys/init] regions collected");
+    log_debug!("Physical memory init: regions collected");
     
     // Determine the range of memory we need to track
     let (base_pfn, frame_count) = compute_bounds(&regions)?;
 
-    crate::display::kernel_write_line("[phys/init] constructing bitmap allocator");
-    crate::display::kernel_write_line("  base_pfn=");
-    theseus_shared::print_hex_u64_0xe9!(base_pfn.start_address());
-    crate::display::kernel_write_line("  frames=");
-    theseus_shared::print_hex_u64_0xe9!(frame_count);
-    crate::display::kernel_write_line("\n");
+    log_debug!("Constructing bitmap allocator: base_pfn={:#x} frames={}", base_pfn.start_address(), frame_count);
     
     // Allocate bitmap storage and construct the manager
     let words = ((frame_count + 63) / 64) as usize;
     let bitmap_storage = bitmap_alloc(words);
     let mut manager = PhysicalMemoryManager::new(base_pfn, frame_count, bitmap_storage);
     
-    crate::display::kernel_write_line("[phys/init] allocator constructed");
+    log_info!("Physical memory allocator constructed");
     
     // Mark all reserved regions from the UEFI memory map
     for region in &regions {
@@ -708,16 +704,12 @@ pub fn free_frame(pa: u64) -> AllocResult<()> {
 /// This is useful for debugging and monitoring memory usage.
 pub fn dump_state() {
     if let Some(mgr) = PHYS_MANAGER.lock().as_ref() {
-        crate::display::kernel_write_line("[phys] PhysicalMemoryManager state:");
-        crate::display::kernel_write_line("  base_pfn=");
-        theseus_shared::print_hex_u64_0xe9!(mgr.base_pfn.start_address());
-        crate::display::kernel_write_line("  total_frames=");
-        theseus_shared::print_hex_u64_0xe9!(mgr.total_frames);
-        crate::display::kernel_write_line("  free_frames=");
-        theseus_shared::print_hex_u64_0xe9!(mgr.free_frames);
-        crate::display::kernel_write_line("\n");
+        log_info!(
+            "PhysicalMemoryManager state: base_pfn={:#x} total_frames={} free_frames={}",
+            mgr.base_pfn.start_address(), mgr.total_frames, mgr.free_frames
+        );
     } else {
-        crate::display::kernel_write_line("[phys] PhysicalMemoryManager not initialised\n");
+        log_error!("PhysicalMemoryManager not initialized");
     }
 }
 
