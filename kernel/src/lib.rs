@@ -13,7 +13,6 @@ extern crate alloc;
 // Re-export all the kernel modules
 pub mod acpi;
 pub mod boot;
-pub mod config;
 pub mod cpu;
 pub mod display;
 pub mod drivers;
@@ -22,12 +21,16 @@ pub mod framebuffer;
 pub mod gdt;
 pub mod handoff;
 pub mod interrupts;
+pub mod logging;
 pub mod memory;
 pub mod monitor;
 pub mod panic;
 pub mod physical_memory;
 pub mod serial_debug;
 pub mod stack;
+
+// Config must come after logging since it references logging types
+pub mod config;
 
 // Re-export commonly used types and functions
 pub use display::kernel_write_line;
@@ -68,15 +71,18 @@ pub use handoff::{set_handoff_pointers, validate_handoff};
 /// - System is in a stable state for kernel initialization
 #[no_mangle]
 pub extern "C" fn kernel_entry(handoff_addr: u64) -> ! {
-    // Initialize kernel logging using QEMU debug port
-    crate::display::kernel_write_line("=== TheseusOS Kernel Starting ===");
-    crate::display::kernel_write_line("Kernel entry point reached successfully");
+    // Initialize logging subsystem first (before any log calls)
+    crate::logging::init();
+    
+    // Initialize kernel logging using unified logging system
+    log_info!("=== TheseusOS Kernel Starting ===");
+    log_info!("Kernel entry point reached successfully");
 
     // Allocator shim is installed globally; kernel will arm it later
-    crate::display::kernel_write_line("Allocator shim active (pre-exit backend)");
+    log_debug!("Allocator shim active (pre-exit backend)");
     crate::handoff::set_handoff_pointers(handoff_addr);
 
-    crate::display::kernel_write_line("Handoff structure address received");
+    log_debug!("Handoff structure address received");
 
     // Access the handoff structure from the passed address
     unsafe {

@@ -295,6 +295,7 @@ impl Monitor {
             "io" => self.cmd_io(&parts[1..]),
             "int" => self.cmd_int(&parts[1..]),
             "call" => self.cmd_call(&parts[1..]),
+            "log" | "loglevel" | "logoutput" => self.cmd_log(&parts[1..]),
             "reset" => self.cmd_reset(),
             "halt" => self.cmd_halt(),
             "clear" | "cls" => self.cmd_clear(),
@@ -333,6 +334,10 @@ impl Monitor {
         self.writeln("I/O:");
         self.writeln("  io PORT [VALUE]     - Read/write I/O port");
         self.writeln("  int VECTOR          - Trigger software interrupt");
+        self.writeln("");
+        self.writeln("Logging:");
+        self.writeln("  log level [MODULE] LEVEL     - Set log level");
+        self.writeln("  log output LEVEL TARGET      - Set output target");
         self.writeln("");
         self.writeln("System Control:");
         self.writeln("  reset               - Reboot system");

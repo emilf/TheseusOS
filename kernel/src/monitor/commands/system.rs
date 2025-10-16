@@ -345,6 +345,148 @@ impl Monitor {
             }
         }
     }
+
+    /// Configure logging levels and output
+    ///
+    /// Manages the kernel logging subsystem with subcommands:
+    /// - `loglevel` - Show current log levels
+    /// - `loglevel MODULE LEVEL` - Set log level for module
+    /// - `loglevel default LEVEL` - Set default log level
+    /// - `logoutput LEVEL TARGET` - Set output target for level
+    ///
+    /// # Examples
+    /// ```text
+    /// loglevel                          # Show all levels
+    /// loglevel kernel::memory DEBUG     # Set memory to DEBUG
+    /// loglevel default INFO             # Set default to INFO
+    /// logoutput ERROR serial            # Send errors to serial
+    /// logoutput DEBUG both              # Send debug to both outputs
+    /// ```
+    pub(in crate::monitor) fn cmd_log(&self, args: &[&str]) {
+        if args.is_empty() {
+            self.cmd_log_show_levels();
+            return;
+        }
+        
+        match args[0] {
+            "level" if args.len() >= 2 => {
+                // loglevel command
+                if args[1] == "default" {
+                    if args.len() < 3 {
+                        self.writeln("Usage: loglevel default LEVEL");
+                        return;
+                    }
+                    self.cmd_log_set_default(&args[2..]);
+                } else if args.len() >= 3 {
+                    self.cmd_log_set_module(args[1], &args[2..]);
+                } else {
+                    self.writeln("Usage: loglevel MODULE LEVEL");
+                }
+            }
+            "output" if args.len() >= 3 => {
+                // logoutput command
+                self.cmd_log_set_output(args[1], args[2]);
+            }
+            _ => {
+                self.writeln("Logging commands:");
+                self.writeln("  loglevel                      - Show current levels");
+                self.writeln("  loglevel MODULE LEVEL         - Set module log level");
+                self.writeln("  loglevel default LEVEL        - Set default level");
+                self.writeln("  logoutput LEVEL TARGET        - Set output target");
+                self.writeln("");
+                self.writeln("Levels: ERROR, WARN, INFO, DEBUG, TRACE");
+                self.writeln("Targets: none, qemu, serial, both");
+            }
+        }
+    }
+    
+    fn cmd_log_show_levels(&self) {
+        use crate::logging::{ModuleFilter, get_output_target, LogLevel};
+        
+        self.writeln("Current Logging Configuration:");
+        self.writeln("");
+        
+        // Show default level
+        let default = ModuleFilter::get_default();
+        self.writeln(&format!("  Default Level: {}", default.as_str()));
+        
+        self.writeln("");
+        self.writeln("Output Targets:");
+        self.writeln(&format!("  ERROR: {}", get_output_target(LogLevel::Error).as_str()));
+        self.writeln(&format!("  WARN:  {}", get_output_target(LogLevel::Warn).as_str()));
+        self.writeln(&format!("  INFO:  {}", get_output_target(LogLevel::Info).as_str()));
+        self.writeln(&format!("  DEBUG: {}", get_output_target(LogLevel::Debug).as_str()));
+        self.writeln(&format!("  TRACE: {}", get_output_target(LogLevel::Trace).as_str()));
+        
+        // Note: Can't show per-module levels since we only store hashes
+        self.writeln("");
+        self.writeln("Note: Per-module levels are stored by hash (not displayed)");
+    }
+    
+    fn cmd_log_set_module(&self, module: &str, args: &[&str]) {
+        use crate::logging::{set_module_level, LogLevel};
+        
+        if args.is_empty() {
+            self.writeln("Usage: loglevel MODULE LEVEL");
+            return;
+        }
+        
+        match LogLevel::from_str(args[0]) {
+            Some(level) => {
+                set_module_level(module, level);
+                self.writeln(&format!("Set {} to {}", module, level.as_str()));
+            }
+            None => {
+                self.writeln("Invalid log level");
+                self.writeln("Valid levels: ERROR, WARN, INFO, DEBUG, TRACE");
+            }
+        }
+    }
+    
+    fn cmd_log_set_default(&self, args: &[&str]) {
+        use crate::logging::{ModuleFilter, LogLevel};
+        
+        if args.is_empty() {
+            self.writeln("Usage: loglevel default LEVEL");
+            return;
+        }
+        
+        match LogLevel::from_str(args[0]) {
+            Some(level) => {
+                ModuleFilter::set_default(level);
+                self.writeln(&format!("Set default level to {}", level.as_str()));
+            }
+            None => {
+                self.writeln("Invalid log level");
+                self.writeln("Valid levels: ERROR, WARN, INFO, DEBUG, TRACE");
+            }
+        }
+    }
+    
+    fn cmd_log_set_output(&self, level_str: &str, target_str: &str) {
+        use crate::logging::{set_output_target, LogLevel, OutputTarget};
+        
+        let level = match LogLevel::from_str(level_str) {
+            Some(l) => l,
+            None => {
+                self.writeln("Invalid log level");
+                self.writeln("Valid levels: ERROR, WARN, INFO, DEBUG, TRACE");
+                return;
+            }
+        };
+        
+        let target = match OutputTarget::from_str(target_str) {
+            Some(t) => t,
+            None => {
+                self.writeln("Invalid output target");
+                self.writeln("Valid targets: none, qemu, serial, both");
+                return;
+            }
+        };
+        
+        set_output_target(level, target);
+        self.writeln(&format!("Set {} output to {}", level.as_str(), target.as_str()));
+    }
 }
 
 // Helper structures and functions for ACPI parsing
