@@ -10,12 +10,14 @@ use crate::cpu::{setup_control_registers, setup_floating_point, setup_msrs};
 use crate::gdt::setup_gdt;
 use crate::interrupts::{disable_all_interrupts, setup_idt};
 use crate::memory::{
-    activate_virtual_memory, MemoryManager, KERNEL_VIRTUAL_BASE, TEMP_HEAP_VIRTUAL_BASE,
+    activate_virtual_memory, BootFrameAllocator, MemoryManager, KERNEL_VIRTUAL_BASE,
+    TEMP_HEAP_VIRTUAL_BASE,
 };
 use crate::serial_debug;
 use theseus_shared::handoff::Handoff;
 use uefi::mem::memory_map::{MemoryAttribute, MemoryDescriptor};
 use uefi::Status;
+use x86_64::structures::paging::FrameAllocator;
 
 // Small helpers to keep unsafe/asm in tiny, reviewable boundaries.
 #[allow(dead_code)]
@@ -70,7 +72,8 @@ static mut KERNEL_STACK: [u8; 64 * 1024] = [0; 64 * 1024];
 /// - Virtual memory is properly configured
 /// - High-half mappings are active
 /// - The kernel stack is accessible in high-half space
-extern "C" fn after_high_half_entry() -> ! {
+#[no_mangle]
+pub extern "C" fn after_high_half_entry() -> ! {
     // Switch stack immediately to a high-half kernel stack using the
     // centralized stack helper. Build the stack top address and jump to
     // `continue_after_stack_switch` there.
@@ -129,7 +132,8 @@ extern "C" fn after_high_half_entry() -> ! {
 /// - Virtual memory mappings are active and correct
 /// - The kernel stack is properly set up
 /// - No other code is modifying system state concurrently
-pub(super) unsafe fn continue_after_stack_switch() -> ! {
+#[no_mangle]
+pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
     // Get verbose setting from the centralized kernel config
     let verbose = crate::config::VERBOSE_KERNEL_OUTPUT;
     // Reinstall IDT and continue setup now that we're in high-half
@@ -185,26 +189,31 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
             map_existing_region_va_to_its_pa, BootFrameAllocator, PTE_GLOBAL, PTE_NO_EXEC,
             PTE_PRESENT, PTE_WRITABLE,
         };
+        use crate::physical_memory::{self, ConsumedRegion};
         use x86_64::registers::control::Cr3;
+
         let h = unsafe { &*(handoff_phys_ptr() as *const Handoff) };
-        let (_frame, _flags) = Cr3::read();
-        let pml4_pa = _frame.start_address().as_u64();
-        let mut fa = unsafe { BootFrameAllocator::from_handoff(h) };
-        // Map kernel main stack
-        let ks_base = core::ptr::addr_of!(KERNEL_STACK) as u64;
-        let ks_size = core::mem::size_of::<[u8; 64 * 1024]>() as u64;
+        let (frame, _) = Cr3::read();
+        let pml4_pa = frame.start_address().as_u64();
+
+        let kernel_stack_region = ConsumedRegion {
+            start: core::ptr::addr_of!(KERNEL_STACK) as u64,
+            size: core::mem::size_of::<[u8; 64 * 1024]>() as u64,
+        };
+        physical_memory::record_boot_consumed_region(kernel_stack_region);
         unsafe {
             map_existing_region_va_to_its_pa(
                 pml4_pa,
                 h,
-                ks_base,
-                ks_size,
+                kernel_stack_region.start,
+                kernel_stack_region.size,
                 PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_NO_EXEC,
-                &mut fa,
+                &mut BootFrameAllocator::empty(),
             );
         }
-        // Map IST stacks
+
         for (base, size) in crate::gdt::ist_stack_ranges().iter().copied() {
+            physical_memory::record_boot_consumed_region(ConsumedRegion { start: base, size });
             unsafe {
                 map_existing_region_va_to_its_pa(
                     pml4_pa,
@@ -212,11 +221,10 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
                     base,
                     size,
                     PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_NO_EXEC,
-                    &mut fa,
+                    &mut BootFrameAllocator::empty(),
                 );
             }
         }
-        // Map all UEFI runtime regions into the high-half PHYS_OFFSET window
     }
     // Early LAPIC timer smoke test (before enabling SSE/MSRs/allocators) to isolate issues
     {
@@ -553,57 +561,62 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
         };
         use x86_64::{
             registers::control::Cr3,
-            structures::paging::{OffsetPageTable, PageTable as X86PageTable},
+            structures::paging::{OffsetPageTable, PageTable as X86PageTable, Translate},
             VirtAddr,
         };
         let h = unsafe { &*(handoff_phys_ptr() as *const Handoff) };
-        // Build a frame allocator from the handoff and map the permanent heap first
         if verbose {
             crate::display::kernel_write_line("  [perm] begin");
         }
-        {
-            if verbose {
-                crate::display::kernel_write_line("  [perm] frame_alloc from handoff...");
-            }
-            let mut frame_alloc = unsafe { BootFrameAllocator::from_handoff(h) };
-            if verbose {
-                crate::display::kernel_write_line("  [perm] frame_alloc ready");
-            }
-            let (_frame, _flags) = Cr3::read();
-            let pml4_pa = _frame.start_address().as_u64();
-            if verbose {
-                crate::display::kernel_write_line("  [perm] PML4 pa=");
-                theseus_shared::print_hex_u64_0xe9!(pml4_pa);
-                crate::display::kernel_write_line("\n");
-            }
-            let l4_va = crate::memory::phys_to_virt_pa(pml4_pa) as *mut X86PageTable;
-            let l4: &mut X86PageTable = unsafe { &mut *l4_va };
-            let mut mapper =
-                unsafe { OffsetPageTable::new(l4, VirtAddr::new(crate::memory::PHYS_OFFSET)) };
-            if verbose {
-                crate::display::kernel_write_line("  [perm] mapper ready");
-                crate::display::kernel_write_line("  [perm] map kernel heap...");
-            }
-            map_kernel_heap_x86(&mut mapper, &mut frame_alloc);
-            if verbose {
-                crate::display::kernel_write_line("  [perm] map kernel heap done");
-            }
-            // frame_alloc drops here while the allocator still points to temp heap → safe
-        }
+        let mut frame_alloc = unsafe { BootFrameAllocator::from_handoff(h) };
+        frame_alloc.enable_tracking();
+        let (_frame, _flags) = Cr3::read();
+        let pml4_pa = _frame.start_address().as_u64();
         if verbose {
-            crate::display::kernel_write_line(
-                "  [perm] initializing global allocator on permanent heap...",
-            );
+            crate::display::kernel_write_line("  [perm] PML4 pa=");
+            theseus_shared::print_hex_u64_0xe9!(pml4_pa);
+            crate::display::kernel_write_line("\n");
         }
-        // Initialize and switch the global allocator shim to the permanent heap
+        let l4_va = crate::memory::phys_to_virt_pa(pml4_pa) as *mut X86PageTable;
+        let l4: &mut X86PageTable = unsafe { &mut *l4_va };
+        let mut mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(crate::memory::PHYS_OFFSET)) };
+        map_kernel_heap_x86(&mut mapper, &mut frame_alloc);
+        if verbose {
+            crate::display::kernel_write_line("  [perm] map kernel heap done");
+        }
+        if let Some(pa) = mapper.translate_addr(VirtAddr::new(crate::memory::KERNEL_HEAP_BASE)) {
+            crate::display::kernel_write_line("  [perm] heap base -> ");
+            theseus_shared::print_hex_u64_0xe9!(pa.as_u64());
+            crate::display::kernel_write_line("\n");
+        }
+        if let Some(pa) = mapper.translate_addr(VirtAddr::new(crate::memory::KERNEL_HEAP_BASE + 0xA000)) {
+            crate::display::kernel_write_line("  [perm] heap +0xA000 -> ");
+            theseus_shared::print_hex_u64_0xe9!(pa.as_u64());
+            crate::display::kernel_write_line("\n");
+        }
+        if !crate::memory::virt_addr_is_mapped(crate::memory::KERNEL_HEAP_BASE) {
+            crate::display::kernel_write_line("  [perm] kernel heap base NOT mapped");
+        } else if !crate::memory::virt_addr_is_mapped(crate::memory::KERNEL_HEAP_BASE + 0xA000) {
+            crate::display::kernel_write_line("  [perm] kernel heap +0xA000 missing");
+        } else if verbose {
+            crate::display::kernel_write_line("  [perm] kernel heap pages verified");
+        }
         let perm_base = crate::memory::KERNEL_HEAP_BASE as *mut u8;
         let perm_size = crate::memory::KERNEL_HEAP_SIZE as usize;
         unsafe {
             theseus_shared::allocator::init_kernel_heap(perm_base, perm_size);
         }
         theseus_shared::allocator::switch_to_kernel_heap();
+
+        let consumed = crate::physical_memory::drain_boot_consumed();
         if verbose {
-            crate::display::kernel_write_line("  Global allocator switched to permanent heap");
+            crate::display::kernel_write_line("  [perm] initialise persistent physical allocator");
+        }
+        let bitmap_provider = |words: usize| allocate_bitmap_storage(words, &mut frame_alloc);
+        crate::physical_memory::init_from_handoff(h, &consumed, bitmap_provider)
+            .expect("failed to initialise persistent physical memory manager");
+        if verbose {
+            crate::display::kernel_write_line("  [perm] physical allocator ready");
         }
 
         // With the allocator live, hand runtime services their virtual map
@@ -677,6 +690,8 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
 
     crate::display::kernel_write_line("=== Kernel environment setup complete ===");
     crate::display::kernel_write_line("Kernel environment test completed successfully");
+    crate::display::kernel_write_line("Kernel initialization complete");
+    crate::display::kernel_write_serial("Kernel initialization complete");
 
     // Set up framebuffer drawing and timer
     crate::display::kernel_write_line("Setting up framebuffer drawing...");
@@ -709,8 +724,6 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
     }
 
     // Choose behavior based on centralized kernel configuration
-    crate::display::kernel_write_line("Kernel initialization complete");
-    crate::display::kernel_write_serial("Kernel initialization complete");
 
     if crate::config::ENABLE_KERNEL_MONITOR {
         crate::monitor::init();
@@ -782,7 +795,7 @@ pub(super) unsafe fn continue_after_stack_switch() -> ! {
 /// - UEFI boot services have been exited (no firmware calls after this)
 /// - Kernel physical base address is accurate
 /// - No concurrent execution (single-threaded environment)
-pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64, verbose: bool) {
+pub fn setup_kernel_environment(_handoff: &Handoff, _kernel_physical_base: u64, verbose: bool) {
     crate::display::kernel_write_line("=== Setting up Kernel Environment ===");
 
     // 1. Disable all interrupts first (including NMI)
@@ -914,7 +927,7 @@ pub fn setup_kernel_environment(_handoff: &Handoff, kernel_physical_base: u64, v
     }
     // Prepare for high-half transition: compute addresses and verify mappings
     let virt_base: u64 = KERNEL_VIRTUAL_BASE;
-    let phys_base: u64 = kernel_physical_base;
+    let phys_base: u64 = crate::memory::runtime_kernel_phys_base(_handoff);
 
     // Get current instruction pointer to determine if we're already in high-half
     let rip_now: u64;
@@ -991,6 +1004,46 @@ fn log_uefi_firmware_time() {
     }
 }
 
+fn allocate_bitmap_storage(
+    words: usize,
+    allocator: &mut BootFrameAllocator,
+) -> &'static mut [u64] {
+    let bytes = words
+        .checked_mul(core::mem::size_of::<u64>())
+        .expect("bitmap size overflow");
+    let page_size = crate::memory::PAGE_SIZE;
+    let pages = (bytes + page_size - 1) / page_size;
+    if pages == 0 {
+        return &mut [];
+    }
+    let first_frame = allocator
+        .allocate_frame()
+        .expect("no frames available for bitmap");
+    let first_phys = first_frame.start_address().as_u64();
+    for i in 1..pages {
+        let frame = allocator
+            .allocate_frame()
+            .expect("no frames available for bitmap");
+        let expected = first_phys + (i as u64) * page_size as u64;
+        if frame.start_address().as_u64() != expected {
+            crate::display::kernel_write_line(
+                "[phys] bitmap allocation requires contiguous frames",
+            );
+            theseus_shared::qemu_exit_error!();
+        }
+    }
+    let size_bytes = pages * page_size;
+    crate::physical_memory::record_boot_consumed_region(crate::physical_memory::consumed(
+        first_phys,
+        size_bytes as u64,
+    ));
+    let virt = crate::memory::phys_to_virt_pa(first_phys);
+    unsafe {
+        core::ptr::write_bytes(virt as *mut u8, 0, size_bytes);
+        core::slice::from_raw_parts_mut(virt as *mut u64, words)
+    }
+}
+
 /// Call UEFI's `SetVirtualAddressMap` runtime service after the kernel has established
 /// permanent mappings for all runtime regions.
 unsafe fn set_virtual_address_map_runtime(
@@ -1052,31 +1105,13 @@ unsafe fn set_virtual_address_map_runtime(
     handoff.memory_map_buffer_ptr = virt_ptr;
     crate::display::kernel_write_line("[rt] memory map pointer updated");
 
-    let mut temp_vec: Vec<MemoryDescriptor> = Vec::new();
-    let descriptors_slice: &mut [MemoryDescriptor] =
-        if desc_size == size_of::<MemoryDescriptor>()
-            && map_base % align_of::<MemoryDescriptor>() == 0
-        {
-            slice::from_raw_parts_mut(map_base as *mut MemoryDescriptor, count)
-        } else {
-            temp_vec.reserve_exact(count);
-            for idx in 0..count {
-                let src =
-                    (map_base + idx * desc_size) as *const MemoryDescriptor;
-            temp_vec.push(*src);
-        }
-        temp_vec.as_mut_slice()
-    };
-    crate::display::kernel_write_line("[rt] descriptor slice ready");
-
-    // Ensure PHYS_OFFSET covers the memory map buffer and each runtime range.
+    // Ensure PHYS_OFFSET covers the memory map buffer and each runtime range before we
+    // attempt to access them via the new virtual addresses.
     {
-        use crate::memory::{
-            map_range_with_policy, BootFrameAllocator, PageTable, PTE_PRESENT, PTE_WRITABLE,
-        };
+        use crate::memory::{map_range_with_policy, PageTable, PTE_PRESENT, PTE_WRITABLE};
         use x86_64::registers::control::Cr3;
 
-        let mut frame_alloc = unsafe { BootFrameAllocator::from_handoff(handoff) };
+        let mut frame_alloc = crate::physical_memory::PersistentFrameAllocator;
         let (frame, _) = Cr3::read();
         let pml4_pa = frame.start_address().as_u64();
         let pml4: &mut PageTable = unsafe { &mut *(pml4_pa as *mut PageTable) };
@@ -1114,6 +1149,23 @@ unsafe fn set_virtual_address_map_runtime(
         }
     }
     crate::display::kernel_write_line("[rt] runtime mapping ensured");
+
+    let mut temp_vec: Vec<MemoryDescriptor> = Vec::new();
+    let descriptors_slice: &mut [MemoryDescriptor] =
+        if desc_size == size_of::<MemoryDescriptor>()
+            && map_base % align_of::<MemoryDescriptor>() == 0
+        {
+            slice::from_raw_parts_mut(map_base as *mut MemoryDescriptor, count)
+        } else {
+            temp_vec.reserve_exact(count);
+            for idx in 0..count {
+                let src =
+                    (map_base + idx * desc_size) as *const MemoryDescriptor;
+            temp_vec.push(*src);
+        }
+        temp_vec.as_mut_slice()
+    };
+    crate::display::kernel_write_line("[rt] descriptor slice ready");
 
     let system_table_phys = handoff.uefi_system_table;
     let system_table_virt = crate::memory::PHYS_OFFSET.wrapping_add(system_table_phys)

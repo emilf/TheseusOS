@@ -4,18 +4,18 @@
 //! a centralized mapping policy (prefers 2MiB huge pages when aligned) which
 //! simplifies higher-level mapping logic.
 
-use crate::memory::frame_allocator::BootFrameAllocator;
+use crate::memory::FrameSource;
 use crate::memory::mapping::map_range_with_policy;
 use crate::memory::{PageTable, PAGE_SIZE};
 
-pub struct PageTableBuilder<'a> {
+pub struct PageTableBuilder<'a, F: FrameSource> {
     pml4: &'a mut PageTable,
-    fa: &'a mut BootFrameAllocator,
+    fa: &'a mut F,
 }
 
-impl<'a> PageTableBuilder<'a> {
+impl<'a, F: FrameSource> PageTableBuilder<'a, F> {
     /// Create a new builder bound to `pml4` and `fa`.
-    pub fn new(pml4: &'a mut PageTable, fa: &'a mut BootFrameAllocator) -> Self {
+    pub fn new(pml4: &'a mut PageTable, fa: &'a mut F) -> Self {
         Self { pml4, fa }
     }
 

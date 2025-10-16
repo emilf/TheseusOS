@@ -23,8 +23,20 @@ use x86_64::{
     structures::paging::{FrameAllocator, PhysFrame, Size4KiB},
     PhysAddr,
 };
+use crate::physical_memory;
 
 const UEFI_CONVENTIONAL_MEMORY: u32 = 7; // UEFI spec: conventional memory type
+
+/// Trait abstracting over sources of physical frames for page-table building and
+/// general allocations. Implemented by both the boot-time allocator and the
+/// persistent allocator so mapping helpers can operate on either.
+pub trait FrameSource {
+    fn alloc_frame(&mut self) -> Option<PhysFrame<Size4KiB>>;
+
+    fn alloc_page_table_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        self.alloc_frame()
+    }
+}
 
 pub struct BootFrameAllocator {
     base_ptr: *const u8,
@@ -38,6 +50,7 @@ pub struct BootFrameAllocator {
     // held back for critical kernel needs (page tables, IST stacks, etc.).
     reserved: [u64; 16],
     reserved_count: usize,
+    tracking_enabled: bool,
 }
 
 impl BootFrameAllocator {
@@ -51,6 +64,7 @@ impl BootFrameAllocator {
             cur_remaining_pages: 0,
             reserved: [0u64; 16],
             reserved_count: 0,
+            tracking_enabled: false,
         }
     }
 
@@ -95,9 +109,17 @@ impl BootFrameAllocator {
             cur_remaining_pages: 0,
             reserved: [0u64; 16],
             reserved_count: 0,
+            tracking_enabled: false,
         };
         s.advance_to_next_region();
         s
+    }
+
+    /// Enable boot-time allocation tracking. Each frame handed out after this
+    /// call is immediately recorded as "consumed" in the persistent allocator
+    /// bootstrap log so it will never be returned to the free pool later.
+    pub fn enable_tracking(&mut self) {
+        self.tracking_enabled = true;
     }
 
     /// Reserve up to `n` frames from the allocator and store them into the
@@ -217,9 +239,26 @@ unsafe impl FrameAllocator<Size4KiB> for BootFrameAllocator {
                 .cur_next_addr
                 .saturating_add(crate::memory::PAGE_SIZE as u64);
             self.cur_remaining_pages = self.cur_remaining_pages.saturating_sub(1);
-            // Quiet: suppress per-frame allocation logging
+            if self.tracking_enabled {
+                physical_memory::record_boot_consumed_region(physical_memory::consumed(
+                    addr,
+                    crate::memory::PAGE_SIZE as u64,
+                ));
+            }
             return Some(PhysFrame::containing_address(PhysAddr::new(addr)));
         }
+    }
+}
+
+impl FrameSource for BootFrameAllocator {
+    fn alloc_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        FrameAllocator::<Size4KiB>::allocate_frame(self)
+    }
+
+    fn alloc_page_table_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        self
+            .allocate_reserved_frame()
+            .or_else(|| FrameAllocator::<Size4KiB>::allocate_frame(self))
     }
 }
 

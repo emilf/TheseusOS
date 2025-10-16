@@ -3,8 +3,7 @@
 //! single physical frame into a fixed virtual window for safe access (e.g., to
 //! zero newly allocated page-table frames).
 
-use crate::memory::frame_allocator::BootFrameAllocator;
-use crate::memory::{PageTable, PageTableEntry, PAGE_SIZE};
+use crate::memory::{FrameSource, PageTable, PageTableEntry, PAGE_SIZE};
 
 /// Fixed virtual address used for temporary mappings
 pub const TEMP_WINDOW_VA: u64 = 0xFFFF_FFFE_0000_0000u64;
@@ -34,13 +33,13 @@ impl TemporaryWindow {
     /// Map a single 4KiB physical frame into the temporary window and return the VA.
     ///
     /// # Safety
-    /// `fa` must be a valid BootFrameAllocator used to allocate intermediate page
+    /// `fa` must implement `FrameSource` used to allocate intermediate page
     /// tables if they are missing. This function will overwrite any existing mapping
     /// at the temporary window.
     pub unsafe fn map_phys_frame(
         &mut self,
         phys_frame_pa: u64,
-        fa: &mut BootFrameAllocator,
+        fa: &mut impl FrameSource,
     ) -> u64 {
         let pml4 = &mut *self.pml4;
         // If an existing mapping is present, simply overwrite the PT entry
@@ -60,6 +59,9 @@ impl TemporaryWindow {
     /// # Safety
     /// Requires that the PHYS_OFFSET mapping is active.
     pub unsafe fn new_from_current_pml4() -> Option<Self> {
+        if !crate::memory::phys_offset_is_active() {
+            return None;
+        }
         use x86_64::registers::control::Cr3;
         let (frame, _flags) = Cr3::read();
         let pml4_pa = frame.start_address().as_u64();
@@ -71,7 +73,7 @@ impl TemporaryWindow {
 
     /// Map then zero a frame: convenience wrapper that maps, zeroes through VA,
     /// and unmaps the window.
-    pub unsafe fn map_and_zero_frame(&mut self, phys_frame_pa: u64, fa: &mut BootFrameAllocator) {
+    pub unsafe fn map_and_zero_frame(&mut self, phys_frame_pa: u64, fa: &mut impl FrameSource) {
         let va = self.map_phys_frame(phys_frame_pa, fa);
         core::ptr::write_bytes(va as *mut u8, 0, PAGE_SIZE);
         self.unmap();
@@ -86,7 +88,7 @@ impl TemporaryWindow {
     pub unsafe fn with_mapped_frame<F, R>(
         &mut self,
         phys_frame_pa: u64,
-        fa: &mut BootFrameAllocator,
+        fa: &mut impl FrameSource,
         f: F,
     ) -> R
     where

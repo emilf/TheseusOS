@@ -4,8 +4,7 @@
 use super::{
     phys_offset_is_active, phys_to_virt_pa, PAGE_MASK, PAGE_SIZE, PTE_PRESENT, PTE_WRITABLE,
 };
-use crate::memory::frame_allocator::BootFrameAllocator;
-use x86_64::structures::paging::FrameAllocator;
+use crate::memory::FrameSource;
 
 /// Page table entry
 ///
@@ -64,9 +63,9 @@ impl PageTable {
 /// This function manipulates raw page-table entries and returns a `'static`
 /// mutable reference into physical memory. Callers must ensure the returned
 /// pointer is used under the correct paging/translation context.
-pub unsafe fn get_or_create_page_table_alloc(
+pub unsafe fn get_or_create_page_table_alloc<F: FrameSource>(
     entry: &mut PageTableEntry,
-    fa: &mut BootFrameAllocator,
+    fa: &mut F,
 ) -> &'static mut PageTable {
     if entry.is_present() {
         let pa = entry.physical_addr();
@@ -78,23 +77,23 @@ pub unsafe fn get_or_create_page_table_alloc(
         }
     } else {
         // Prefer a reserved frame first, falling back to the general pool.
-        let frame_opt = fa.allocate_reserved_frame().or_else(|| fa.allocate_frame());
+        let frame_opt = fa.alloc_page_table_frame();
         if let Some(frame) = frame_opt {
             let phys = frame.start_address().as_u64();
+            *entry = PageTableEntry::new(phys, PTE_PRESENT | PTE_WRITABLE);
+
+            if let Some(mut tw) = super::TemporaryWindow::new_from_current_pml4() {
+                let _ = tw.with_mapped_frame(phys, fa, |va| {
+                    core::ptr::write_bytes(va as *mut u8, 0, PAGE_SIZE);
+                });
+            } else {
+                core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
+            }
+
             if phys_offset_is_active() {
-                if let Some(mut tw) = super::TemporaryWindow::new_from_current_pml4() {
-                    let _ = tw.with_mapped_frame(phys, fa, |va| {
-                        core::ptr::write_bytes(va as *mut u8, 0, PAGE_SIZE);
-                    });
-                } else {
-                    core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
-                }
-                *entry = PageTableEntry::new(phys, PTE_PRESENT | PTE_WRITABLE);
                 let va = phys_to_virt_pa(phys) as *mut PageTable;
                 &mut *va
             } else {
-                core::ptr::write_bytes(phys as *mut u8, 0, PAGE_SIZE);
-                *entry = PageTableEntry::new(phys, PTE_PRESENT | PTE_WRITABLE);
                 &mut *(phys as *mut PageTable)
             }
         } else {

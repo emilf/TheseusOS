@@ -9,6 +9,7 @@ use crate::memory::{
     current_pml4_phys, map_range_with_policy, phys_to_virt_pa, BootFrameAllocator, PageTable,
     PTE_GLOBAL, PTE_NO_EXEC, PTE_PRESENT, PTE_WRITABLE,
 };
+use crate::physical_memory;
 use acpi::{sdt::SdtHeader, AcpiHandler, AcpiTables, PhysicalMapping};
 use core::{
     ptr::NonNull,
@@ -90,17 +91,37 @@ fn ensure_acpi_virtual_mapping(phys_addr: u64, size: usize) -> u64 {
 
     unsafe {
         let handoff = &*(handoff_phys_ptr() as *const theseus_shared::handoff::Handoff);
-        let mut temp_alloc = BootFrameAllocator::from_handoff(handoff);
+
+        // Ensure the runtime memory map buffer is accessible via PHYS_OFFSET.
+        let memmap_len = handoff.memory_map_size as u64;
+        if memmap_len != 0 {
+            let pml4_pa = current_pml4_phys();
+            let pml4_ptr = phys_to_virt_pa(pml4_pa) as *mut PageTable;
+            let pml4 = &mut *pml4_ptr;
+            let phys_page_base = handoff.memory_map_buffer_ptr & !(page_size - 1);
+            let offset_in_page = handoff.memory_map_buffer_ptr - phys_page_base;
+            let total = ((offset_in_page + memmap_len + page_size - 1) / page_size) * page_size;
+            map_range_with_policy(
+                pml4,
+                crate::memory::PHYS_OFFSET.wrapping_add(phys_page_base),
+                phys_page_base,
+                total,
+                PTE_PRESENT | PTE_WRITABLE,
+                &mut BootFrameAllocator::empty(),
+            );
+        }
+
         let pml4_pa = current_pml4_phys();
         let pml4_ptr = phys_to_virt_pa(pml4_pa) as *mut PageTable;
         let pml4 = &mut *pml4_ptr;
+        let mut persistent = physical_memory::PersistentFrameAllocator;
         map_range_with_policy(
             pml4,
             virt_base,
             phys_base,
             size_aligned,
             PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_NO_EXEC,
-            &mut temp_alloc,
+            &mut persistent,
         );
     }
 

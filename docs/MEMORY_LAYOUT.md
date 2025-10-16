@@ -319,7 +319,7 @@ unsafe fn zero_frame_safely(pa: u64) {
 0x0000000000000000 - 0x000000003FFFFFFF  Identity mapping (1GB)
 0xFFFFFFFF80000000 - 0xFFFFFFFF8003FFFF  Kernel image (256KB)
 0xFFFFFFFF80010000 - 0xFFFFFFFF8001FFFF  Temporary heap (64KB)
-0xFFFFFFFFB0000000 - 0xFFFFFFFFB000FFFF  Permanent heap (64KB)
+0xFFFFFFFFB0000000 - 0xFFFFFFFFB00FFFFF  Permanent heap (1MB)
 0xFFFFFFFF80030000 - 0xFFFFFFFF80033FFF  IST stacks (16KB)
 0xFFFFFFFF80040000 - 0xFFFFFFFF8004FFFF  Kernel stack (64KB)
 0xFFFFFFFFA0000000 - 0xFFFFFFFFA00FFFFF  Temp heap alt mapping (1MB)
@@ -341,149 +341,18 @@ unsafe fn zero_frame_safely(pa: u64) {
 0x0000000100000000 - 0x0000000FFFFFFFFF  Extended system RAM
 ```
 
-## Identity Mapping Dependencies (Still Using Low Virtual Addresses)
+## Physical Memory Manager
 
-While TheseusOS has successfully transitioned to high-half kernel operation, there are still several structures and operations that depend on identity mapping and will need to be migrated to upper virtual memory to completely eliminate identity mapping dependencies.
+The kernel now owns a persistent physical memory manager that tracks all frames
+after boot. Key points:
 
-### Current Identity Mapping Usage
+- Built from the UEFI memory map embedded in the handoff structure.
+- Maintains a bitmap over 4 KiB frames stored in the permanent kernel heap.
+- Marks frames consumed during boot (page tables, heap backing, stacks) so they
+  are not reused.
+- Exposes `alloc_frame()` / `free_frame()` for subsystems and offers a
+  `dump_state()` helper visible via the kernel monitor for diagnostics.
 
-#### 1. **Identity Mapping (First 1GB) - ACTIVE**
-**Location**: `0x0000000000000000 - 0x000000003FFFFFFF`
-**Purpose**: Early boot support, page table access, temporary operations
-**Status**: ⚠️ **Still Active** - Required for current operation
-
-**What's Still Using It**:
-- **Page Table Access**: `get_or_create_page_table_alloc()` still accesses page tables via physical addresses assuming identity mapping
-- **Early Frame Zeroing**: `zero_frame_safely()` falls back to identity writes when PHYS_OFFSET is not active
-- **Temporary Operations**: Various boot-time operations that haven't been migrated yet
-
-#### 2. **Bootloader Structures - MIXED**
-**Status**: 🔄 **Partially Migrated** - Some structures moved to high-half, others still in low memory
-
-**Still Using Low Addresses**:
-- **UEFI Memory Map**: Bootloader-provided memory map descriptors
-- **ACPI Tables**: RSDP and other ACPI structures
-- **Bootloader Data**: Some bootloader-initialized structures
-
-**Already Migrated to High-Half**:
-- **Temporary Heap**: Mapped at `0xFFFFFFFFA0000000`
-- **Framebuffer**: Mapped at `0xFFFFFFFF90000000`
-- **Kernel Image**: Fully mapped to high-half
-
-#### 3. **Page Table Operations - PARTIAL**
-**Status**: 🔄 **Partially Migrated** - Some operations use PHYS_OFFSET, others still use identity
-
-**Still Using Identity**:
-```rust
-// In get_or_create_page_table_alloc()
-if !entry.is_present() {
-    // This still assumes identity mapping for page table access
-    &mut *(pa as *mut PageTable)  // Direct physical address dereference
-}
-```
-
-**Already Using PHYS_OFFSET**:
-```rust
-// In zero_frame_safely()
-if phys_offset_is_active() {
-    zero_phys_range(pa, PAGE_SIZE as usize);  // Uses PHYS_OFFSET mapping
-}
-```
-
-### Migration Requirements for Complete Identity Removal
-
-#### 1. **Page Table Access Migration**
-**Current Issue**: Page table operations still dereference physical addresses directly
-**Required Changes**:
-```rust
-// BEFORE (identity-dependent)
-&mut *(pa as *mut PageTable)
-
-// AFTER (PHYS_OFFSET-dependent)
-&mut *(phys_to_virt_pa(pa) as *mut PageTable)
-```
-
-**Functions to Update**:
-- `get_or_create_page_table_alloc()` - All page table dereferences
-- `map_page_alloc()` - Page table traversal
-- `map_2mb_page_alloc()` - Page table traversal
-- Any other functions that access page tables via physical addresses
-
-#### 2. **Bootloader Structure Migration**
-**Current Issue**: Some bootloader-provided structures still accessed via low addresses
-**Required Changes**:
-- Map UEFI memory map buffer to high-half virtual address
-- Map ACPI tables to high-half virtual address
-- Update all references to use high-half virtual addresses
-
-#### 3. **Frame Zeroing Migration**
-**Current Issue**: Early boot frame zeroing still uses identity writes
-**Required Changes**:
-```rust
-// BEFORE (identity fallback)
-if phys_offset_is_active() {
-    zero_phys_range(pa, PAGE_SIZE);
-} else {
-    core::ptr::write_bytes(pa as *mut u8, 0, PAGE_SIZE);  // Identity write
-}
-
-// AFTER (PHYS_OFFSET only)
-zero_phys_range(pa, PAGE_SIZE);  // Always use PHYS_OFFSET
-```
-
-#### 4. **Memory Map Processing Migration**
-**Current Issue**: UEFI memory map processing still uses low addresses
-**Required Changes**:
-- Map UEFI memory map buffer to high-half
-- Update `BootFrameAllocator::from_handoff()` to use high-half addresses
-- Update all memory map descriptor access
-
-### Migration Strategy
-
-#### Phase 1: Page Table Operations
-1. **Update Page Table Access**: Modify all page table dereferences to use `phys_to_virt_pa()`
-2. **Test**: Ensure page table operations work correctly with PHYS_OFFSET only
-3. **Verify**: Page table creation, modification, and traversal
-
-#### Phase 2: Bootloader Structures
-1. **Map UEFI Memory Map**: Create high-half mapping for memory map buffer
-2. **Map ACPI Tables**: Create high-half mappings for ACPI structures
-3. **Update References**: Change all low-address references to high-half addresses
-4. **Test**: Ensure memory map processing and ACPI access work correctly
-
-#### Phase 3: Frame Operations
-1. **Remove Identity Fallback**: Eliminate identity write fallback in frame zeroing
-2. **Ensure PHYS_OFFSET Active**: Guarantee PHYS_OFFSET is active before any frame operations
-3. **Test**: Ensure frame allocation and zeroing work correctly
-
-#### Phase 4: Identity Mapping Removal
-1. **Remove Identity Mapping**: Unmap the first 1GB identity region
-2. **Final Testing**: Comprehensive testing of all memory operations
-3. **Cleanup**: Remove identity mapping code and constants
-
-### Benefits of Complete Identity Removal
-
-1. **Memory Safety**: Eliminates potential for accidental low-address access
-2. **Address Space**: Frees up 1GB of virtual address space for other uses
-3. **Consistency**: All kernel operations use high-half virtual addresses
-4. **Debugging**: Easier to identify stale low-address references
-5. **Future-Proofing**: Prepares for user-space implementation
-
-### Current Status Summary
-
-| Component | Status | Identity Dependency | Migration Priority |
-|-----------|--------|-------------------|-------------------|
-| Kernel Image | ✅ Complete | None | N/A |
-| IST Stacks | ✅ Complete | None | N/A |
-| Kernel Stack | ✅ Complete | None | N/A |
-| Temporary Heap | ✅ Complete | None | N/A |
-| Framebuffer | ✅ Complete | None | N/A |
-| Page Tables | 🔄 Partial | High | High |
-| Frame Zeroing | 🔄 Partial | Medium | Medium |
-| UEFI Memory Map | ❌ Not Started | High | High |
-| ACPI Tables | ❌ Not Started | Medium | Medium |
-| Identity Mapping | ⚠️ Active | N/A | Final |
-
-**Next Steps**: Focus on page table operations and UEFI memory map migration to eliminate the highest-priority identity dependencies.
-
-This memory layout provides a robust foundation for TheseusOS with proper isolation between kernel and user spaces, efficient frame allocation, and safety mechanisms to prevent critical structure starvation. The remaining identity mapping dependencies represent the final steps toward a fully high-half kernel architecture.
+Future extensions can add contiguous allocation support, zone tagging, and
+NUMA-awareness, but the current implementation already provides safe frame reuse
+post-boot.

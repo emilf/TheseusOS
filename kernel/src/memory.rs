@@ -51,6 +51,13 @@
 #![allow(dead_code)]
 #![allow(static_mut_refs)]
 
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+extern "C" {
+    fn after_high_half_entry() -> !;
+    fn continue_after_stack_switch() -> !;
+}
+
 /// Page table entry flags
 pub const PTE_PRESENT: u64 = 1 << 0; // Present
 pub const PTE_WRITABLE: u64 = 1 << 1; // Writable
@@ -105,7 +112,6 @@ pub struct MemoryManager {
     pml4_phys: u64,
     pub kernel_heap_start: u64,
     pub kernel_heap_end: u64,
-    pub frame_allocator: BootFrameAllocator,
 }
 // Simple global virt<->phys offset model for early paging
 static mut VIRT_PHYS_OFFSET: u64 = 0;
@@ -113,6 +119,109 @@ static mut VIRT_PHYS_OFFSET: u64 = 0;
 static mut PHYS_OFFSET_ACTIVE: bool = false;
 // Physical base of kernel image for page-table pool address translation
 static mut KERNEL_PHYS_BASE_FOR_POOL: u64 = 0;
+static ACTUAL_KERNEL_PHYS_BASE: AtomicU64 = AtomicU64::new(0);
+static RUNTIME_BASE_LOGGED: AtomicBool = AtomicBool::new(false);
+static ACTUAL_KERNEL_LOWER_GUARD: AtomicU64 = AtomicU64::new(0);
+
+const LOWER_IMAGE_GUARD_BYTES: u64 = 0x10000; // 64 KiB guard window
+
+/// Compute the runtime physical base of the kernel image.
+///
+/// The bootloader records a 2 MiB-aligned physical base in the handoff, but
+/// depending on relocation the actual runtime address of `kernel_entry` may
+/// fall below that alignment. This helper derives the true base by subtracting
+/// the entry’s offset within the image (computed during boot) from the current
+/// physical address of `kernel_entry`.
+pub fn runtime_kernel_phys_base(handoff: &theseus_shared::handoff::Handoff) -> u64 {
+    let cached = ACTUAL_KERNEL_PHYS_BASE.load(Ordering::Relaxed);
+    if cached != 0 {
+        return cached;
+    }
+
+    let raw_base = handoff.kernel_physical_base;
+    let virt_base = handoff.kernel_virtual_base;
+    let virt_entry = handoff.kernel_virtual_entry;
+
+    let entry_phys = crate::kernel_entry as usize as u64;
+    let stack_switch_phys = crate::stack::switch_to_kernel_stack_and_jump as usize as u64;
+    let disable_irqs_phys = crate::interrupts::disable_all_interrupts as usize as u64;
+    let setup_idt_phys = crate::interrupts::setup_idt as usize as u64;
+    let setup_gdt_phys = crate::gdt::setup_gdt as usize as u64;
+    let setup_ctrl_phys = crate::cpu::setup_control_registers as usize as u64;
+    let after_entry_phys = after_high_half_entry as usize as u64;
+    let cont_entry_phys = continue_after_stack_switch as usize as u64;
+
+    let mut min_phys = u64::MAX;
+    let mut consider = |addr: u64| {
+        if addr != 0 && addr < min_phys {
+            min_phys = addr;
+        }
+    };
+
+    consider(raw_base);
+    consider(entry_phys);
+    consider(after_entry_phys);
+    consider(cont_entry_phys);
+    consider(stack_switch_phys);
+    consider(disable_irqs_phys);
+    consider(setup_idt_phys);
+    consider(setup_gdt_phys);
+    consider(setup_ctrl_phys);
+
+    if min_phys == u64::MAX {
+        min_phys = raw_base;
+    }
+
+    let guard_limit = core::cmp::min(LOWER_IMAGE_GUARD_BYTES, min_phys);
+    let guard_pages = (guard_limit + (PAGE_SIZE as u64) - 1) / (PAGE_SIZE as u64);
+    let guard_bytes = core::cmp::min(guard_pages * PAGE_SIZE as u64, min_phys);
+
+    // Align down to 4KiB to match paging granularity and ensure we cover whole pages.
+    let base = min_phys
+        .saturating_sub(guard_bytes)
+        & !((PAGE_SIZE as u64) - 1);
+    if RUNTIME_BASE_LOGGED
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        crate::display::kernel_write_line("[runtime_phys_base] raw=");
+        theseus_shared::print_hex_u64_0xe9!(raw_base);
+        crate::display::kernel_write_line(" guard=");
+        theseus_shared::print_hex_u64_0xe9!(guard_bytes);
+        crate::display::kernel_write_line(" virt_base=");
+        theseus_shared::print_hex_u64_0xe9!(virt_base);
+        crate::display::kernel_write_line(" virt_entry=");
+        theseus_shared::print_hex_u64_0xe9!(virt_entry);
+        crate::display::kernel_write_line(" entry_phys=");
+        theseus_shared::print_hex_u64_0xe9!(entry_phys);
+        crate::display::kernel_write_line(" after_phys=");
+        theseus_shared::print_hex_u64_0xe9!(after_entry_phys);
+        crate::display::kernel_write_line(" cont_phys=");
+        theseus_shared::print_hex_u64_0xe9!(cont_entry_phys);
+        crate::display::kernel_write_line(" stack_switch_phys=");
+        theseus_shared::print_hex_u64_0xe9!(stack_switch_phys);
+        crate::display::kernel_write_line(" disable_irqs_phys=");
+        theseus_shared::print_hex_u64_0xe9!(disable_irqs_phys);
+        crate::display::kernel_write_line(" setup_idt_phys=");
+        theseus_shared::print_hex_u64_0xe9!(setup_idt_phys);
+        crate::display::kernel_write_line(" setup_gdt_phys=");
+        theseus_shared::print_hex_u64_0xe9!(setup_gdt_phys);
+        crate::display::kernel_write_line(" setup_ctrl_phys=");
+        theseus_shared::print_hex_u64_0xe9!(setup_ctrl_phys);
+        crate::display::kernel_write_line(" min_phys=");
+        theseus_shared::print_hex_u64_0xe9!(min_phys);
+        crate::display::kernel_write_line(" final=");
+        theseus_shared::print_hex_u64_0xe9!(base);
+        crate::display::kernel_write_line("\n");
+    }
+    ACTUAL_KERNEL_LOWER_GUARD.store(guard_bytes, Ordering::Relaxed);
+    ACTUAL_KERNEL_PHYS_BASE.store(base, Ordering::Relaxed);
+    base
+}
+
+pub fn runtime_kernel_lower_guard() -> u64 {
+    ACTUAL_KERNEL_LOWER_GUARD.load(Ordering::Relaxed)
+}
 
 // Early virt/phys helpers no longer used in HH path; keep for legacy/debug if needed
 #[allow(dead_code)]
@@ -241,10 +350,12 @@ impl MemoryManager {
     /// caller must ensure the provided `handoff` is valid.
     pub unsafe fn new(handoff: &theseus_shared::handoff::Handoff) -> Self {
         crate::display::kernel_write_line("  [vm/new] start");
+        let runtime_kernel_base = runtime_kernel_phys_base(handoff);
         // Make kernel phys base available (legacy var no longer used after pool removal)
-        KERNEL_PHYS_BASE_FOR_POOL = handoff.kernel_physical_base;
+        KERNEL_PHYS_BASE_FOR_POOL = runtime_kernel_base;
         // Initialize early frame allocator and allocate a fresh PML4 frame
         let mut early_frame_alloc = BootFrameAllocator::from_handoff(handoff);
+        early_frame_alloc.enable_tracking();
         // Reserve a small pool of frames for critical kernel structures (page
         // tables, IST stacks, etc.) so ephemeral allocations won't starve them.
         // This ensures that essential boot-time structures always have frames
@@ -258,6 +369,10 @@ impl MemoryManager {
         let pml4_frame = early_frame_alloc
             .allocate_frame()
             .expect("Out of frames for PML4");
+        crate::physical_memory::record_boot_consumed_region(crate::physical_memory::consumed(
+            pml4_frame.start_address().as_u64(),
+            PAGE_SIZE as u64,
+        ));
         let pml4_phys = pml4_frame.start_address().as_u64();
         // Zero the new PML4 frame using a helper that picks the correct method
         // depending on whether paging is active.
@@ -367,20 +482,21 @@ impl MemoryManager {
         let kernel_heap_start = KERNEL_HEAP_BASE;
         let kernel_heap_end = kernel_heap_start + KERNEL_HEAP_SIZE as u64;
 
+        // Collect frames allocated during boot so they can be marked used in the
+        // persistent allocator via `record_boot_consumed_region` during allocation.
+
         // Quick integrity checks (optional): ensure first entries are present
         if !pml4.entries[0].is_present() {
             panic!("PML4[0] not present");
         }
 
         // Done
-        let s = Self {
+        Self {
             pml4,
             pml4_phys,
             kernel_heap_start,
             kernel_heap_end,
-            frame_allocator: early_frame_alloc,
-        };
-        s
+        }
     }
 
     /// Get the page table root (CR3 value)
@@ -667,7 +783,7 @@ use x86_64::{
 // and mapping helpers. This improves maintainability and keeps a clear API
 // boundary between allocation and mapping logic.
 mod frame_allocator;
-pub use frame_allocator::BootFrameAllocator;
+pub use frame_allocator::{BootFrameAllocator, FrameSource};
 
 // Public API summary
 // ------------------
@@ -682,7 +798,7 @@ fn map_kernel_high_half_x86<M>(
 ) where
     M: Mapper<Size4KiB>,
 {
-    let phys_base = handoff.kernel_physical_base;
+    let phys_base = runtime_kernel_phys_base(handoff);
     let phys_size = handoff.kernel_image_size;
     if phys_base == 0 || phys_size == 0 {
         return;
@@ -750,9 +866,10 @@ fn map_temporary_heap_x86<M>(
 }
 
 /// Map the permanent kernel heap at KERNEL_HEAP_BASE using fresh frames
-pub fn map_kernel_heap_x86<M>(mapper: &mut M, frame_alloc: &mut BootFrameAllocator)
+pub fn map_kernel_heap_x86<M, F>(mapper: &mut M, frame_alloc: &mut F)
 where
     M: Mapper<Size4KiB>,
+    F: FrameAllocator<Size4KiB>,
 {
     use x86_64::structures::paging::PageTableFlags as F;
     let pages = (KERNEL_HEAP_SIZE as u64 + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64;
@@ -810,7 +927,7 @@ where
 {
     crate::display::kernel_write_line("[dbg] unmap_identity_kernel_x86: begin\n");
     // Trait not needed for direct calls here
-    let phys_base = handoff.kernel_physical_base;
+    let phys_base = runtime_kernel_phys_base(handoff);
     let phys_size = handoff.kernel_image_size;
     if phys_base == 0 || phys_size == 0 {
         return;
