@@ -113,7 +113,6 @@ pub extern "C" fn kernel_entry(handoff_addr: u64) -> ! {
                 crate::environment::setup_kernel_environment(
                     handoff,
                     handoff.kernel_physical_base,
-                    crate::config::VERBOSE_KERNEL_OUTPUT,
                 );
             } else {
                 log_error!("ERROR: Handoff structure has invalid size");

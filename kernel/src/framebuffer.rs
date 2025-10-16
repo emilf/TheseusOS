@@ -3,7 +3,7 @@
 //! This module provides functions for drawing to the framebuffer, including
 //! pixel manipulation and simple graphics primitives.
 
-use crate::log_trace;
+use crate::{log_debug, log_info, log_trace};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use theseus_shared::handoff::Handoff;
 
@@ -93,9 +93,9 @@ unsafe fn draw_pixel_bgra(
     height: usize,
     stride: usize,
     bgra_color: u32,
-    verbose: bool,
 ) {
-    if verbose
+    const DEBUG_PIXELS: bool = false;  // Set to true to trace specific pixels
+    if DEBUG_PIXELS
         && ((x == 100 && y == 50)
             || (x == 200 && y == 50)
             || (x == 300 && y == 50)
@@ -125,7 +125,6 @@ unsafe fn draw_pixel(
     height: usize,
     stride: usize,
     color: u8,
-    verbose: bool,
 ) {
     // Convert simple color to BGRA (Blue-Green-Red-Alpha)
     let bgra_color = match color {
@@ -134,7 +133,7 @@ unsafe fn draw_pixel(
         COLOR_GRAY => create_bgra_color(0x80, 0x80, 0x80, 0xFF),  // Gray (B=80, G=80, R=80, A=FF)
         _ => create_bgra_color(color, color, color, 0xFF),        // Grayscale
     };
-    draw_pixel_bgra(x, y, width, height, stride, bgra_color, verbose);
+    draw_pixel_bgra(x, y, width, height, stride, bgra_color);
 }
 
 /// Clear a rectangular area
@@ -148,21 +147,8 @@ unsafe fn clear_area(
     fb_height: usize,
     fb_stride: usize,
     color: u8,
-    verbose: bool,
 ) {
-    if verbose {
-        theseus_shared::qemu_print!("clear_area called: (");
-        theseus_shared::print_hex_u64_0xe9!(x as u64);
-        theseus_shared::qemu_print!(",");
-        theseus_shared::print_hex_u64_0xe9!(y as u64);
-        theseus_shared::qemu_print!(") size ");
-        theseus_shared::print_hex_u64_0xe9!(width as u64);
-        theseus_shared::qemu_print!("x");
-        theseus_shared::print_hex_u64_0xe9!(height as u64);
-        theseus_shared::qemu_print!(" color=");
-        theseus_shared::print_hex_u64_0xe9!(color as u64);
-        theseus_shared::qemu_println!("");
-    }
+    log_trace!("clear_area called: ({},{}) size {}x{} color={:#x}", x, y, width, height, color);
 
     for dy in 0..height {
         for dx in 0..width {
@@ -173,7 +159,6 @@ unsafe fn clear_area(
                 fb_height,
                 fb_stride,
                 color,
-                verbose,
             );
         }
     }
@@ -188,13 +173,14 @@ unsafe fn draw_heart(
     height: usize,
     stride: usize,
     color: u8,
-    verbose: bool,
 ) {
+    log_trace!("Drawing heart at ({},{}) size 16x16", x, y);
+
     for row in 0..HEART_SIZE {
         let pattern_row = HEART_PATTERN[row];
         for col in 0..HEART_SIZE {
             if (pattern_row & (1 << (15 - col))) != 0 {
-                draw_pixel(x + col, y + row, width, height, stride, color, verbose);
+                draw_pixel(x + col, y + row, width, height, stride, color);
             }
         }
     }
@@ -233,12 +219,11 @@ pub unsafe fn update_heart_animation(handoff: &Handoff) {
             height,
             stride,
             COLOR_BLACK,
-            false,
         );
 
         // Draw heart if visible
         if !visible {
-            draw_heart(heart_x, heart_y, width, height, stride, COLOR_RED, false);
+            draw_heart(heart_x, heart_y, width, height, stride, COLOR_RED);
         }
     }
 }
@@ -250,11 +235,9 @@ pub fn init_framebuffer_drawing() {
 }
 
 /// Draw an initial heart pattern (call this once during kernel init)
-pub unsafe fn draw_initial_heart(handoff: &Handoff, verbose: bool) {
+pub unsafe fn draw_initial_heart(handoff: &Handoff) {
     if handoff.gop_fb_base == 0 || handoff.gop_width == 0 || handoff.gop_height == 0 {
-        if verbose {
-            theseus_shared::qemu_println!("No framebuffer available");
-        }
+        log_debug!("No framebuffer available");
         return;
     }
 
@@ -266,40 +249,21 @@ pub unsafe fn draw_initial_heart(handoff: &Handoff, verbose: bool) {
     let fb_base = handoff.gop_fb_base;
     let fb_size = handoff.gop_fb_size;
 
-    if verbose {
-        theseus_shared::qemu_print!("Framebuffer: ");
-        theseus_shared::print_hex_u64_0xe9!(width as u64);
-        theseus_shared::qemu_print!("x");
-        theseus_shared::print_hex_u64_0xe9!(height as u64);
-        theseus_shared::qemu_print!(", stride: ");
-        theseus_shared::print_hex_u64_0xe9!(stride as u64);
-        theseus_shared::qemu_print!(", format: ");
-        theseus_shared::print_hex_u64_0xe9!(pixel_format as u64);
-        theseus_shared::qemu_print!(", base: 0x");
-        theseus_shared::print_hex_u64_0xe9!(fb_base);
-        theseus_shared::qemu_print!(", size: ");
-        theseus_shared::print_hex_u64_0xe9!(fb_size);
-        theseus_shared::qemu_println!("");
+    log_info!(
+        "Framebuffer: {}x{}, stride: {}, format: {}, base: {:#x}, size: {:#x}",
+        width, height, stride, pixel_format, fb_base, fb_size
+    );
 
-        // Calculate bytes per pixel from handoff data
-        let bytes_per_pixel = stride / width;
-        theseus_shared::qemu_print!("Bytes per pixel: ");
-        theseus_shared::print_hex_u64_0xe9!(bytes_per_pixel as u64);
-        theseus_shared::qemu_println!("");
-    }
+    // Calculate bytes per pixel from handoff data
+    let bytes_per_pixel = stride / width;
+    log_debug!("Bytes per pixel: {}", bytes_per_pixel);
 
     // Position heart in upper right corner using constants
     let heart_x = width - HEART_SIZE - HEART_MARGIN_RIGHT;
     let heart_y = HEART_MARGIN_TOP;
 
-    if verbose {
-        theseus_shared::qemu_print!("Heart at (");
-        theseus_shared::print_hex_u64_0xe9!(heart_x as u64);
-        theseus_shared::qemu_print!(",");
-        theseus_shared::print_hex_u64_0xe9!(heart_y as u64);
-        theseus_shared::qemu_println!(") size 16x16");
-    }
+    log_debug!("Heart at ({},{}) size 16x16", heart_x, heart_y);
 
     // Draw the initial heart in the upper right corner
-    draw_heart(heart_x, heart_y, width, height, stride, COLOR_RED, verbose);
+    draw_heart(heart_x, heart_y, width, height, stride, COLOR_RED);
 }

@@ -3,9 +3,25 @@
 //! These macros centralize low-level I/O port sequences so callers can
 //! print to QEMU's debug port (0xE9) and exit via isa-debug-exit (0xF4)
 //! without duplicating inline assembly.
+//!
+//! # Deprecation Notice
+//!
+//! These macros are **deprecated for kernel use**. The kernel now uses a unified
+//! logging subsystem (`kernel/src/logging/`) with proper log levels, filtering,
+//! and structured output. These macros are kept for:
+//!
+//! - **Bootloader use**: UEFI bootloader still uses these (will be migrated later)
+//! - **Low-level instrumentation**: Useful for debugging bare-metal code
+//! - **Compatibility**: Ensures existing code continues to work
+//!
+//! For kernel code, use instead:
+//! - `log_error!()`, `log_warn!()`, `log_info!()`, `log_debug!()`, `log_trace!()`
 
 #[macro_export]
 /// Print a string to QEMU debug port (0xE9)
+///
+/// **DEPRECATED**: Use `log_info!()` or `log_debug!()` in kernel code instead.
+/// This macro is kept for bootloader use and low-level instrumentation.
 ///
 /// This macro outputs each byte of the string to the QEMU debug port using
 /// the x86 OUT instruction. QEMU captures this output and displays it in
@@ -34,6 +50,9 @@ macro_rules! qemu_print {
 #[macro_export]
 /// Print raw bytes to QEMU debug port (0xE9)
 ///
+/// **DEPRECATED**: Use `log_trace!()` or `log_debug!()` with `{:02x?}` format in kernel code.
+/// This macro is kept for bootloader use and low-level instrumentation.
+///
 /// This macro outputs each byte from a byte slice to the QEMU debug port.
 /// Useful for printing binary data or when you already have bytes.
 ///
@@ -60,6 +79,9 @@ macro_rules! qemu_print_bytes {
 #[macro_export]
 /// Print a string followed by a newline to QEMU debug port (0xE9)
 ///
+/// **DEPRECATED**: Use `log_info!()` or other log macros in kernel code.
+/// This macro is kept for bootloader use and low-level instrumentation.
+///
 /// This macro prints the string and then outputs a newline character (0x0A)
 /// to create a complete line of output.
 ///
@@ -83,6 +105,9 @@ macro_rules! qemu_println {
 #[macro_export]
 /// Output a single byte to QEMU debug port (0xE9)
 ///
+/// **DEPRECATED**: Use logging macros in kernel code instead.
+/// This macro is kept for bootloader use and low-level instrumentation.
+///
 /// This macro outputs a single byte to the QEMU debug port. Useful for
 /// outputting individual characters or control bytes.
 ///
@@ -105,6 +130,10 @@ macro_rules! out_char_0xe9 {
 }
 
 #[macro_export]
+/// Print a 64-bit value in hexadecimal format to QEMU debug port
+///
+/// **DEPRECATED**: Use `log_debug!("{:#x}", value)` in kernel code.
+/// This macro is kept for bootloader use and low-level instrumentation.
 macro_rules! print_hex_u64_0xe9 {
     ($value:expr) => {{
         let mut v: u64 = $value as u64;

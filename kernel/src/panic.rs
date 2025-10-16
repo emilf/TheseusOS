@@ -24,16 +24,14 @@ pub fn panic_handler(panic_info: &core::panic::PanicInfo) -> ! {
     // Output panic information using direct QEMU debug port
     // Note: We avoid using the allocator during panic to prevent recursive panics
 
-    // Use raw QEMU output in panic handler (allocation-free, safe for critical errors)
-    theseus_shared::qemu_println!("KERNEL PANIC: Panic occurred");
+    // Use logging system in panic handler - it's allocation-free with stack buffers
+    use crate::log_error;
+    log_error!("KERNEL PANIC: Panic occurred");
     if let Some(location) = panic_info.location() {
-        theseus_shared::qemu_println!("  location:");
-        theseus_shared::qemu_println!(location.file());
-        theseus_shared::qemu_print!("  line = 0x");
-        theseus_shared::print_hex_u64_0xe9!(location.line() as u64);
-        theseus_shared::qemu_println!("");
+        log_error!("  location: {}", location.file());
+        log_error!("  line: {}", location.line());
     }
-    theseus_shared::qemu_println!("  panic payload (type info only)");
+    log_error!("  panic payload (type info only)");
 
     theseus_shared::qemu_exit_error!();
 

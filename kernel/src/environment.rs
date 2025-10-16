@@ -364,7 +364,7 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
         // Get handoff from the global static that was set in main
         // TODO: Make it not use handoff for this.
         if let Some(handoff) = crate::interrupts::get_handoff_for_timer() {
-            crate::framebuffer::draw_initial_heart(handoff, false);
+            crate::framebuffer::draw_initial_heart(handoff);
         }
     }
 
@@ -458,7 +458,7 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
 /// - UEFI boot services have been exited (no firmware calls after this)
 /// - Kernel physical base address is accurate
 /// - No concurrent execution (single-threaded environment)
-pub fn setup_kernel_environment(_handoff: &Handoff, _kernel_physical_base: u64, _verbose: bool) {
+pub fn setup_kernel_environment(_handoff: &Handoff, _kernel_physical_base: u64) {
     log_info!("=== Setting up Kernel Environment ===");
 
     // 1. Disable all interrupts first (including NMI)

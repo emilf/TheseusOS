@@ -4,7 +4,7 @@
 //! It handles formatted output to the QEMU debug port and provides utilities for
 //! displaying handoff structure contents in a readable format.
 
-use crate::{log_info, log_trace};
+use crate::log_trace;
 use theseus_shared::handoff::Handoff;
 
 /// Print key/value pair with hex value
@@ -129,31 +129,18 @@ pub fn dump_handoff_bytes(ptr: *const u8, size: usize) {
     log_trace!("Handoff raw bytes (hex):");
     let mut offset: usize = 0;
     while offset < size {
-        // print offset
-        theseus_shared::qemu_print!("+");
-        theseus_shared::print_hex_u64_0xe9!(offset as u64);
-        theseus_shared::qemu_print!(": ");
-        let mut i = 0;
-        while i < 16 && (offset + i) < size {
-            let b = unsafe { core::ptr::read_volatile(ptr.add(offset + i)) } as u64;
-            if i > 0 {
-                theseus_shared::qemu_print!(" ");
-            }
-            // two hex digits
-            let hi = ((b >> 4) & 0xF) as u8;
-            let lo = (b & 0xF) as u8;
-            let to_ch = |n: u8| -> u8 {
-                if n < 10 {
-                    b'0' + n
-                } else {
-                    b'A' + (n - 10)
-                }
-            };
-            theseus_shared::out_char_0xe9!(to_ch(hi));
-            theseus_shared::out_char_0xe9!(to_ch(lo));
-            i += 1;
+        // Collect 16 bytes for this line
+        let mut line_bytes = [0u8; 16];
+        let mut count = 0;
+        while count < 16 && (offset + count) < size {
+            line_bytes[count] = unsafe { core::ptr::read_volatile(ptr.add(offset + count)) };
+            count += 1;
         }
-        theseus_shared::qemu_println!("");
+        
+        // Log the line
+        if count > 0 {
+            log_trace!("  +{:#06x}: {:02x?}", offset, &line_bytes[..count]);
+        }
         offset += 16;
     }
 }
