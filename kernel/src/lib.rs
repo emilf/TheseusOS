@@ -33,7 +33,6 @@ pub mod stack;
 pub mod config;
 
 // Re-export commonly used types and functions
-pub use display::kernel_write_line; // Kept for compatibility, migrating to log_* macros
 pub use environment::setup_kernel_environment;
 pub use handoff::{set_handoff_pointers, validate_handoff};
 

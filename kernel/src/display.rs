@@ -4,20 +4,8 @@
 //! It handles formatted output to the QEMU debug port and provides utilities for
 //! displaying handoff structure contents in a readable format.
 
-use crate::{log_debug, log_info, log_trace};
+use crate::{log_info, log_trace};
 use theseus_shared::handoff::Handoff;
-
-/// Simple kernel output function that writes directly to QEMU debug port
-///
-/// This function provides a simple way to output text from the kernel to the
-/// QEMU debug port (0xE9). It's used for kernel logging and debug output.
-///
-/// # Parameters
-///
-/// * `message` - The message string to output
-pub fn kernel_write_line(message: &str) {
-    theseus_shared::qemu_println!(message);
-}
 
 /// Print key/value pair with hex value
 ///
@@ -168,29 +156,6 @@ pub fn dump_handoff_bytes(ptr: *const u8, size: usize) {
         theseus_shared::qemu_println!("");
         offset += 16;
     }
-}
-
-/// Old summary function kept for reference; not used by default
-#[allow(dead_code)]
-pub fn display_handoff_info(_handoff: &Handoff) {
-    log_info!("┌─────────────────────────────────────────────────────────┐");
-    log_info!("│                Kernel Handoff Information               │");
-    log_info!("├─────────────────────────────────────────────────────────┤");
-    log_info!("│ Handoff Size: Available");
-    log_info!("│ Memory Map Entries: Available");
-    log_info!("│ Memory Map Size: Available");
-    log_info!("│ Memory Map Buffer: Available");
-    log_info!("│ ACPI RSDP: Available");
-    log_info!("│ Framebuffer: Available");
-    log_info!("│ Hardware Devices: Available");
-    log_info!("│");
-    log_info!("│ Virtual Memory Information:");
-    log_info!("│   Virtual Base: Available");
-    log_info!("│   Physical Base: Available");
-    log_info!("│   Virtual Entry: Available");
-    log_info!("│   Page Table Root: Available");
-    log_info!("│   Virtual Memory: Available");
-    log_info!("└─────────────────────────────────────────────────────────┘");
 }
 
 pub fn kernel_write_serial(msg: &str) {
