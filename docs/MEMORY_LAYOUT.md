@@ -266,6 +266,38 @@ pub struct BootFrameAllocator {
    let frame = allocator.allocate_frame();  // From general pool
    ```
 
+### Persistent Physical Memory Manager
+
+After the permanent heap is mapped and the global allocator switches away from UEFI services, Theseus hands frame ownership to a bitmap-backed manager that survives for the life of the kernel.
+
+#### Bootstrap Sequence
+
+1. **Collect boot-time usage** – every frame consumed while the boot allocator was live is recorded via `record_boot_consumed_region`. When the persistent manager is about to come online we drain that log so those PFNs are immediately marked in-use.
+2. **Allocate bitmap backing** – a closure passed to `init_from_handoff` grabs a contiguous run of frames (with the still-active `BootFrameAllocator`), zeros them through `PHYS_OFFSET`, and records them as consumed before the boot allocator disappears.
+3. **Build the bitmap allocator** – `PhysicalMemoryManager::new` computes the lowest usable PFN (dropping a 64 KiB guard under the earliest runtime symbol), seeds the bitmap, and reserves every region the UEFI map marked non-conventional alongside the boot-consumed ranges.
+
+#### API Surface
+
+```rust
+// After permanent heap is ready:
+let consumed = physical_memory::drain_boot_consumed();
+physical_memory::init_from_handoff(handoff, &consumed, bitmap_provider)?;
+
+// Runtime allocations:
+let pa = physical_memory::alloc_frame()?;
+physical_memory::free_frame(pa)?;
+
+// Paging helpers can borrow a FrameAllocator implementation:
+let mut persistent = physical_memory::PersistentFrameAllocator;
+mapper.map_to(page, frame, flags, &mut persistent)?;
+```
+
+`physical_memory::dump_state()` produces a quick summary (base PFN, total and free frame counts) that can be wired into the monitor.
+
+#### Guarded Lower PFN
+
+The runtime base finder measures the physical addresses of `kernel_entry`, the high-half trampoline, stack-switch helpers, and other early routines, then subtracts a 64 KiB guard window before initialising the bitmap. This keeps helper code that was linked just below the 2 MiB-aligned handoff base mapped and prevents it from being recycled accidentally.
+
 ### Frame Zeroing Strategy
 
 Frames are zeroed using the appropriate method based on paging state:
@@ -280,6 +312,14 @@ unsafe fn zero_frame_safely(pa: u64) {
         core::ptr::write_bytes(pa as *mut u8, 0, PAGE_SIZE);
     }
 }
+
+## Physical Memory Manager Summary
+
+- Boot allocations are tracked via the consumed-region log; draining that list before initialisation ensures the persistent bitmap never hands out frames that were used to reach the high half.
+- A dedicated bitmap backing store is allocated with the boot allocator, zeroed, and immediately added to the consumed set so the persistent manager owns it without touching the new heap.
+- `PersistentFrameAllocator` exposes the `FrameAllocator<Size4KiB>` trait, letting existing paging helpers request frames from the long-lived pool with no code changes.
+- Direct helpers (`alloc_frame`, `free_frame`, `dump_state`) provide PFN-level access for subsystems that want to work with raw physical addresses.
+- The 64 KiB lower guard keeps the helper routines that sit just below the handoff-aligned kernel base mapped and out of the free list.
 ```
 
 ## Memory Safety Features
