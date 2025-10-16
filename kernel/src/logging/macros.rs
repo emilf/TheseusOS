@@ -57,8 +57,9 @@
 #[macro_export]
 macro_rules! log_error {
     ($($arg:tt)*) => {{
-        static mut FORMAT_BUF: [u8; 256] = [0u8; 256];
+        #[allow(static_mut_refs, unused_unsafe)]
         unsafe {
+            static mut FORMAT_BUF: [u8; 256] = [0u8; 256];
             use core::fmt::Write;
             use core::ptr::addr_of_mut;
             let buf_ptr = addr_of_mut!(FORMAT_BUF);
@@ -98,8 +99,9 @@ macro_rules! log_error {
 #[macro_export]
 macro_rules! log_warn {
     ($($arg:tt)*) => {{
-        static mut FORMAT_BUF: [u8; 256] = [0u8; 256];
+        #[allow(static_mut_refs, unused_unsafe)]
         unsafe {
+            static mut FORMAT_BUF: [u8; 256] = [0u8; 256];
             use core::fmt::Write;
             use core::ptr::addr_of_mut;
             let buf_ptr = addr_of_mut!(FORMAT_BUF);
@@ -139,8 +141,9 @@ macro_rules! log_warn {
 #[macro_export]
 macro_rules! log_info {
     ($($arg:tt)*) => {{
-        static mut FORMAT_BUF: [u8; 256] = [0u8; 256];
+        #[allow(static_mut_refs, unused_unsafe)]
         unsafe {
+            static mut FORMAT_BUF: [u8; 256] = [0u8; 256];
             use core::fmt::Write;
             use core::ptr::addr_of_mut;
             let buf_ptr = addr_of_mut!(FORMAT_BUF);
@@ -180,8 +183,9 @@ macro_rules! log_info {
 #[macro_export]
 macro_rules! log_debug {
     ($($arg:tt)*) => {{
-        static mut FORMAT_BUF: [u8; 256] = [0u8; 256];
+        #[allow(static_mut_refs, unused_unsafe)]
         unsafe {
+            static mut FORMAT_BUF: [u8; 256] = [0u8; 256];
             use core::fmt::Write;
             use core::ptr::addr_of_mut;
             let buf_ptr = addr_of_mut!(FORMAT_BUF);
@@ -230,8 +234,9 @@ macro_rules! log_debug {
 #[macro_export]
 macro_rules! log_trace {
     ($($arg:tt)*) => {{
-        static mut FORMAT_BUF: [u8; 256] = [0u8; 256];
+        #[allow(static_mut_refs, unused_unsafe)]
         unsafe {
+            static mut FORMAT_BUF: [u8; 256] = [0u8; 256];
             use core::fmt::Write;
             use core::ptr::addr_of_mut;
             let buf_ptr = addr_of_mut!(FORMAT_BUF);

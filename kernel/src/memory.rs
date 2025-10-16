@@ -51,6 +51,7 @@
 #![allow(dead_code)]
 #![allow(static_mut_refs)]
 
+use crate::{log_debug, log_error, log_trace};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 extern "C" {
@@ -349,7 +350,7 @@ impl MemoryManager {
     /// identity physical memory writes while paging is not yet active. The
     /// caller must ensure the provided `handoff` is valid.
     pub unsafe fn new(handoff: &theseus_shared::handoff::Handoff) -> Self {
-        crate::display::kernel_write_line("  [vm/new] start");
+        log_debug!("MemoryManager::new() start");
         let runtime_kernel_base = runtime_kernel_phys_base(handoff);
         // Make kernel phys base available (legacy var no longer used after pool removal)
         KERNEL_PHYS_BASE_FOR_POOL = runtime_kernel_base;
@@ -363,9 +364,7 @@ impl MemoryManager {
         // heavy mapping operations.
         const RESERVED_FOR_CRITICAL: usize = 16;
         let reserved = early_frame_alloc.reserve_frames(RESERVED_FOR_CRITICAL);
-        crate::display::kernel_write_line("  [fa] reserved frames=");
-        theseus_shared::print_hex_u64_0xe9!(reserved as u64);
-        crate::display::kernel_write_line("\n");
+        log_trace!("Reserved frames: {}", reserved);
         let pml4_frame = early_frame_alloc
             .allocate_frame()
             .expect("Out of frames for PML4");
@@ -379,14 +378,14 @@ impl MemoryManager {
         zero_frame_safely(pml4_phys);
 
         let pml4: &mut PageTable = &mut *(pml4_phys as *mut PageTable);
-        crate::display::kernel_write_line("  [vm/new] got pml4");
+        log_trace!("Got PML4");
 
         // Identity map first 1 GiB
         {
-            crate::display::kernel_write_line("  [vm/new] id-map 1GiB begin");
+            log_debug!("Identity-mapping 1GiB begin");
             // Bootstrap identity map using frame-backed tables
             identity_map_first_1gb_2mb_alloc(pml4, &mut early_frame_alloc);
-            crate::display::kernel_write_line("  [vm/new] id-map 1GiB done");
+            log_debug!("Identity-mapping 1GiB done");
         }
         // legacy path removed
 
@@ -394,15 +393,14 @@ impl MemoryManager {
 
         // Map the kernel image high-half
         {
-            crate::display::kernel_write_line("  [vm/new] map kernel HH begin");
+            log_debug!("Mapping kernel high-half begin");
             // Map kernel code/data into the high-half using 4KiB pages with frame allocator
             map_kernel_high_half_4k_alloc(pml4, handoff, &mut early_frame_alloc);
-            crate::display::kernel_write_line("  [vm/new] map kernel HH done");
+            log_debug!("Mapping kernel high-half done");
             let hh_index = ((KERNEL_VIRTUAL_BASE >> 39) & 0x1FF) as usize;
             let pml4_addr = pml4 as *mut PageTable as u64;
             let entry_val = core::ptr::read_volatile((pml4_addr as *const u64).add(hh_index));
-            // PML4[HH] -- high-half mapping for kernel (debug left minimal)
-            theseus_shared::print_hex_u64_0xe9!(entry_val);
+            log_trace!("PML4[HH] entry={:#x}", entry_val);
             if entry_val == 0 {
                 // Force-create HH PDPT so the entry is present
                 let _ = get_or_create_page_table_alloc(
@@ -410,36 +408,34 @@ impl MemoryManager {
                     &mut early_frame_alloc,
                 );
                 let entry_val2 = core::ptr::read_volatile((pml4_addr as *const u64).add(hh_index));
-                crate::display::kernel_write_line("  [vm/new] PML4[HH] forced=");
-                theseus_shared::print_hex_u64_0xe9!(entry_val2);
-                crate::display::kernel_write_line("\n");
+                log_trace!("PML4[HH] forced={:#x}", entry_val2);
             }
         }
         // legacy path removed
 
         // Map framebuffer and temp heap using frame allocator
         {
-            crate::display::kernel_write_line("  [vm/new] map fb/heap begin");
+            log_debug!("Mapping framebuffer/heap begin");
             if handoff.gop_fb_base != 0 {
                 map_framebuffer_alloc(pml4, handoff, &mut early_frame_alloc);
             }
             if handoff.temp_heap_base != 0 {
                 map_temporary_heap_alloc(pml4, handoff, &mut early_frame_alloc);
             }
-            crate::display::kernel_write_line("  [vm/new] map fb/heap done");
+            log_debug!("Mapping framebuffer/heap done");
         }
         if crate::config::MAP_LEGACY_PHYS_OFFSET_1GIB {
-            crate::display::kernel_write_line("  [vm/new] map phys_offset 1GiB begin");
+            log_debug!("Mapping PHYS_OFFSET 1GiB begin");
             mapping::map_phys_offset_1gb_2mb_alloc(pml4, &mut early_frame_alloc);
-            crate::display::kernel_write_line("  [vm/new] map phys_offset 1GiB done");
+            log_debug!("Mapping PHYS_OFFSET 1GiB done");
         } else {
-            crate::display::kernel_write_line("  [vm/new] map phys_offset 64MiB begin");
+            log_debug!("Mapping PHYS_OFFSET 64MiB begin");
             mapping::map_phys_offset_range_2mb_alloc(
                 pml4,
                 &mut early_frame_alloc,
                 64 * 1024 * 1024,
             );
-            crate::display::kernel_write_line("  [vm/new] map phys_offset 64MiB done");
+            log_debug!("Mapping PHYS_OFFSET 64MiB done");
             let memmap_len = handoff.memory_map_size as usize;
             if memmap_len > 0 {
                 let page_size = PAGE_SIZE as u64;
@@ -466,16 +462,16 @@ impl MemoryManager {
 
         // Map LAPIC MMIO region (0xFEE00000-0xFEEFFFFF)
         {
-            crate::display::kernel_write_line("  [vm/new] map LAPIC MMIO begin");
+            log_debug!("Mapping LAPIC MMIO begin");
             map_lapic_mmio_alloc(pml4, &mut early_frame_alloc);
-            crate::display::kernel_write_line("  [vm/new] map LAPIC MMIO done");
+            log_debug!("Mapping LAPIC MMIO done");
         }
 
         // Map IO APIC MMIO region (0xFEC00000-0xFECFFFFF)
         {
-            crate::display::kernel_write_line("  [vm/new] map IO APIC MMIO begin");
+            log_debug!("Mapping IO APIC MMIO begin");
             mapping::map_io_apic_mmio_alloc(pml4, &mut early_frame_alloc);
-            crate::display::kernel_write_line("  [vm/new] map IO APIC MMIO done");
+            log_debug!("Mapping IO APIC MMIO done");
         }
 
         let kernel_heap_start = KERNEL_HEAP_BASE;
@@ -523,13 +519,9 @@ impl MemoryManager {
         core::arch::asm!("lea {}, [rip + 0]", out(reg) rip_now, options(nostack));
 
         if rip_now >= virt_base {
-            if verbose {
-                crate::display::kernel_write_line("  [hh] already in high-half, skipping jump\n");
-            }
+            log_debug!("Already in high-half, skipping jump");
             // Safety: caller shouldn't call this when already in high-half; abort
-            theseus_shared::qemu_println!(
-                "PANIC: jump_to_high_half invoked while already in high-half"
-            );
+            log_error!("PANIC: jump_to_high_half invoked while already in high-half");
             theseus_shared::qemu_exit_error!();
             panic!("jump_to_high_half invoked while already in high-half");
         }
@@ -541,16 +533,10 @@ impl MemoryManager {
             .wrapping_add(KERNEL_VIRTUAL_BASE);
 
         if verbose {
-            crate::display::kernel_write_line("  [hh] jump info: ");
-            crate::display::kernel_write_line(" phys_base=");
-            theseus_shared::print_hex_u64_0xe9!(phys_base);
-            crate::display::kernel_write_line(" rip_now=");
-            theseus_shared::print_hex_u64_0xe9!(rip_now);
-            crate::display::kernel_write_line(" sym=");
-            theseus_shared::print_hex_u64_0xe9!(sym);
-            crate::display::kernel_write_line(" target=");
-            theseus_shared::print_hex_u64_0xe9!(target);
-            crate::display::kernel_write_line("\n");
+            log_trace!(
+                "Jump info: phys_base={:#x} rip_now={:#x} sym={:#x} target={:#x}",
+                phys_base, rip_now, sym, target
+            );
         }
 
         // Verify mapping for target before performing jump
@@ -564,35 +550,23 @@ impl MemoryManager {
         let pml4_entry_val =
             unsafe { core::ptr::read_volatile((pml4_pa as *const u64).add(hh_index)) };
         if pml4_entry_val == 0 {
-            theseus_shared::qemu_println!(
-                "PANIC: PML4[HH] entry is zero; high-half may not be mapped"
-            );
-            crate::display::kernel_write_line("PML4 physical=");
-            theseus_shared::print_hex_u64_0xe9!(pml4_pa);
-            crate::display::kernel_write_line("\n");
+            log_error!("PANIC: PML4[HH] entry is zero; high-half may not be mapped");
+            log_error!("PML4 physical={:#x}", pml4_pa);
             theseus_shared::qemu_exit_error!();
             panic!("PML4[HH] entry is zero");
         }
 
         let phys = mapper.translate_addr(VirtAddr::new(target));
         if let Some(pa) = phys {
-            if verbose {
-                crate::display::kernel_write_line("  [hh] target physical=");
-                theseus_shared::print_hex_u64_0xe9!(pa.as_u64());
-                crate::display::kernel_write_line("\n");
-            }
+            log_trace!("Target physical={:#x}", pa.as_u64());
         } else {
-            theseus_shared::qemu_println!("PANIC: high-half target translation returned NONE");
-            crate::display::kernel_write_line("target virtual=");
-            theseus_shared::print_hex_u64_0xe9!(target);
-            crate::display::kernel_write_line("\n");
+            log_error!("PANIC: high-half target translation returned NONE");
+            log_error!("Target virtual={:#x}", target);
             theseus_shared::qemu_exit_error!();
             panic!("high-half target not mapped");
         }
 
-        if verbose {
-            crate::display::kernel_write_line("  [hh] jumping to high-half (verified)");
-        }
+        log_debug!("Jumping to high-half (verified)");
 
         // Perform the non-returning jump into high-half
         core::arch::asm!(
@@ -883,12 +857,12 @@ where
                     flush.flush();
                 }
                 Err(_e) => {
-                    crate::display::kernel_write_line("  [vm] kernel heap map: mapping failed");
+                    log_error!("Kernel heap map: mapping failed");
                     break;
                 }
             }
         } else {
-            crate::display::kernel_write_line("  [vm] kernel heap map: out of frames");
+            log_error!("Kernel heap map: out of frames");
             break;
         }
     }
@@ -915,7 +889,7 @@ where
             flush.flush();
         }
     }
-    crate::display::kernel_write_line("[dbg] unmap_temporary_heap_x86: done\n");
+    log_debug!("unmap_temporary_heap_x86: done");
 }
 
 /// Unmap the identity-mapped kernel image range at low VA to catch stale low-VA uses
@@ -938,7 +912,7 @@ where
             flush.flush();
         }
     }
-    crate::display::kernel_write_line("[dbg] unmap_identity_kernel_x86: done\n");
+    log_debug!("unmap_identity_kernel_x86: done");
 }
 
 /// Identity map first 1 GiB using 2 MiB pages with x86_64 API

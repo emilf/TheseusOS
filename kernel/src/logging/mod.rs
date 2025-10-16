@@ -44,6 +44,7 @@ pub use output::{OutputTarget, set_output_target, get_output_target};
 
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
+extern crate alloc;
 
 /// Log levels (ordered from most to least severe)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -187,8 +188,21 @@ fn format_log_entry(
     buf[pos] = b' ';
     pos += 1;
     
-    // Write module name
-    for byte in module.bytes().take(64) {  // Limit module name length
+    // Write module name (strip crate name prefix to keep lines shorter)
+    // "theseus_kernel::environment" -> "environment"
+    // "theseus_kernel" -> "kernel" (for crate root)
+    let module_to_write = if let Some(idx) = module.find("::") {
+        // Has modules - strip crate name
+        &module[idx + 2..]
+    } else if module == "theseus_kernel" {
+        // Crate root - use short name
+        "kernel"
+    } else {
+        // Unknown format - use as-is
+        module
+    };
+    
+    for byte in module_to_write.bytes().take(64) {  // Limit module name length
         if pos >= buf.len() {
             return pos;
         }

@@ -6,6 +6,7 @@
 use alloc::{format, vec::Vec};
 use alloc::string::String;
 use core::slice;
+use crate::{log_debug, log_error, log_info, log_warn};
 use crate::cpu::{setup_control_registers, setup_floating_point, setup_msrs};
 use crate::gdt::setup_gdt;
 use crate::interrupts::{disable_all_interrupts, setup_idt};
@@ -125,20 +126,15 @@ pub extern "C" fn after_high_half_entry() -> ! {
 /// - No other code is modifying system state concurrently
 #[no_mangle]
 pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
-    // Get verbose setting from the centralized kernel config
-    let verbose = crate::config::VERBOSE_KERNEL_OUTPUT;
     // Reinstall IDT and continue setup now that we're in high-half
-    if verbose {
-        crate::display::kernel_write_line("  [hh] entered high-half");
-    }
+    log_debug!("Entered high-half virtual memory");
+    
     // Ensure TSS IST pointers are correct before installing IDT
     unsafe {
         crate::gdt::refresh_tss_ist();
     }
     setup_idt();
-    if verbose {
-        crate::display::kernel_write_line("  IDT installed");
-    }
+    log_info!("IDT installed");
     // Ensure high-half runtime stacks are mapped explicitly before enabling more subsystems
     {
         use crate::handoff::handoff_phys_ptr;
@@ -196,11 +192,7 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
         f4.insert(Cr4Flags::OSXMMEXCPT_ENABLE);
         f4.insert(Cr4Flags::PAGE_GLOBAL);
         Cr4::write(f4);
-        if verbose {
-            crate::display::kernel_write_line(
-                "  [cr] CR4: re-enabled OSFXSR, OSXMMEXCPT, PAGE_GLOBAL",
-            );
-        }
+        log_debug!("CR4: re-enabled OSFXSR, OSXMMEXCPT, PAGE_GLOBAL");
     }
 
 
@@ -211,36 +203,26 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
         unsafe {
             setup_floating_point(&f);
         }
-        if verbose {
-            crate::display::kernel_write_line("  SSE enabled");
-        }
+        log_debug!("SSE enabled");
     }
     // Configure MSRs that are safe to enable now (e.g., EFER.SCE)
     unsafe {
         setup_msrs();
     }
-    if verbose {
-        crate::display::kernel_write_line("  MSRs configured");
-    }
+    log_debug!("MSRs configured");
 
     // Verify LAPIC timer delivery (later test)
     const ENABLE_LAPIC_TIMER_TEST: bool = true;
     if ENABLE_LAPIC_TIMER_TEST {
         use x86_64::instructions::interrupts;
-        if verbose {
-            crate::display::kernel_write_line("  [lapic] configuring timer");
-        }
+        log_debug!("Configuring LAPIC timer");
         crate::interrupts::lapic_timer_configure();
         let before = crate::interrupts::timer_tick_count();
-        if verbose {
-            crate::display::kernel_write_line("  [lapic] arming one-shot timer");
-        }
+        log_debug!("Arming LAPIC one-shot timer");
         unsafe {
             crate::interrupts::lapic_timer_start_oneshot(100_000);
         }
-        if verbose {
-            crate::display::kernel_write_line("  [lapic] enabling IF");
-        }
+        log_debug!("Enabling interrupts (IF flag)");
         interrupts::enable();
         let mut _ok = false;
         for _ in 0..2_000_000 {
@@ -251,14 +233,12 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
             core::hint::spin_loop();
         }
         interrupts::disable();
-        if verbose {
-            crate::display::kernel_write_line("  [lapic] disabled IF");
-            let after = crate::interrupts::timer_tick_count();
-            if after > before {
-                crate::display::kernel_write_line("  [lapic] timer interrupt received");
-            } else {
-                crate::display::kernel_write_line("  [lapic] timer interrupt NOT received");
-            }
+        log_debug!("Disabled interrupts (IF flag)");
+        let after = crate::interrupts::timer_tick_count();
+        if after > before {
+            log_info!("LAPIC timer interrupt received successfully");
+        } else {
+            log_warn!("LAPIC timer interrupt NOT received");
         }
     }
 
@@ -275,13 +255,9 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
                 theseus_shared::allocator::init_kernel_heap(base, size);
                 // Do not switch yet; keep using pre-exit backend until permanent heap mapped
             }
-            if verbose {
-                crate::display::kernel_write_line(
-                    "  High-half temp heap mapped for allocator shim",
-                );
-            }
-        } else if verbose {
-            crate::display::kernel_write_line("  No temp heap available for high-half allocator");
+            log_debug!("High-half temp heap mapped for allocator shim");
+        } else {
+            log_warn!("No temp heap available for high-half allocator");
         }
     }
 
@@ -298,9 +274,7 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
             VirtAddr,
         };
         let h = unsafe { &*(handoff_phys_ptr() as *const Handoff) };
-        if verbose {
-            crate::display::kernel_write_line("  [perm] begin");
-        }
+        log_debug!("Setting up permanent allocator");
         let mut frame_alloc = unsafe { BootFrameAllocator::from_handoff(h) };
         frame_alloc.enable_tracking();
         let (_frame, _flags) = Cr3::read();
@@ -309,9 +283,7 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
         let l4: &mut X86PageTable = unsafe { &mut *l4_va };
         let mut mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(crate::memory::PHYS_OFFSET)) };
         map_kernel_heap_x86(&mut mapper, &mut frame_alloc);
-        if verbose {
-            crate::display::kernel_write_line("  [perm] map kernel heap done");
-        }
+        log_debug!("Kernel heap mapped");
         let perm_base = crate::memory::KERNEL_HEAP_BASE as *mut u8;
         let perm_size = crate::memory::KERNEL_HEAP_SIZE as usize;
         unsafe {
@@ -320,27 +292,19 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
         theseus_shared::allocator::switch_to_kernel_heap();
 
         let consumed = crate::physical_memory::drain_boot_consumed();
-        if verbose {
-            crate::display::kernel_write_line("  [perm] initialise persistent physical allocator");
-        }
+        log_debug!("Initializing persistent physical allocator");
         let bitmap_provider = |words: usize| allocate_bitmap_storage(words, &mut frame_alloc);
         crate::physical_memory::init_from_handoff(h, &consumed, bitmap_provider)
             .expect("failed to initialise persistent physical memory manager");
-        if verbose {
-            crate::display::kernel_write_line("  [perm] physical allocator ready");
-        }
+        log_info!("Persistent physical allocator ready");
 
         // With the allocator live, hand runtime services their virtual map
-        match unsafe { set_virtual_address_map_runtime(handoff_phys_ptr(), verbose) } {
+        match unsafe { set_virtual_address_map_runtime(handoff_phys_ptr()) } {
             Ok(()) => {
-                if verbose {
-                    crate::display::kernel_write_line("  [rt] SetVirtualAddressMap completed");
-                }
+                log_info!("UEFI SetVirtualAddressMap completed");
             }
             Err(status) => {
-                crate::display::kernel_write_line("  [rt] SetVirtualAddressMap failed: ");
-                theseus_shared::print_hex_u64_0xe9!(status.0 as u64);
-                crate::display::kernel_write_line("\n");
+                log_warn!("UEFI SetVirtualAddressMap failed: {:#x}", status.0 as u64);
                 crate::boot::abort_with_context(
                     "UEFI SetVirtualAddressMap failed",
                     file!(),
@@ -363,71 +327,59 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
             let mut mapper =
                 unsafe { OffsetPageTable::new(l4, VirtAddr::new(crate::memory::PHYS_OFFSET)) };
             unmap_temporary_heap_x86(&mut mapper, h);
-            if verbose {
-                crate::display::kernel_write_line("  Temporary heap unmapped");
-            }
+            log_debug!("Temporary heap unmapped");
             // Also unmap identity of kernel image to catch stale low-VA code/data
             unmap_identity_kernel_x86(&mut mapper, h);
-            if verbose {
-                crate::display::kernel_write_line("  Identity-mapped kernel image unmapped");
-            }
+            log_debug!("Identity-mapped kernel image unmapped");
         }
     }
 
     // Initialize ACPI and driver subsystem
     {
-        use crate::display::kernel_write_line;
         use crate::drivers::system;
 
         match system::init() {
             Ok(platform_info) => {
-                kernel_write_line("[driver] platform summary");
-                kernel_write_line("  CPUs: ");
-                theseus_shared::print_hex_u64_0xe9!(platform_info.cpu_count as u64);
-                kernel_write_line("");
-                kernel_write_line("  IO APICs: ");
-                theseus_shared::print_hex_u64_0xe9!(platform_info.io_apic_count as u64);
-                kernel_write_line("");
-                kernel_write_line("  Local APIC: 0x");
-                theseus_shared::print_hex_u64_0xe9!(platform_info.local_apic_address);
-                kernel_write_line("");
+                log_info!("Driver platform summary:");
+                log_info!("  CPUs: {}", platform_info.cpu_count);
+                log_info!("  IO APICs: {}", platform_info.io_apic_count);
+                log_info!("  Local APIC: {:#x}", platform_info.local_apic_address);
             }
             Err(e) => {
-                kernel_write_line("[driver] initialization skipped: ");
-                kernel_write_line(e);
+                log_warn!("Driver initialization skipped: {}", e);
             }
         }
     }
 
-    crate::display::kernel_write_line("=== Kernel environment setup complete ===");
-    crate::display::kernel_write_line("Kernel environment test completed successfully");
-    crate::display::kernel_write_line("Kernel initialization complete");
-    crate::display::kernel_write_serial("Kernel initialization complete");
+    // Log as warning because this is what we use to measure success of the kernel environment setup.
+    log_warn!("=== Kernel environment setup complete ===");
+    log_warn!("Kernel initialization complete");
 
     // Set up framebuffer drawing and timer
-    crate::display::kernel_write_line("Setting up framebuffer drawing...");
+    log_debug!("Setting up framebuffer drawing...");
     crate::framebuffer::init_framebuffer_drawing();
 
     // Draw initial heart pattern
     unsafe {
         // Get handoff from the global static that was set in main
+        // TODO: Make it not use handoff for this.
         if let Some(handoff) = crate::interrupts::get_handoff_for_timer() {
-            crate::framebuffer::draw_initial_heart(handoff, verbose);
+            crate::framebuffer::draw_initial_heart(handoff, false);
         }
     }
 
     // Configure and start the APIC timer for heart animation
-    crate::display::kernel_write_line("Configuring APIC timer for heart animation...");
+    log_debug!("Configuring APIC timer for heart animation...");
     unsafe {
         crate::interrupts::lapic_timer_configure();
-        // Set timer to fire every ~10ms (100Hz) for smooth animation
-        crate::interrupts::lapic_timer_start_periodic(100_000);
+        // Set timer to fire every ~5ms (50Hz) for smooth animation
+        crate::interrupts::lapic_timer_start_periodic(50_000);
     }
 
     // Enable interrupts to start the timer
     x86_64::instructions::interrupts::enable();
 
-    crate::display::kernel_write_line("Timer configured and interrupts enabled");
+    log_info!("Timer configured and interrupts enabled");
 
     // Small delay to ensure all debug bytes are emitted
     for _ in 0..1_000_00 {
@@ -441,13 +393,13 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
     }
 
     if crate::config::RUN_POST_BOOT_SERIAL_REVERSE_ECHO {
-        crate::display::kernel_write_line("⚠ Kernel COM1 reverse echo enabled");
+        log_warn!("⚠ Kernel COM1 reverse echo enabled");
         serial_debug::run_reverse_echo_session();
     }
 
     if crate::config::KERNEL_SHOULD_IDLE {
-        crate::display::kernel_write_line("Entering idle loop - heart animation active");
-        crate::display::kernel_write_line("Kill QEMU to stop the kernel");
+        log_warn!("Entering idle loop - heart animation active");
+        log_warn!("Kill QEMU to stop the kernel");
 
         // Idle loop - the timer interrupt will handle the heart animation
         loop {
@@ -455,7 +407,7 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
             x86_64::instructions::hlt();
         }
     } else {
-        crate::display::kernel_write_line("Exiting QEMU immediately...");
+        log_error!("Exiting QEMU immediately...");
         theseus_shared::qemu_exit_ok!();
 
         loop {}
@@ -506,46 +458,32 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
 /// - UEFI boot services have been exited (no firmware calls after this)
 /// - Kernel physical base address is accurate
 /// - No concurrent execution (single-threaded environment)
-pub fn setup_kernel_environment(_handoff: &Handoff, _kernel_physical_base: u64, verbose: bool) {
-    crate::display::kernel_write_line("=== Setting up Kernel Environment ===");
+pub fn setup_kernel_environment(_handoff: &Handoff, _kernel_physical_base: u64, _verbose: bool) {
+    log_info!("=== Setting up Kernel Environment ===");
 
     // 1. Disable all interrupts first (including NMI)
-    if verbose {
-        crate::display::kernel_write_line("1. Disabling all interrupts...");
-    }
+    log_debug!("1. Disabling all interrupts...");
     unsafe {
         disable_all_interrupts();
     }
-    if verbose {
-        crate::display::kernel_write_line("  ✓ All interrupts disabled");
-    }
+    log_debug!("  ✓ All interrupts disabled");
 
     // 2. Set up GDT and TSS
-    if verbose {
-        crate::display::kernel_write_line("2. Setting up GDT...");
-    }
+    log_debug!("2. Setting up GDT...");
     unsafe {
         setup_gdt();
     }
-    if verbose {
-        crate::display::kernel_write_line("  ✓ GDT loaded and segments reloaded");
-    }
+    log_debug!("  ✓ GDT loaded and segments reloaded");
 
     // 3. Configure control registers (PAE etc.)
-    if verbose {
-        crate::display::kernel_write_line("3. Configuring control registers...");
-    }
+    log_debug!("3. Configuring control registers...");
     unsafe {
         setup_control_registers();
     }
-    if verbose {
-        crate::display::kernel_write_line("  ✓ Control registers configured");
-    }
+    log_debug!("  ✓ Control registers configured");
 
     // 3.5 Set up paging (identity map + high-half kernel) and load CR3
-    if verbose {
-        crate::display::kernel_write_line("3.5. Setting up paging...");
-    }
+    log_debug!("3.5. Setting up paging...");
     // Create the MemoryManager (unsafe) in an outer scope so we can use it
     // later when performing the high-half jump.
     let mm = unsafe { MemoryManager::new(_handoff) };
@@ -554,12 +492,12 @@ pub fn setup_kernel_environment(_handoff: &Handoff, _kernel_physical_base: u64, 
         {
             let pml4_pa = mm.page_table_root();
             if pml4_pa == 0 {
-                crate::display::kernel_write_line("  [ERR] mm.page_table_root == 0; aborting\n");
+                log_error!("mm.page_table_root == 0; aborting");
                 theseus_shared::qemu_exit_error!();
             }
             let pml4_va = crate::memory::phys_to_virt_pa(pml4_pa);
             if (pml4_va as *const u8).is_null() {
-                crate::display::kernel_write_line("  [ERR] pml4_va is null; aborting\n");
+                log_error!("pml4_va is null; aborting");
                 theseus_shared::qemu_exit_error!();
             }
         }
@@ -581,23 +519,16 @@ pub fn setup_kernel_environment(_handoff: &Handoff, _kernel_physical_base: u64, 
             let _ = mapper.translate_addr(VirtAddr::new(KERNEL_VIRTUAL_BASE));
         }
     }
-    if verbose {
-        crate::display::kernel_write_line("  ✓ Paging enabled (identity + high-half kernel)");
-    }
+    log_debug!("  ✓ Paging enabled (identity + high-half kernel)");
 
     // 4. Install low-half IDT, then jump to high-half, then reinstall IDT and continue
-    if verbose {
-        crate::display::kernel_write_line("4. Setting up CPU features...");
-    }
+    log_debug!("4. Setting up CPU features...");
     // Install low-half IDT and proceed directly to high-half
     unsafe {
         setup_idt();
     }
-    if verbose {
-        crate::display::kernel_write_line("  IDT (low-half) installed");
-
-        crate::display::kernel_write_line("  [hh] preparing jump to high-half...");
-    }
+    log_debug!("  IDT (low-half) installed");
+    log_debug!("  [hh] preparing jump to high-half...");
     // Prepare for high-half transition: compute addresses and verify mappings
     let virt_base: u64 = KERNEL_VIRTUAL_BASE;
     let phys_base: u64 = crate::memory::runtime_kernel_phys_base(_handoff);
@@ -613,9 +544,7 @@ pub fn setup_kernel_environment(_handoff: &Handoff, _kernel_physical_base: u64, 
     }
 
     if rip_now >= virt_base {
-        if verbose {
-            crate::display::kernel_write_line("  [hh] already in high-half, skipping jump\n");
-        }
+        log_debug!("Already in high-half, skipping jump");
     } else {
         // Delegate the translation/verification/jump to the memory subsystem.
         unsafe {
@@ -624,7 +553,7 @@ pub fn setup_kernel_environment(_handoff: &Handoff, _kernel_physical_base: u64, 
     }
 
     // Unreachable if jump succeeds; if we get here, panic to avoid continuing in low-half
-    theseus_shared::qemu_println!("PANIC: High-half jump did not transfer control");
+    log_error!("PANIC: High-half jump did not transfer control");
     panic!("High-half jump did not transfer control");
 }
 
@@ -633,8 +562,6 @@ pub fn setup_kernel_environment(_handoff: &Handoff, _kernel_physical_base: u64, 
 /// This runs after we transition runtime services to virtual addressing, giving
 /// immediate feedback that the virtual mapping is valid.
 fn log_uefi_firmware_time() {
-    use crate::display::kernel_write_line;
-
     match uefi::runtime::get_time() {
         Ok(time) => {
             let tz_display = match time.time_zone() {
@@ -651,8 +578,8 @@ fn log_uefi_firmware_time() {
                 None => String::from("local"),
             };
             let daylight_bits = time.daylight().bits();
-            let message = format!(
-                "[rt] Firmware time {year:04}-{month:02}-{day:02} \
+            log_debug!(
+                "Firmware time {year:04}-{month:02}-{day:02} \
                  {hour:02}:{minute:02}:{second:02}.{nanos:09} {tz} daylight=0x{dl:02X}",
                 year = time.year(),
                 month = time.month(),
@@ -664,15 +591,10 @@ fn log_uefi_firmware_time() {
                 tz = tz_display,
                 dl = daylight_bits,
             );
-            kernel_write_line(&message);
         }
         Err(err) => {
             let status = err.status();
-            let message = format!(
-                "[rt] Firmware time unavailable (status {:?})",
-                status
-            );
-            kernel_write_line(&message);
+            log_debug!("Firmware time unavailable (status {:?})", status);
         }
     }
 }
@@ -699,9 +621,7 @@ fn allocate_bitmap_storage(
             .expect("no frames available for bitmap");
         let expected = first_phys + (i as u64) * page_size as u64;
         if frame.start_address().as_u64() != expected {
-            crate::display::kernel_write_line(
-                "[phys] bitmap allocation requires contiguous frames",
-            );
+            log_error!("Bitmap allocation requires contiguous frames");
             theseus_shared::qemu_exit_error!();
         }
     }
@@ -721,22 +641,17 @@ fn allocate_bitmap_storage(
 /// permanent mappings for all runtime regions.
 unsafe fn set_virtual_address_map_runtime(
     handoff_phys: u64,
-    verbose: bool,
 ) -> Result<(), Status> {
     use core::mem::{align_of, size_of};
 
     let handoff = &mut *(handoff_phys as *mut Handoff);
     if handoff.uefi_system_table == 0 {
-        if verbose {
-            crate::display::kernel_write_line("  [rt] No UEFI system table; skipping SetVirtualAddressMap");
-        }
+        log_debug!("No UEFI system table; skipping SetVirtualAddressMap");
         return Ok(());
     }
     if handoff.uefi_system_table >= crate::memory::PHYS_OFFSET {
         // Already virtualised previously.
-        if verbose {
-            crate::display::kernel_write_line("  [rt] System table already virtual; skipping");
-        }
+        log_debug!("System table already virtual; skipping");
         return Ok(());
     }
     if handoff.memory_map_buffer_ptr == 0
@@ -771,12 +686,12 @@ unsafe fn set_virtual_address_map_runtime(
             desc.virt_start = desc.phys_start;
         }
     }
-    crate::display::kernel_write_line("[rt] runtime descriptors prepared");
+    log_debug!("Runtime descriptors prepared");
 
     let virt_ptr = crate::memory::PHYS_OFFSET.wrapping_add(phys_ptr);
     let map_base = virt_ptr as usize;
     handoff.memory_map_buffer_ptr = virt_ptr;
-    crate::display::kernel_write_line("[rt] memory map pointer updated");
+    log_debug!("Memory map pointer updated");
 
     // Ensure PHYS_OFFSET covers the memory map buffer and each runtime range before we
     // attempt to access them via the new virtual addresses.
@@ -821,7 +736,7 @@ unsafe fn set_virtual_address_map_runtime(
             }
         }
     }
-    crate::display::kernel_write_line("[rt] runtime mapping ensured");
+    log_debug!("Runtime mapping ensured");
 
     let mut temp_vec: Vec<MemoryDescriptor> = Vec::new();
     let descriptors_slice: &mut [MemoryDescriptor] =
@@ -838,21 +753,17 @@ unsafe fn set_virtual_address_map_runtime(
         }
         temp_vec.as_mut_slice()
     };
-    crate::display::kernel_write_line("[rt] descriptor slice ready");
+    log_debug!("Descriptor slice ready");
 
     let system_table_phys = handoff.uefi_system_table;
     let system_table_virt = crate::memory::PHYS_OFFSET.wrapping_add(system_table_phys)
         as *const uefi_raw::table::system::SystemTable;
 
-    if verbose {
-        crate::display::kernel_write_line("  [rt] Calling SetVirtualAddressMap...");
-    }
+    log_debug!("Calling SetVirtualAddressMap...");
     match uefi::runtime::set_virtual_address_map(descriptors_slice, system_table_virt) {
         Ok(()) => {
             handoff.uefi_system_table = system_table_virt as u64;
-            if verbose {
-                crate::display::kernel_write_line("  [rt] Runtime services remapped");
-            }
+            log_info!("Runtime services remapped");
             Ok(())
         }
         Err(err) => Err(err.status()),

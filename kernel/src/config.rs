@@ -5,7 +5,7 @@
 //! configuration in a single place.
 
 /// When `true` enable verbose kernel debug output (many debug traces).
-pub const VERBOSE_KERNEL_OUTPUT: bool = false;
+pub const VERBOSE_KERNEL_OUTPUT: bool = true;
 
 /// When `true` the kernel will idle (keep running) after initialization.
 /// When `false` the kernel will exit QEMU immediately (useful for CI).
@@ -35,7 +35,7 @@ pub const MAP_LEGACY_PHYS_OFFSET_1GIB: bool = true;
 use crate::logging::{LogLevel, OutputTarget};
 
 /// Default log level for modules without specific configuration
-pub const DEFAULT_LOG_LEVEL: LogLevel = LogLevel::Info;
+pub const DEFAULT_LOG_LEVEL: LogLevel = LogLevel::Trace;
 
 /// Per-module log level overrides
 ///
