@@ -11,6 +11,29 @@ use x86_64::instructions::port::Port;
 
 impl Monitor {
     /// I/O port access
+    ///
+    /// Read from or write to x86 I/O ports using IN/OUT instructions.
+    /// Supports 8-bit, 16-bit, and 32-bit operations.
+    ///
+    /// # Arguments
+    /// * `args` - Command arguments: OPERATION PORT [VALUE]
+    ///   - OPERATION: `r`/`read` or `w`/`write`, optionally with width suffix (8/16/32)
+    ///   - PORT: Port number (0-0xFFFF)
+    ///   - VALUE: Value to write (required for write operations)
+    ///
+    /// # Examples
+    /// ```text
+    /// io r 0x3F8           # Read byte from COM1 port
+    /// io r16 0x64          # Read 16-bit value from keyboard controller
+    /// io w 0x3F8 0x41      # Write 'A' to COM1
+    /// io w32 0xCF8 0x80000000  # Write to PCI config address
+    /// ```
+    ///
+    /// # Safety
+    /// - Reading/writing arbitrary I/O ports can crash the system
+    /// - Some ports have side effects (hardware state changes)
+    /// - Writing to critical ports (e.g., PIC, APIC) can disable interrupts
+    /// - Use with caution!
     pub(in crate::monitor) fn cmd_io(&self, args: &[&str]) {
         if args.len() < 2 {
             self.writeln("Usage: io (r|w)[8|16|32] PORT [VALUE]");
@@ -26,6 +49,10 @@ impl Monitor {
             Write,
         }
 
+        /// Parse I/O operation token (e.g., "r", "w16", "read", "write32")
+        ///
+        /// Extracts operation type (read/write) and bit width (8/16/32).
+        /// Defaults to 8-bit if no width is specified.
         fn parse_io_token(token: &str) -> Option<(IoOp, u8)> {
             if token.eq_ignore_ascii_case("r") || token.eq_ignore_ascii_case("read") {
                 return Some((IoOp::Read, 8));
@@ -74,6 +101,7 @@ impl Monitor {
 
         match op {
             IoOp::Read => unsafe {
+                // Perform IN instruction with appropriate width
                 match width {
                     8 => {
                         let mut p: Port<u8> = Port::new(port);
@@ -107,22 +135,23 @@ impl Monitor {
                 };
 
                 unsafe {
+                    // Perform OUT instruction with appropriate width
                     match width {
                         8 => {
                             let mut p: Port<u8> = Port::new(port);
-                            let value = (raw_value & 0xFF) as u8;
+                            let value = (raw_value & 0xFF) as u8;  // Mask to 8 bits
                             p.write(value);
                             self.writeln(&format!("OUT8  0x{:04X} <- 0x{:02X}", port, value));
                         }
                         16 => {
                             let mut p: Port<u16> = Port::new(port);
-                            let value = (raw_value & 0xFFFF) as u16;
+                            let value = (raw_value & 0xFFFF) as u16;  // Mask to 16 bits
                             p.write(value);
                             self.writeln(&format!("OUT16 0x{:04X} <- 0x{:04X}", port, value));
                         }
                         32 => {
                             let mut p: Port<u32> = Port::new(port);
-                            let value = raw_value as u32;
+                            let value = raw_value as u32;  // Full 32 bits
                             p.write(value);
                             self.writeln(&format!("OUT32 0x{:04X} <- 0x{:08X}", port, value));
                         }
@@ -134,6 +163,26 @@ impl Monitor {
     }
 
     /// Trigger software interrupt
+    ///
+    /// Executes a software interrupt (INT instruction) with the specified vector.
+    /// For safety, only INT3 (breakpoint) and INT 0x80 (syscall) are permitted.
+    ///
+    /// # Arguments
+    /// * `args` - Interrupt vector number (0-255)
+    ///
+    /// # Examples
+    /// ```text
+    /// int 3                # Trigger INT3 (breakpoint)
+    /// int 0x80             # Trigger INT 0x80 (syscall vector)
+    /// ```
+    ///
+    /// # Safety
+    /// - Triggering arbitrary interrupts can crash the system
+    /// - Most interrupt vectors are restricted for safety
+    /// - If the IDT entry is not properly configured, will cause #GP fault
+    ///
+    /// # Restrictions
+    /// Only INT3 and INT 0x80 are currently permitted from the monitor.
     pub(in crate::monitor) fn cmd_int(&self, args: &[&str]) {
         if args.is_empty() {
             self.writeln("Usage: int NUM");

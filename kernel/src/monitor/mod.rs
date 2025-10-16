@@ -40,6 +40,12 @@
 //! - Physical hardware: `minicom -D /dev/ttyS0 -b 115200` or `screen /dev/ttyS0 115200`
 //!
 //! Type 'help' at the prompt to see all available commands.
+//!
+//! ## Module Organization
+//!
+//! The monitor is organized into focused submodules:
+//! - `commands/`: All interactive commands, organized by category
+//! - `parsing`: Number parsing utilities
 
 mod commands;
 mod parsing;
@@ -63,7 +69,14 @@ const MAX_LINE: usize = 128;
 /// Shared monitor instance guarded by a spin mutex.
 static MONITOR: Mutex<Option<Monitor>> = Mutex::new(None);
 
-/// Prepare the monitor subsystem. Safe to call multiple times.
+/// Prepare the monitor subsystem
+///
+/// Initializes the kernel monitor if ENABLE_KERNEL_MONITOR config is true.
+/// Safe to call multiple times - will reactivate existing monitor.
+///
+/// # Note
+/// This function checks the config flag and returns early if the monitor
+/// is disabled, making it safe to call unconditionally during boot.
 pub fn init() {
     if !config::ENABLE_KERNEL_MONITOR {
         return;
@@ -80,12 +93,28 @@ pub fn init() {
     }
 }
 
-/// Process a byte received from the serial device.
+/// Process a byte received from the serial device
+///
+/// Entry point for serial interrupt handler to feed data to the monitor.
+/// This function is called from IRQ context when a byte arrives on COM1.
+///
+/// # Arguments
+/// * `byte` - Received byte from serial port
 pub fn notify_serial_byte(byte: u8) {
     push_serial_byte(byte);
 }
 
-/// Allow drivers (e.g., from IRQ context) to push incoming bytes.
+/// Push a byte to the monitor for processing
+///
+/// Internal function that handles monitor initialization and byte processing.
+/// Creates monitor on first byte if needed, then feeds the byte to the
+/// input handler.
+///
+/// # Arguments
+/// * `byte` - Byte to process (from serial port)
+///
+/// # Note
+/// Safe to call from IRQ context - uses spin mutex for synchronization.
 pub fn push_serial_byte(byte: u8) {
     if !config::ENABLE_KERNEL_MONITOR {
         return;
@@ -104,7 +133,15 @@ pub fn push_serial_byte(byte: u8) {
     }
 }
 
-/// Start the monitor loop (used when we want to park the CPU in monitor mode).
+/// Start the monitor loop
+///
+/// Parks the CPU in an infinite loop waiting for serial input.
+/// Used when you want the system to drop into interactive monitor mode
+/// instead of continuing normal execution.
+///
+/// # Note
+/// This function never returns. The CPU will hlt waiting for interrupts
+/// (serial IRQ will wake it up to process commands).
 pub fn start_monitor() -> ! {
     init();
     loop {
@@ -171,11 +208,20 @@ impl Monitor {
         self.write("\r\n");
     }
 
+    /// Handle incoming character from serial port
+    ///
+    /// Implements a simple line editor with basic terminal control:
+    /// - Printable chars: Added to buffer and echoed
+    /// - Enter: Process command and clear buffer
+    /// - Backspace/DEL: Remove last character
+    /// - Ctrl+C: Cancel current line
+    /// - Ctrl+L: Clear screen
     fn handle_char(&mut self, ch: u8) {
         self.activate();
 
         match ch {
             b'\r' | b'\n' => {
+                // Enter key - process the command
                 self.write_bytes(b"\r\n");
                 if !self.line_buffer.is_empty() {
                     self.process_command();
@@ -184,32 +230,44 @@ impl Monitor {
                 self.write(PROMPT);
             }
             0x08 | 0x7F => {
+                // Backspace (0x08) or DEL (0x7F)
                 if !self.line_buffer.is_empty() {
                     self.line_buffer.pop();
+                    // Visual feedback: backspace, space, backspace (erases character)
                     self.write_bytes(b"\x08 \x08");
                 }
             }
             0x03 => {
+                // Ctrl+C - cancel current line
                 self.line_buffer.clear();
-                self.write("^C");
+                self.write("^C");  // Show cancellation indicator
                 self.write(PROMPT);
             }
             0x0C => {
+                // Ctrl+L - clear screen (ANSI sequences)
                 self.write_bytes(b"\x1B[2J\x1B[H");
                 self.line_buffer.clear();
                 self.write(PROMPT);
             }
             byte if byte >= 0x20 && byte < 0x7F => {
+                // Printable ASCII (space through tilde)
                 if self.line_buffer.len() < MAX_LINE {
                     self.line_buffer.push(byte as char);
-                    self.write_bytes(&[byte]);
+                    self.write_bytes(&[byte]);  // Echo character
                 }
             }
-            _ => {}
+            _ => {
+                // Ignore other control characters
+            }
         }
     }
 
+    /// Parse and execute a command line
+    ///
+    /// Splits the line into whitespace-separated parts and dispatches
+    /// to the appropriate command handler based on the first word.
     fn process_command(&mut self) {
+        // Clone to avoid borrow conflicts during command execution
         let line = self.line_buffer.clone();
         let parts: Vec<&str> = line.trim().split_whitespace().collect();
 
@@ -217,6 +275,7 @@ impl Monitor {
             return;
         }
 
+        // Command dispatch table
         match parts[0] {
             "help" | "?" => self.cmd_help(),
             "regs" | "r" => self.cmd_registers(),
@@ -282,4 +341,5 @@ impl Monitor {
         self.writeln("  help|?              - Show this help");
     }
 }
+
 

@@ -11,6 +11,24 @@ use alloc::vec::Vec;
 
 impl Monitor {
     /// Display CPUID information
+    ///
+    /// Shows detailed CPU information obtained via the CPUID instruction:
+    /// - Vendor ID (Intel, AMD, etc.)
+    /// - Brand string (full processor name)
+    /// - Family, Model, and Stepping IDs
+    /// - APIC ID and logical processor count
+    /// - Cache line size
+    /// - Standard CPU features (FPU, SSE, AVX, etc.)
+    /// - Extended features (FSGSBASE, BMI, SMAP, SMEP, etc.)
+    /// - 64-bit and architectural features (LM, NX, 1GiB pages, etc.)
+    ///
+    /// # Examples
+    /// ```text
+    /// cpuid             # Show all CPUID information
+    /// ```
+    ///
+    /// # Note
+    /// Uses the `raw_cpuid` crate to safely query CPUID leaves.
     pub(in crate::monitor) fn cmd_cpuid(&self) {
         self.writeln("CPUID Information:");
 
@@ -45,6 +63,7 @@ impl Monitor {
                 fi.cflush_cache_line_size() * 8
             ));
 
+            // Build list of standard CPU features from CPUID leaf 1
             let mut standard = Vec::new();
             if fi.has_fpu() {
                 standard.push("FPU");
@@ -141,6 +160,7 @@ impl Monitor {
             }
         }
 
+        // Extended features from CPUID leaf 7
         if let Some(ef) = cpuid.get_extended_feature_info() {
             let mut features = Vec::new();
             if ef.has_fsgsbase() {
@@ -181,6 +201,7 @@ impl Monitor {
             }
         }
 
+        // Extended features from CPUID leaf 0x80000001 (AMD64 features)
         if let Some(ext) = cpuid.get_extended_processor_and_feature_identifiers() {
             let mut features = Vec::new();
             if ext.has_64bit_mode() {
@@ -223,6 +244,26 @@ impl Monitor {
     }
 
     /// Read or write a model-specific register
+    ///
+    /// Accesses CPU Model-Specific Registers (MSRs) using RDMSR/WRMSR instructions.
+    ///
+    /// # Arguments
+    /// * `args` - Command arguments:
+    ///   - `r ADDRESS` or `ADDRESS`: Read MSR at address
+    ///   - `w ADDRESS VALUE`: Write value to MSR at address
+    ///
+    /// # Examples
+    /// ```text
+    /// msr 0x1B                 # Read IA32_APIC_BASE MSR
+    /// msr r 0x1B               # Explicit read
+    /// msr w 0x1B 0xFEE00000    # Write to IA32_APIC_BASE (dangerous!)
+    /// ```
+    ///
+    /// # Safety
+    /// - Reading unknown MSRs may cause #GP fault
+    /// - Writing MSRs can crash the system or corrupt hardware state
+    /// - Some MSRs are read-only
+    /// - Use with extreme caution!
     pub(in crate::monitor) fn cmd_msr(&self, args: &[&str]) {
         if args.is_empty() {
             self.writeln("Usage: msr [r|w] ADDRESS [VALUE]");

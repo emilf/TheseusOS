@@ -15,6 +15,18 @@ use core::str;
 
 impl Monitor {
     /// Display physical memory manager statistics
+    ///
+    /// Shows statistics from the persistent physical memory allocator, including:
+    /// - Base PFN (Page Frame Number)
+    /// - Total frames available
+    /// - Free frames remaining
+    /// - Guard window size below runtime kernel base
+    ///
+    /// # Examples
+    /// ```text
+    /// phys              # Show physical memory statistics
+    /// physmem           # Alias for phys
+    /// ```
     pub(in crate::monitor) fn cmd_phys(&self) {
         if let Some(stats) = physical_memory::stats() {
             let page_size = memory::PAGE_SIZE as u64;
@@ -44,6 +56,24 @@ impl Monitor {
     }
 
     /// Display CPU registers
+    ///
+    /// Shows a comprehensive snapshot of the current CPU state including:
+    /// - General-purpose registers (RAX, RBX, RCX, RDX, RSI, RDI, R8-R15)
+    /// - Stack and base pointers (RSP, RBP)
+    /// - Instruction pointer (RIP)
+    /// - Control registers (CR0, CR2, CR3, CR4, CR8)
+    /// - Segment registers (CS, DS, SS, ES, FS, GS)
+    /// - RFLAGS register
+    ///
+    /// # Examples
+    /// ```text
+    /// regs              # Show all CPU registers
+    /// r                 # Short alias
+    /// ```
+    ///
+    /// # Note
+    /// Register values are captured at the time the monitor reads them.
+    /// Some registers (like RIP) are approximate due to the reading process.
     pub(in crate::monitor) fn cmd_registers(&self) {
         self.writeln("CPU Registers:");
 
@@ -149,6 +179,19 @@ impl Monitor {
     }
 
     /// Display ACPI information
+    ///
+    /// Shows ACPI (Advanced Configuration and Power Interface) platform information:
+    /// - RSDP (Root System Description Pointer) location and details
+    /// - RSDT/XSDT addresses
+    /// - OEM ID and revision
+    /// - Checksum validation
+    /// - Platform summary (CPU count, APIC configuration, legacy PIC)
+    /// - MADT (Multiple APIC Description Table) details
+    ///
+    /// # Examples
+    /// ```text
+    /// acpi              # Show ACPI information
+    /// ```
     pub(in crate::monitor) fn cmd_acpi(&self) {
         self.writeln("ACPI Information:");
 
@@ -249,20 +292,38 @@ impl Monitor {
     }
 
     /// Display stack backtrace
+    ///
+    /// Walks the stack frame pointers (RBP chain) to show the call stack.
+    /// Displays up to 16 frames with return addresses and frame pointers.
+    ///
+    /// # Examples
+    /// ```text
+    /// stack             # Show stack backtrace
+    /// bt                # Short alias (backtrace)
+    /// ```
+    ///
+    /// # Safety
+    /// Reads memory at frame pointer addresses. May show garbage if stack
+    /// is corrupted or if frame pointers are not being used.
     pub(in crate::monitor) fn cmd_stack_trace(&self) {
         self.writeln("Stack trace:");
 
         unsafe {
             let mut rbp: u64;
+            // Read current frame pointer
             core::arch::asm!("mov {}, rbp", out(reg) rbp, options(nostack));
 
+            // Walk up to 16 frames
             for frame in 0..16 {
-                // Validate RBP is in kernel space
+                // Validate RBP is in kernel space (high-half)
+                // x86-64 kernel addresses start at 0xFFFF_8000_0000_0000
                 if rbp == 0 || rbp < 0xFFFF_8000_0000_0000 {
                     break;
                 }
 
-                // Read return address and previous RBP
+                // Stack frame layout (x86-64 calling convention):
+                // [RBP + 0]: Previous RBP (saved frame pointer)
+                // [RBP + 8]: Return address (saved RIP)
                 let ret_addr_ptr = (rbp + 8) as *const u64;
                 let prev_rbp_ptr = rbp as *const u64;
 
@@ -274,10 +335,10 @@ impl Monitor {
                     frame, ret_addr, rbp
                 ));
 
-                // Move to next frame
+                // Move to next (caller's) frame
                 rbp = prev_rbp;
 
-                // Prevent infinite loops
+                // Prevent infinite loops (detect circular references)
                 if rbp == prev_rbp {
                     break;
                 }
@@ -288,6 +349,10 @@ impl Monitor {
 
 // Helper structures and functions for ACPI parsing
 
+/// Information parsed from the RSDP (Root System Description Pointer)
+///
+/// This structure contains the parsed contents of an ACPI RSDP table,
+/// which is the entry point for ACPI table discovery.
 struct RsdpInfo {
     signature: [u8; 8],
     oem_id: [u8; 6],
@@ -299,10 +364,12 @@ struct RsdpInfo {
 }
 
 impl RsdpInfo {
+    /// Convert the 8-byte signature to a displayable string
     fn signature_string(&self) -> String {
         self.signature.iter().map(|&b| b as char).collect()
     }
 
+    /// Get a human-readable ACPI version label based on revision number
     fn revision_label(&self) -> &'static str {
         match self.revision {
             0 | 1 => "ACPI 1.0",
@@ -312,6 +379,20 @@ impl RsdpInfo {
     }
 }
 
+/// Parse RSDP information from a physical address
+///
+/// Reads and validates an ACPI RSDP structure, including checksums.
+/// Supports both ACPI 1.0 (20-byte RSDP) and ACPI 2.0+ (36-byte extended RSDP).
+///
+/// # Arguments
+/// * `rsdp_phys` - Physical address of the RSDP
+///
+/// # Returns
+/// * `Ok(RsdpInfo)` - Successfully parsed RSDP
+/// * `Err(&str)` - Error message if parsing failed
+///
+/// # Safety
+/// Requires PHYS_OFFSET mapping to be active to access the physical address.
 fn parse_rsdp_info(rsdp_phys: u64) -> Result<RsdpInfo, &'static str> {
     if rsdp_phys == 0 {
         return Err("RSDP address is zero");
@@ -324,6 +405,7 @@ fn parse_rsdp_info(rsdp_phys: u64) -> Result<RsdpInfo, &'static str> {
     let ptr = rsdp_va as *const u8;
 
     unsafe {
+        // Read and validate 8-byte signature (should be "RSD PTR ")
         let mut signature = [0u8; 8];
         for i in 0..8 {
             signature[i] = core::ptr::read_volatile(ptr.add(i));
@@ -332,18 +414,27 @@ fn parse_rsdp_info(rsdp_phys: u64) -> Result<RsdpInfo, &'static str> {
             return Err("Invalid RSDP signature");
         }
 
+        // Read 6-byte OEM ID (offset 9-14)
         let mut oem_id = [0u8; 6];
         for i in 0..6 {
             oem_id[i] = core::ptr::read_volatile(ptr.add(9 + i));
         }
+        
+        // Read revision (offset 15) - determines RSDP version
         let revision = core::ptr::read_volatile(ptr.add(15));
+        
+        // Read RSDT address (offset 16-19)
         let rsdt_address = core::ptr::read_unaligned(ptr.add(16) as *const u32) as u64;
 
+        // Determine total length based on revision
+        // ACPI 1.0 (rev 0): 20 bytes
+        // ACPI 2.0+ (rev 2+): 36 bytes minimum
         let mut length = if revision >= 2 {
             core::ptr::read_unaligned(ptr.add(20) as *const u32)
         } else {
             20
         };
+        // Sanity check: enforce minimum lengths
         if length < 20 {
             length = 20;
         }
@@ -351,15 +442,17 @@ fn parse_rsdp_info(rsdp_phys: u64) -> Result<RsdpInfo, &'static str> {
             length = 36;
         }
 
+        // Read XSDT address (offset 24-31, only in ACPI 2.0+)
         let xsdt_address = if revision >= 2 {
             Some(core::ptr::read_unaligned(ptr.add(24) as *const u64))
         } else {
             None
         };
 
-        let checksum_ok = verify_checksum(ptr, 20);
+        // Verify checksums
+        let checksum_ok = verify_checksum(ptr, 20);  // Basic checksum (first 20 bytes)
         let extended_checksum_ok = if revision >= 2 {
-            Some(verify_checksum(ptr, length as usize))
+            Some(verify_checksum(ptr, length as usize))  // Extended checksum (all bytes)
         } else {
             None
         };
@@ -376,6 +469,18 @@ fn parse_rsdp_info(rsdp_phys: u64) -> Result<RsdpInfo, &'static str> {
     }
 }
 
+/// Verify ACPI table checksum
+///
+/// ACPI tables use a simple checksum: all bytes (including the checksum byte)
+/// must sum to zero (mod 256).
+///
+/// # Arguments
+/// * `ptr` - Pointer to the start of the ACPI structure
+/// * `len` - Length in bytes to checksum
+///
+/// # Returns
+/// * `true` - Checksum is valid
+/// * `false` - Checksum verification failed
 fn verify_checksum(ptr: *const u8, len: usize) -> bool {
     let mut sum: u8 = 0;
     for i in 0..len {

@@ -8,6 +8,25 @@ use alloc::format;
 
 impl Monitor {
     /// List all registered devices
+    ///
+    /// Enumerates all hardware devices registered with the driver manager,
+    /// showing their class, status, physical address, and IRQ assignments.
+    ///
+    /// # Examples
+    /// ```text
+    /// devices           # List all devices
+    /// dev               # Short alias
+    /// ```
+    ///
+    /// # Output Format
+    /// For each device, displays:
+    /// - Index number
+    /// - Device ID
+    /// - Device class (Serial, Storage, etc.)
+    /// - Status (bound/pending)
+    /// - Physical address (if any)
+    /// - IRQ number (if any)
+    /// - Driver state pointer (if bound)
     pub(in crate::monitor) fn cmd_devices(&self) {
         let mgr = driver_manager().lock();
         let devices = mgr.devices();

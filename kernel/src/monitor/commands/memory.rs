@@ -15,6 +15,19 @@ impl Monitor {
     ///
     /// Shows 16 bytes in hex + ASCII format. If no address is provided,
     /// continues from the last examined address (Wozmon-style continuation).
+    ///
+    /// # Arguments
+    /// * `args` - Command arguments (optional address)
+    ///
+    /// # Examples
+    /// ```text
+    /// mem 0x1000        # Examine 16 bytes at 0x1000
+    /// mem               # Continue from last address + 16
+    /// ```
+    ///
+    /// # Safety
+    /// Uses volatile reads to access arbitrary memory addresses. The caller
+    /// must ensure the address is valid and accessible.
     pub(in crate::monitor) fn cmd_memory(&mut self, args: &[&str]) {
         if args.is_empty() {
             // Continue from last address
@@ -61,6 +74,19 @@ impl Monitor {
     }
 
     /// Dump memory region
+    ///
+    /// Displays a larger memory region in hex + ASCII format with multiple lines.
+    ///
+    /// # Arguments
+    /// * `args` - Command arguments: ADDRESS [LENGTH]
+    ///   - ADDRESS: Starting address (hex or decimal)
+    ///   - LENGTH: Number of bytes to dump (default: 256)
+    ///
+    /// # Examples
+    /// ```text
+    /// dump 0x1000           # Dump 256 bytes starting at 0x1000
+    /// dump 0x1000 1024      # Dump 1024 bytes
+    /// ```
     pub(in crate::monitor) fn cmd_dump(&self, args: &[&str]) {
         if args.is_empty() {
             self.writeln("Usage: dump ADDR [LENGTH]");
@@ -120,6 +146,23 @@ impl Monitor {
     }
 
     /// Write a byte to memory
+    ///
+    /// Writes a single byte value to the specified memory address.
+    ///
+    /// # Arguments
+    /// * `args` - Command arguments: ADDRESS VALUE
+    ///   - ADDRESS: Memory address to write to
+    ///   - VALUE: Byte value (0-255, hex or decimal)
+    ///
+    /// # Examples
+    /// ```text
+    /// write 0x1000 0xFF     # Write 0xFF to address 0x1000
+    /// write 0x1000 42       # Write 42 (decimal) to address 0x1000
+    /// ```
+    ///
+    /// # Safety
+    /// Uses volatile write to arbitrary memory. May crash if address is invalid
+    /// or protected. Use with caution!
     pub(in crate::monitor) fn cmd_write(&self, args: &[&str]) {
         if args.len() < 2 {
             self.writeln("Usage: write ADDR VALUE");
@@ -151,6 +194,24 @@ impl Monitor {
     }
 
     /// Fill memory region with a value
+    ///
+    /// Fills a contiguous memory region with a specified byte value.
+    ///
+    /// # Arguments
+    /// * `args` - Command arguments: ADDRESS LENGTH VALUE
+    ///   - ADDRESS: Starting address
+    ///   - LENGTH: Number of bytes to fill
+    ///   - VALUE: Byte value to write (0-255)
+    ///
+    /// # Examples
+    /// ```text
+    /// fill 0x1000 256 0x00  # Zero 256 bytes starting at 0x1000
+    /// fill 0x2000 16 0xCC   # Fill 16 bytes with 0xCC pattern
+    /// ```
+    ///
+    /// # Safety
+    /// Performs multiple volatile writes to arbitrary memory. May crash or
+    /// corrupt data if the range overlaps with kernel structures.
     pub(in crate::monitor) fn cmd_fill(&self, args: &[&str]) {
         if args.len() < 3 {
             self.writeln("Usage: fill ADDR LENGTH VALUE");

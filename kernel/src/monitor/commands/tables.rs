@@ -16,6 +16,20 @@ const EFI_PAGE_SIZE: u64 = 4096;
 
 impl Monitor {
     /// Display IDT information
+    ///
+    /// Shows entries from the Interrupt Descriptor Table (IDT), including:
+    /// - IDTR base and limit
+    /// - Entry count
+    /// - Individual IDT entries with handler addresses, selectors, and attributes
+    ///
+    /// # Arguments
+    /// * `args` - Optional vector number to limit display (default: first 16)
+    ///
+    /// # Examples
+    /// ```text
+    /// idt               # Show first 16 IDT entries
+    /// idt 32            # Show first 32 entries
+    /// ```
     pub(in crate::monitor) fn cmd_idt(&self, args: &[&str]) {
         self.writeln("Interrupt Descriptor Table:");
 
@@ -56,6 +70,15 @@ impl Monitor {
         }
     }
 
+    /// Print a single IDT entry with decoded fields
+    ///
+    /// Extracts and displays:
+    /// - Handler offset (64-bit address)
+    /// - Segment selector
+    /// - IST (Interrupt Stack Table) index
+    /// - Gate type (Interrupt Gate, Trap Gate, etc.)
+    /// - DPL (Descriptor Privilege Level)
+    /// - Present bit
     fn print_idt_entry(&self, index: usize, entry: &RawIdtEntry) {
         let entry = *entry;
         let empty = entry.offset_low == 0
@@ -70,13 +93,16 @@ impl Monitor {
 
         let selector = entry.selector;
         let type_attr = entry.type_attr;
-        let ist = entry.ist & 0x7;
-        let offset = (entry.offset_low as u64)
-            | ((entry.offset_mid as u64) << 16)
-            | ((entry.offset_high as u64) << 32);
-        let gate_type = type_attr & 0x0F;
-        let present = (type_attr & 0x80) != 0;
-        let dpl = (type_attr >> 5) & 0x3;
+        let ist = entry.ist & 0x7;  // IST index is only 3 bits (0-7)
+        
+        // Reconstruct 64-bit handler offset from three 16/32-bit pieces
+        let offset = (entry.offset_low as u64)          // Bits 0-15
+            | ((entry.offset_mid as u64) << 16)         // Bits 16-31
+            | ((entry.offset_high as u64) << 32);       // Bits 32-63
+        
+        let gate_type = type_attr & 0x0F;               // Type field (bits 0-3)
+        let present = (type_attr & 0x80) != 0;          // Present bit (bit 7)
+        let dpl = (type_attr >> 5) & 0x3;               // DPL (bits 5-6)
 
         self.writeln(&format!(
             "  [{:02}] selector=0x{:04X} offset=0x{:016X} type:{} dpl:{} ist:{} attr=0x{:02X} {}",
@@ -92,6 +118,20 @@ impl Monitor {
     }
 
     /// Display GDT information
+    ///
+    /// Shows entries from the Global Descriptor Table (GDT), including:
+    /// - GDTR base and limit
+    /// - Individual GDT entries with base, limit, type, and flags
+    /// - Support for both 8-byte and 16-byte descriptors (TSS, LDT)
+    ///
+    /// # Arguments
+    /// * `args` - Optional entry count to display (default: all entries)
+    ///
+    /// # Examples
+    /// ```text
+    /// gdt               # Show all GDT entries
+    /// gdt 8             # Show first 8 entries
+    /// ```
     pub(in crate::monitor) fn cmd_gdt(&self, args: &[&str]) {
         self.writeln("Global Descriptor Table:");
 
@@ -143,6 +183,18 @@ impl Monitor {
         }
     }
 
+    /// Print a single GDT entry with decoded fields
+    ///
+    /// Decodes an x86-64 segment descriptor (8 or 16 bytes) and displays:
+    /// - Base address (24-bit for code/data, 64-bit for system descriptors)
+    /// - Limit (20-bit, possibly page-granular)
+    /// - Segment type (Code, Data, TSS, LDT, etc.)
+    /// - DPL (Descriptor Privilege Level: 0-3)
+    /// - Flags (G=Granularity, L=Long mode, DB=Default size, AVL=Available)
+    ///
+    /// # Returns
+    /// * `true` - Entry consumed 16 bytes (system descriptor)
+    /// * `false` - Entry consumed 8 bytes (code/data segment)
     fn print_gdt_entry(&self, index: usize, raw_low: u64, raw_next: Option<u64>) -> bool {
         let uses_second = gdt_entry_needs_extra(raw_low);
         let raw_high = if uses_second { raw_next } else { None };
@@ -152,32 +204,39 @@ impl Monitor {
             return uses_second;
         }
 
+        // Decode access byte (bits 40-47)
         let access = ((raw_low >> 40) & 0xFF) as u8;
-        let s = (access & 0x10) != 0;
-        let typ = access & 0x0F;
-        let dpl = (access >> 5) & 0x03;
-        let present = (access & 0x80) != 0;
+        let s = (access & 0x10) != 0;        // S bit: 1=code/data, 0=system
+        let typ = access & 0x0F;             // Type field (bits 0-3)
+        let dpl = (access >> 5) & 0x03;      // Descriptor Privilege Level
+        let present = (access & 0x80) != 0;  // Present bit
 
+        // Decode limit (20-bit: bits 0-15 and 48-51)
         let limit_low = (raw_low & 0xFFFF) as u32;
         let limit_high = ((raw_low >> 48) & 0xF) as u32;
         let limit = (limit_low | (limit_high << 16)) as u32;
 
+        // Decode base address (32-bit in low quadword: bits 16-39 and 56-63)
         let base_low = ((raw_low >> 16) & 0xFFFFFF) as u32;
         let base_high = ((raw_low >> 56) & 0xFF) as u32;
         let mut base = ((base_high as u64) << 24) | base_low as u64;
 
+        // Decode flags (bits 52-55)
         let flags = ((raw_low >> 52) & 0xF) as u8;
-        let avl = (flags & 0x1) != 0;
-        let l = (flags & 0x2) != 0;
-        let db = (flags & 0x4) != 0;
-        let g = (flags & 0x8) != 0;
+        let avl = (flags & 0x1) != 0;  // Available for system use
+        let l = (flags & 0x2) != 0;    // Long mode (64-bit code segment)
+        let db = (flags & 0x4) != 0;   // Default operation size (0=16bit, 1=32bit)
+        let g = (flags & 0x8) != 0;    // Granularity (0=byte, 1=4KiB pages)
 
+        // For system descriptors (TSS, LDT), use upper 64 bits for extended base
         if let Some(high) = raw_high {
             base |= ((high & 0xFFFF_FFFF) as u64) << 32;
         }
 
+        // Calculate actual limit in bytes
+        // If granularity bit set, limit is in 4KiB pages
         let limit_bytes = if g {
-            ((limit as u64) << 12) | 0xFFF
+            ((limit as u64) << 12) | 0xFFF  // Multiply by 4096 and add 4095
         } else {
             limit as u64
         };
@@ -217,7 +276,32 @@ impl Monitor {
         uses_second
     }
 
-    /// Display memory map
+    /// Display UEFI memory map
+    ///
+    /// Shows the UEFI firmware memory map with all memory regions reported
+    /// during boot. Supports multiple display modes:
+    /// - Summary + sample (default): Statistics and first 8 entries
+    /// - Summary only: Just per-type totals
+    /// - All entries: Complete listing
+    /// - Single entry: Detailed view of one descriptor
+    ///
+    /// # Arguments
+    /// * `args` - Display mode and parameters:
+    ///   - No args: Summary + first 8 entries
+    ///   - `summary`: Show only per-type totals
+    ///   - `entries [N]`: Show all (or N) entries
+    ///   - `entry INDEX`: Show single entry
+    ///   - `NUMBER`: Show single entry by index
+    ///
+    /// # Examples
+    /// ```text
+    /// mmap              # Summary + first 8 entries
+    /// mmap summary      # Only type summary
+    /// mmap entries      # Show all entries
+    /// mmap entries 20   # Show first 20 entries
+    /// mmap entry 5      # Show entry #5 in detail
+    /// mmap 5            # Same as above
+    /// ```
     pub(in crate::monitor) fn cmd_memory_map(&self, args: &[&str]) {
         self.writeln("UEFI Memory Map:");
 
@@ -247,10 +331,12 @@ impl Monitor {
         let mut type_totals: Vec<TypeSummary> = Vec::new();
         let mut descriptors: Vec<UefiMemoryDescriptor> = Vec::with_capacity(entry_count);
 
+        // Parse all descriptors and build summary statistics
         for idx in 0..entry_count {
             let desc = unsafe { read_uefi_descriptor(buffer, desc_size, idx) };
             total_pages = total_pages.wrapping_add(desc.num_pages as u128);
 
+            // Accumulate per-type totals
             if let Some(entry) = type_totals.iter_mut().find(|e| e.typ == desc.typ) {
                 entry.entries += 1;
                 entry.pages = entry.pages.wrapping_add(desc.num_pages);
@@ -265,15 +351,17 @@ impl Monitor {
             descriptors.push(desc);
         }
 
+        // Sort types by page count (largest first) for summary display
         type_totals.sort_by(|a, b| b.pages.cmp(&a.pages));
 
         let total_bytes = total_pages.saturating_mul(EFI_PAGE_SIZE as u128);
 
+        // Determine display mode based on arguments
         enum MemoryMapMode {
-            SummaryOnly,
-            SummaryAndSample { sample: usize },
-            Entries { limit: Option<usize> },
-            Single { index: usize },
+            SummaryOnly,                      // Just per-type totals
+            SummaryAndSample { sample: usize }, // Summary + first N entries
+            Entries { limit: Option<usize> }, // All entries (or limited)
+            Single { index: usize },          // Single entry detail
         }
 
         let mode = if let Some(first) = args.get(0) {
@@ -376,6 +464,9 @@ impl Monitor {
         }
     }
 
+    /// Print a single UEFI memory descriptor with all details
+    ///
+    /// Displays physical/virtual range, page count, memory type, size, and attributes.
     fn print_memory_descriptor(&self, index: usize, desc: &UefiMemoryDescriptor) {
         let size_bytes = (desc.num_pages as u128).saturating_mul(EFI_PAGE_SIZE as u128);
         let phys_end = if desc.num_pages == 0 {
@@ -404,6 +495,17 @@ impl Monitor {
 
 // Helper structures and functions
 
+/// Raw IDT entry structure (16 bytes)
+///
+/// Matches the x86-64 interrupt gate descriptor format.
+/// Layout:
+/// - Bytes 0-1: offset_low (bits 0-15 of handler address)
+/// - Bytes 2-3: selector (code segment selector)
+/// - Byte 4: ist (Interrupt Stack Table index, bits 0-2)
+/// - Byte 5: type_attr (gate type and attributes)
+/// - Bytes 6-7: offset_mid (bits 16-31 of handler address)
+/// - Bytes 8-11: offset_high (bits 32-63 of handler address)
+/// - Bytes 12-15: zero (reserved, must be 0)
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
 struct RawIdtEntry {
@@ -416,6 +518,15 @@ struct RawIdtEntry {
     zero: u32,
 }
 
+/// Describe IDT gate type
+///
+/// Converts the gate type field (bits 0-3 of type_attr) to a human-readable string.
+///
+/// # Arguments
+/// * `typ` - Gate type value (0-15)
+///
+/// # Returns
+/// * Human-readable gate type description
 fn describe_idt_gate(typ: u8) -> &'static str {
     match typ {
         0x5 => "Task Gate",
@@ -427,6 +538,17 @@ fn describe_idt_gate(typ: u8) -> &'static str {
     }
 }
 
+/// Check if a GDT entry uses 16 bytes (system descriptor) vs 8 bytes (code/data)
+///
+/// System descriptors (TSS, LDT, Call/Interrupt/Trap gates) in 64-bit mode
+/// use 16 bytes to accommodate a 64-bit base address.
+///
+/// # Arguments
+/// * `raw_low` - Lower 8 bytes of the descriptor
+///
+/// # Returns
+/// * `true` - Descriptor uses 16 bytes
+/// * `false` - Descriptor uses 8 bytes
 fn gdt_entry_needs_extra(raw_low: u64) -> bool {
     let access = ((raw_low >> 40) & 0xFF) as u8;
     let is_code_or_data = (access & 0x10) != 0;
@@ -440,6 +562,17 @@ fn gdt_entry_needs_extra(raw_low: u64) -> bool {
     }
 }
 
+/// Describe segment type based on S bit and type field
+///
+/// Segments are either code/data (S=1) or system (S=0), with different
+/// type field interpretations for each.
+///
+/// # Arguments
+/// * `is_code_or_data` - S bit value (true = code/data, false = system)
+/// * `typ` - Type field (bits 0-3 of access byte)
+///
+/// # Returns
+/// * Human-readable segment type description
 fn describe_segment_type(is_code_or_data: bool, typ: u8) -> String {
     if is_code_or_data {
         let is_code = (typ & 0x8) != 0;
@@ -473,6 +606,11 @@ fn describe_segment_type(is_code_or_data: bool, typ: u8) -> String {
     }
 }
 
+/// UEFI memory descriptor (simplified)
+///
+/// Represents a single region in the UEFI memory map.
+/// Each descriptor describes a contiguous region of physical memory
+/// with a specific type and attributes.
 #[derive(Copy, Clone)]
 struct UefiMemoryDescriptor {
     typ: u32,
@@ -482,6 +620,9 @@ struct UefiMemoryDescriptor {
     attributes: u64,
 }
 
+/// Summary of memory regions by type
+///
+/// Used to aggregate memory map entries by type for summary display.
 #[derive(Clone)]
 struct TypeSummary {
     typ: u32,
@@ -489,12 +630,36 @@ struct TypeSummary {
     pages: u64,
 }
 
+/// Read a UEFI memory descriptor from the memory map buffer
+///
+/// Safely reads descriptor fields handling variable descriptor sizes.
+/// UEFI allows descriptor sizes >= 32 bytes, so we check sizes before reading.
+///
+/// # Arguments
+/// * `buffer` - Pointer to memory map buffer
+/// * `desc_size` - Size of each descriptor in bytes
+/// * `index` - Index of the descriptor to read
+///
+/// # Returns
+/// * Parsed memory descriptor
+///
+/// # Safety
+/// Caller must ensure buffer is valid and contains at least (index+1) * desc_size bytes.
 unsafe fn read_uefi_descriptor(
     buffer: *const u8,
     desc_size: usize,
     index: usize,
 ) -> UefiMemoryDescriptor {
     let ptr = buffer.add(index * desc_size);
+    
+    // UEFI memory descriptor layout (minimum 32 bytes, may be larger):
+    // Offset 0-3:   Type (u32)
+    // Offset 4-7:   Padding
+    // Offset 8-15:  PhysicalStart (u64)
+    // Offset 16-23: VirtualStart (u64)
+    // Offset 24-31: NumberOfPages (u64)
+    // Offset 32-39: Attribute (u64)
+    
     let typ = core::ptr::read_unaligned(ptr as *const u32);
     let phys_start = if desc_size >= 16 {
         core::ptr::read_unaligned(ptr.add(8) as *const u64)
@@ -525,6 +690,13 @@ unsafe fn read_uefi_descriptor(
     }
 }
 
+/// Convert UEFI memory type code to human-readable string
+///
+/// # Arguments
+/// * `typ` - UEFI memory type code (0-15, or higher for vendor-specific)
+///
+/// # Returns
+/// * Human-readable memory type name
 fn uefi_memory_type_to_str(typ: u32) -> &'static str {
     match typ {
         0 => "Reserved",
@@ -547,6 +719,23 @@ fn uefi_memory_type_to_str(typ: u32) -> &'static str {
     }
 }
 
+/// Describe UEFI memory attributes as a pipe-separated flag string
+///
+/// Decodes the attribute bits into readable cache/access flags:
+/// - UC: Uncacheable
+/// - WC: Write Combining
+/// - WT: Write Through
+/// - WP: Write Protected
+/// - WB: Write Back
+/// - UCE: Uncacheable Exported
+/// - XP: Execute Protected (no-execute)
+/// - RT: Runtime (used by firmware runtime services)
+///
+/// # Arguments
+/// * `attrs` - 64-bit attribute bitfield from UEFI memory descriptor
+///
+/// # Returns
+/// * Pipe-separated string of active flags (e.g., "WB|RT")
 fn describe_memory_attributes(attrs: u64) -> String {
     const EFI_MEMORY_UC: u64 = 0x0000_0000_0000_0001;
     const EFI_MEMORY_WC: u64 = 0x0000_0000_0000_0002;
@@ -590,6 +779,17 @@ fn describe_memory_attributes(attrs: u64) -> String {
     }
 }
 
+/// Format byte count in human-readable units
+///
+/// Converts a byte count to appropriate units (B, KiB, MiB, GiB, TiB, PiB)
+/// using binary (1024) scaling.
+///
+/// # Arguments
+/// * `value` - Number of bytes to format
+///
+/// # Returns
+/// * Formatted string with both exact bytes and scaled value
+/// * Example: "268435456 bytes (~256 MiB)"
 fn format_bytes(value: u128) -> String {
     const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
     let mut scaled = value;
