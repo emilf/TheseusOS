@@ -392,6 +392,21 @@ pub fn base_pfn() -> Option<u64> {
         .map(|mgr| mgr.base_pfn.start_address())
 }
 
+/// Snapshot of persistent allocator state.
+pub struct Stats {
+    pub base_pfn: u64,
+    pub total_frames: u64,
+    pub free_frames: u64,
+}
+
+pub fn stats() -> Option<Stats> {
+    PHYS_MANAGER.lock().as_ref().map(|mgr| Stats {
+        base_pfn: mgr.base_pfn.start_address(),
+        total_frames: mgr.total_frames,
+        free_frames: mgr.free_frames,
+    })
+}
+
 pub struct PersistentFrameAllocator;
 
 unsafe impl FrameAllocator<Size4KiB> for PersistentFrameAllocator {

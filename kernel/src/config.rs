@@ -9,7 +9,7 @@ pub const VERBOSE_KERNEL_OUTPUT: bool = true;
 
 /// When `true` the kernel will idle (keep running) after initialization.
 /// When `false` the kernel will exit QEMU immediately (useful for CI).
-pub const KERNEL_SHOULD_IDLE: bool = false;
+pub const KERNEL_SHOULD_IDLE: bool = true;
 
 /// When `true`, dump the UEFI hardware inventory entries during driver init.
 pub const PRINT_HARDWARE_INVENTORY: bool = true;
@@ -18,7 +18,7 @@ pub const PRINT_HARDWARE_INVENTORY: bool = true;
 pub const ENABLE_SERIAL_OUTPUT: bool = true;
 
 /// When `true`, activate the interactive kernel monitor on COM1.
-pub const ENABLE_KERNEL_MONITOR: bool = false;
+pub const ENABLE_KERNEL_MONITOR: bool = true;
 
 /// When `true`, run the raw COM1 reverse-echo loop after high-half transition.
 /// This is intended for temporary debugging; the kernel will not progress while enabled.

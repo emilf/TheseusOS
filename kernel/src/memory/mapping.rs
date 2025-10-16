@@ -6,7 +6,7 @@ use super::{
     PTE_GLOBAL, PTE_NO_EXEC, PTE_PCD, PTE_PRESENT, PTE_PS, PTE_PWT, PTE_WRITABLE,
     TEMP_HEAP_VIRTUAL_BASE,
 };
-use crate::memory::{BootFrameAllocator, FrameSource};
+use crate::memory::FrameSource;
 use crate::memory::page_table_builder::PageTableBuilder;
 
 /// Set up identity mapping for first 1 GiB using 2 MiB pages
@@ -14,7 +14,7 @@ use crate::memory::page_table_builder::PageTableBuilder;
 ///
 /// This is used during early boot so that low-VA virtual accesses still find
 /// expected physical frames while the higher-half mappings are established.
-pub unsafe fn identity_map_first_1gb_2mb_alloc(pml4: &mut PageTable, fa: &mut BootFrameAllocator) {
+pub unsafe fn identity_map_first_1gb_2mb_alloc<F: FrameSource>(pml4: &mut PageTable, fa: &mut F) {
     let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_PS;
     let gigabyte: u64 = 1 << 30;
     let two_mb: u64 = 2 * 1024 * 1024;

@@ -6,8 +6,8 @@
 use crate::display::kernel_write_line;
 use crate::handoff::handoff_phys_ptr;
 use crate::memory::{
-    current_pml4_phys, map_range_with_policy, phys_to_virt_pa, BootFrameAllocator, PageTable,
-    PTE_GLOBAL, PTE_NO_EXEC, PTE_PRESENT, PTE_WRITABLE,
+    current_pml4_phys, map_range_with_policy, phys_to_virt_pa, PageTable, PTE_GLOBAL, PTE_NO_EXEC,
+    PTE_PRESENT, PTE_WRITABLE,
 };
 use crate::physical_memory;
 use acpi::{sdt::SdtHeader, AcpiHandler, AcpiTables, PhysicalMapping};
@@ -101,13 +101,14 @@ fn ensure_acpi_virtual_mapping(phys_addr: u64, size: usize) -> u64 {
             let phys_page_base = handoff.memory_map_buffer_ptr & !(page_size - 1);
             let offset_in_page = handoff.memory_map_buffer_ptr - phys_page_base;
             let total = ((offset_in_page + memmap_len + page_size - 1) / page_size) * page_size;
+            let mut persistent = physical_memory::PersistentFrameAllocator;
             map_range_with_policy(
                 pml4,
                 crate::memory::PHYS_OFFSET.wrapping_add(phys_page_base),
                 phys_page_base,
                 total,
                 PTE_PRESENT | PTE_WRITABLE,
-                &mut BootFrameAllocator::empty(),
+                &mut persistent,
             );
         }
 

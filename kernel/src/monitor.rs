@@ -68,6 +68,7 @@ use crate::drivers::manager::driver_manager;
 use crate::drivers::serial;
 use crate::drivers::traits::DeviceClass;
 use crate::memory;
+use crate::physical_memory;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -325,6 +326,7 @@ impl Monitor {
             "fill" | "f" => self.cmd_fill(&parts[1..]),
             "devices" | "dev" => self.cmd_devices(),
             "acpi" => self.cmd_acpi(),
+            "phys" | "physmem" => self.cmd_phys(),
             "stack" | "bt" => self.cmd_stack_trace(),
             "idt" => self.cmd_idt(&parts[1..]),
             "gdt" => self.cmd_gdt(&parts[1..]),
@@ -358,6 +360,7 @@ impl Monitor {
         self.writeln("");
         self.writeln("System Information:");
         self.writeln("  regs                 - Display general/control/segment registers");
+        self.writeln("  phys, physmem       - Persistent physical allocator summary");
         self.writeln("  devices, dev         - List registered hardware devices");
         self.writeln("  acpi                 - ACPI RSDP + platform summary");
         self.writeln("  mmap [summary|entries [N]|entry IDX]");
@@ -382,6 +385,34 @@ impl Monitor {
         self.writeln("  clear, cls          - Clear screen");
         self.writeln("");
         self.writeln("Numbers accept hex (0x...) or decimal input.");
+    }
+
+    fn cmd_phys(&self) {
+        if let Some(stats) = physical_memory::stats() {
+            let page_size = memory::PAGE_SIZE as u64;
+            let total_bytes = stats.total_frames.saturating_mul(page_size);
+            let free_bytes = stats.free_frames.saturating_mul(page_size);
+            let guard = memory::runtime_kernel_lower_guard();
+            self.writeln("Persistent Physical Memory Manager:");
+            self.writeln(&format!(
+                "  base PFN:    0x{:016X}",
+                stats.base_pfn
+            ));
+            self.writeln(&format!(
+                "  total frames: {} ({:#X} bytes)",
+                stats.total_frames, total_bytes
+            ));
+            self.writeln(&format!(
+                "  free frames:  {} ({:#X} bytes)",
+                stats.free_frames, free_bytes
+            ));
+            self.writeln(&format!(
+                "  guard window: {:#X} bytes below runtime base",
+                guard
+            ));
+        } else {
+            self.writeln("Persistent allocator not initialised yet");
+        }
     }
 
     /// Display CPU registers
