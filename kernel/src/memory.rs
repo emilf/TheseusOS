@@ -398,7 +398,6 @@ impl MemoryManager {
             // Map kernel code/data into the high-half using 4KiB pages with frame allocator
             map_kernel_high_half_4k_alloc(pml4, handoff, &mut early_frame_alloc);
             crate::display::kernel_write_line("  [vm/new] map kernel HH done");
-            // Debug: print PML4[HH] entry after mapping
             let hh_index = ((KERNEL_VIRTUAL_BASE >> 39) & 0x1FF) as usize;
             let pml4_addr = pml4 as *mut PageTable as u64;
             let entry_val = core::ptr::read_volatile((pml4_addr as *const u64).add(hh_index));
@@ -742,7 +741,6 @@ pub use page_table_builder::PageTableBuilder;
 /// - The page table root address is valid and accessible
 /// - No other code is modifying CR3 concurrently
 pub unsafe fn activate_virtual_memory(page_table_root: u64) {
-    // Debug: print the page_table_root being loaded and current CR3
     {
         use x86_64::registers::control::Cr3;
         crate::display::kernel_write_line("[dbg] activate_virtual_memory: loading CR3 with=");

@@ -94,7 +94,6 @@ unsafe fn draw_pixel_bgra(
     bgra_color: u32,
     verbose: bool,
 ) {
-    // Debug: Print pixel calculations for specific coordinates (only if verbose)
     if verbose
         && ((x == 100 && y == 50)
             || (x == 200 && y == 50)
@@ -122,27 +121,6 @@ unsafe fn draw_pixel_bgra(
 
     let offset = get_pixel_offset(x, y, width, stride);
     let fb_ptr = get_framebuffer_ptr();
-
-    // Debug: Print pixel calculations for specific coordinates
-    if (x == 100 && y == 50)
-        || (x == 200 && y == 50)
-        || (x == 300 && y == 50)
-        || (x == 400 && y == 50)
-    {
-        theseus_shared::qemu_print!("Pixel (");
-        theseus_shared::print_hex_u64_0xe9!(x as u64);
-        theseus_shared::qemu_print!(",");
-        theseus_shared::print_hex_u64_0xe9!(y as u64);
-        theseus_shared::qemu_print!(") offset=");
-        theseus_shared::print_hex_u64_0xe9!(offset as u64);
-        theseus_shared::qemu_print!(" stride=");
-        theseus_shared::print_hex_u64_0xe9!(stride as u64);
-        theseus_shared::qemu_print!(" fb_ptr=");
-        theseus_shared::print_hex_u64_0xe9!(fb_ptr as u64);
-        theseus_shared::qemu_print!(" bgra_color=");
-        theseus_shared::print_hex_u64_0xe9!(bgra_color as u64);
-        theseus_shared::qemu_println!("");
-    }
 
     core::ptr::write_unaligned(fb_ptr.add(offset) as *mut u32, bgra_color);
 }

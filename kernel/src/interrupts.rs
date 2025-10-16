@@ -677,7 +677,6 @@ pub unsafe fn lapic_timer_configure() {
     // Clear and read ESR
     write_apic_register(apic_base, 0x280, 0);
     let esr = read_apic_register(apic_base, 0x280);
-    // Debug: dump key LAPIC regs
     let id = read_apic_register(apic_base, 0x20);
     let ver = read_apic_register(apic_base, 0x30);
     let sivr = read_apic_register(apic_base, 0xF0);
@@ -707,7 +706,6 @@ pub unsafe fn lapic_timer_start_oneshot(initial_count: u32) {
     lvt &= !(1 << 16);
     write_apic_register(apic_base, 0x320, lvt);
     write_apic_register(apic_base, 0x380, initial_count);
-    // Debug: read current count right after arming
     let cur = read_apic_register(apic_base, 0x390);
     print_str_0xe9("  [lapic] current=");
     print_hex_u64_0xe9(cur as u64);
