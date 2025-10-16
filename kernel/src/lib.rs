@@ -33,7 +33,7 @@ pub mod stack;
 pub mod config;
 
 // Re-export commonly used types and functions
-pub use display::kernel_write_line;
+pub use display::kernel_write_line; // Kept for compatibility, migrating to log_* macros
 pub use environment::setup_kernel_environment;
 pub use handoff::{set_handoff_pointers, validate_handoff};
 
@@ -91,7 +91,7 @@ pub extern "C" fn kernel_entry(handoff_addr: u64) -> ! {
             let handoff = &*handoff_ptr;
 
             if handoff.size > 0 {
-                crate::display::kernel_write_line("Handoff structure found");
+                log_debug!("Handoff structure found");
 
                 // Dump handoff structure only if verbose output is enabled
                 if crate::config::VERBOSE_KERNEL_OUTPUT {
@@ -100,10 +100,9 @@ pub extern "C" fn kernel_entry(handoff_addr: u64) -> ! {
 
                 // Sanity-check critical fields to fail-fast on malformed handoff
                 match crate::handoff::validate_handoff(handoff) {
-                    Ok(()) => crate::display::kernel_write_line("Handoff validation passed"),
+                    Ok(()) => log_debug!("Handoff validation passed"),
                     Err(msg) => {
-                        crate::display::kernel_write_line("Handoff validation failed: ");
-                        theseus_shared::qemu_println!(msg);
+                        log_error!("Handoff validation failed: {}", msg);
                         panic!("Invalid handoff structure");
                     }
                 }
@@ -118,15 +117,15 @@ pub extern "C" fn kernel_entry(handoff_addr: u64) -> ! {
                     crate::config::VERBOSE_KERNEL_OUTPUT,
                 );
             } else {
-                crate::display::kernel_write_line("ERROR: Handoff structure has invalid size");
+                log_error!("ERROR: Handoff structure has invalid size");
             }
         } else {
-            crate::display::kernel_write_line("ERROR: Handoff structure address is null");
+            log_error!("ERROR: Handoff structure address is null");
         }
     }
 
     // If we reach here, it means setup_kernel_environment returned (which shouldn't happen)
-    crate::display::kernel_write_line("ERROR: setup_kernel_environment returned unexpectedly");
+    log_error!("ERROR: setup_kernel_environment returned unexpectedly");
     loop {}
 }
 
@@ -162,9 +161,7 @@ pub extern "C" fn kernel_entry(handoff_addr: u64) -> ! {
 /// ```
 pub fn test_runner(tests: &[&dyn Fn()]) {
     // Print the number of tests we're about to run
-    theseus_shared::qemu_print!("Running ");
-    theseus_shared::print_hex_u64_0xe9!(tests.len() as u64);
-    theseus_shared::qemu_println!(" tests");
+    log_info!("Running {} tests", tests.len());
 
     // Attempt to run each test function
     // NOTE: This is where the hanging occurs in bare-metal environments
@@ -173,6 +170,6 @@ pub fn test_runner(tests: &[&dyn Fn()]) {
     }
 
     // If we reach here, all tests passed
-    theseus_shared::qemu_println!("All tests passed!");
+    log_info!("All tests passed!");
     theseus_shared::qemu_exit_ok!();
 }

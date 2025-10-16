@@ -3,6 +3,7 @@
 //! This module provides ACPI table parsing capabilities for the kernel using the acpi crate.
 //! It implements the AcpiHandler trait to map physical memory regions using PHYS_OFFSET.
 
+use crate::log_debug;
 use crate::display::kernel_write_line;
 use crate::handoff::handoff_phys_ptr;
 use crate::memory::{
@@ -76,7 +77,7 @@ fn ensure_acpi_virtual_mapping(phys_addr: u64, size: usize) -> u64 {
     if crate::memory::phys_offset_is_active() {
         if !PHYS_OFFSET_FALLBACK_WARNED.load(Ordering::Relaxed) {
             PHYS_OFFSET_FALLBACK_WARNED.store(true, Ordering::Relaxed);
-            kernel_write_line("  [acpi/debug] using PHYS_OFFSET mapping for ACPI access");
+            log_debug!("Using PHYS_OFFSET mapping for ACPI access");
         }
         return phys_to_virt_pa(phys_addr);
     }

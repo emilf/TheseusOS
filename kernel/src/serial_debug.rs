@@ -44,6 +44,7 @@
 
 use alloc::vec::Vec;
 
+use crate::log_info;
 use crate::drivers::manager::driver_manager;
 use crate::drivers::traits::DeviceClass;
 
@@ -80,7 +81,7 @@ const MAX_LINE: usize = 256;
 /// }
 /// ```
 pub fn run_reverse_echo_session() -> ! {
-    crate::display::kernel_write_line("[serial] reverse echo session active");
+    log_info!("Serial reverse echo session active");
 
     let mut line = Vec::with_capacity(MAX_LINE);
     let mut byte_buf = [0u8; 1];

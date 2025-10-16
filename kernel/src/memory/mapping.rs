@@ -1,6 +1,7 @@
 //! Mapping helpers moved out of `memory.rs` to isolate page-table construction
 //! and mapping policies.
 
+use crate::log_debug;
 use super::{
     runtime_kernel_phys_base, PageTable, PageTableEntry, KERNEL_VIRTUAL_BASE, PAGE_SIZE, PHYS_OFFSET,
     PTE_GLOBAL, PTE_NO_EXEC, PTE_PCD, PTE_PRESENT, PTE_PS, PTE_PWT, PTE_WRITABLE,
@@ -22,11 +23,7 @@ pub unsafe fn identity_map_first_1gb_2mb_alloc<F: FrameSource>(pml4: &mut PageTa
     let mut count: u32 = 0;
     while addr < gigabyte {
         if count < 4 {
-            crate::display::kernel_write_line("    [vm] map2m");
-            theseus_shared::print_hex_u64_0xe9!(addr);
-            crate::display::kernel_write_line(" -> ");
-            theseus_shared::print_hex_u64_0xe9!(addr);
-            crate::display::kernel_write_line("\n");
+            log_debug!("map2m {:#x} -> {:#x}", addr, addr);
         }
         super::map_2mb_page_alloc(pml4, addr, addr, flags, fa);
         addr += two_mb;

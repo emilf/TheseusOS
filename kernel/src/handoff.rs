@@ -10,6 +10,7 @@
 //! - Pointer management for physical and virtual access
 //! - Safe access to handoff data
 
+use crate::{log_debug, log_trace};
 use crate::memory;
 use theseus_shared::handoff::Handoff;
 
@@ -33,11 +34,7 @@ pub fn set_handoff_pointers(handoff_phys: u64) {
         HANDOFF_VIRT_PTR = handoff_phys; // keep physical pointer to avoid stale HH mapping
         HANDOFF_INITIALIZED = true;
     }
-    crate::display::kernel_write_line("[handoff] phys=");
-    theseus_shared::print_hex_u64_0xe9!(handoff_phys);
-    crate::display::kernel_write_line(" virt=");
-    theseus_shared::print_hex_u64_0xe9!(handoff_phys);
-    crate::display::kernel_write_line("\n");
+    log_trace!("Handoff addresses: phys={:#x} virt={:#x}", handoff_phys, handoff_phys);
 }
 
 /// Get a reference to the handoff structure
@@ -85,11 +82,7 @@ pub fn handoff_phys_ptr() -> u64 {
 pub fn validate_handoff(h: &Handoff) -> Result<(), &'static str> {
     // Expected struct size and version
     let expected_size = core::mem::size_of::<Handoff>() as u32;
-    crate::display::kernel_write_line("  Debug: handoff.size = ");
-    theseus_shared::print_hex_u64_0xe9!(h.size as u64);
-    crate::display::kernel_write_line(" expected = ");
-    theseus_shared::print_hex_u64_0xe9!(expected_size as u64);
-    crate::display::kernel_write_line("\n");
+    log_debug!("Handoff size: actual={:#x} expected={:#x}", h.size, expected_size);
 
     if h.size != expected_size {
         return Err("handoff.size does not match Handoff struct size");

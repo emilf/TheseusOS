@@ -185,35 +185,15 @@ pub fn runtime_kernel_phys_base(handoff: &theseus_shared::handoff::Handoff) -> u
         .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
         .is_ok()
     {
-        crate::display::kernel_write_line("[runtime_phys_base] raw=");
-        theseus_shared::print_hex_u64_0xe9!(raw_base);
-        crate::display::kernel_write_line(" guard=");
-        theseus_shared::print_hex_u64_0xe9!(guard_bytes);
-        crate::display::kernel_write_line(" virt_base=");
-        theseus_shared::print_hex_u64_0xe9!(virt_base);
-        crate::display::kernel_write_line(" virt_entry=");
-        theseus_shared::print_hex_u64_0xe9!(virt_entry);
-        crate::display::kernel_write_line(" entry_phys=");
-        theseus_shared::print_hex_u64_0xe9!(entry_phys);
-        crate::display::kernel_write_line(" after_phys=");
-        theseus_shared::print_hex_u64_0xe9!(after_entry_phys);
-        crate::display::kernel_write_line(" cont_phys=");
-        theseus_shared::print_hex_u64_0xe9!(cont_entry_phys);
-        crate::display::kernel_write_line(" stack_switch_phys=");
-        theseus_shared::print_hex_u64_0xe9!(stack_switch_phys);
-        crate::display::kernel_write_line(" disable_irqs_phys=");
-        theseus_shared::print_hex_u64_0xe9!(disable_irqs_phys);
-        crate::display::kernel_write_line(" setup_idt_phys=");
-        theseus_shared::print_hex_u64_0xe9!(setup_idt_phys);
-        crate::display::kernel_write_line(" setup_gdt_phys=");
-        theseus_shared::print_hex_u64_0xe9!(setup_gdt_phys);
-        crate::display::kernel_write_line(" setup_ctrl_phys=");
-        theseus_shared::print_hex_u64_0xe9!(setup_ctrl_phys);
-        crate::display::kernel_write_line(" min_phys=");
-        theseus_shared::print_hex_u64_0xe9!(min_phys);
-        crate::display::kernel_write_line(" final=");
-        theseus_shared::print_hex_u64_0xe9!(base);
-        crate::display::kernel_write_line("\n");
+        log_trace!(
+            "Runtime phys base: raw={:#x} guard={:#x} virt_base={:#x} virt_entry={:#x} \
+             entry_phys={:#x} after_phys={:#x} cont_phys={:#x} stack_switch_phys={:#x} \
+             disable_irqs_phys={:#x} setup_idt_phys={:#x} setup_gdt_phys={:#x} \
+             setup_ctrl_phys={:#x} min_phys={:#x} final={:#x}",
+            raw_base, guard_bytes, virt_base, virt_entry, entry_phys, after_entry_phys,
+            cont_entry_phys, stack_switch_phys, disable_irqs_phys, setup_idt_phys,
+            setup_gdt_phys, setup_ctrl_phys, min_phys, base
+        );
     }
     ACTUAL_KERNEL_LOWER_GUARD.store(guard_bytes, Ordering::Relaxed);
     ACTUAL_KERNEL_PHYS_BASE.store(base, Ordering::Relaxed);

@@ -51,7 +51,6 @@ mod commands;
 mod parsing;
 
 use crate::config;
-use crate::display::kernel_write_line;
 use crate::drivers::manager::driver_manager;
 use crate::drivers::serial;
 use crate::drivers::traits::DeviceClass;
@@ -59,6 +58,8 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
+
+use crate::log_debug;
 
 /// Monitor prompt string
 const PROMPT: &str = "\r\n> ";
@@ -87,7 +88,7 @@ pub fn init() {
         let mut monitor = Monitor::new();
         monitor.activate();
         *guard = Some(monitor);
-        kernel_write_line("[monitor] interactive console ready");
+        log_debug!("Monitor interactive console ready");
     } else if let Some(monitor) = guard.as_mut() {
         monitor.activate();
     }
@@ -125,7 +126,7 @@ pub fn push_serial_byte(byte: u8) {
         let mut monitor = Monitor::new();
         monitor.activate();
         *guard = Some(monitor);
-        kernel_write_line("[monitor] interactive console ready");
+        log_debug!("Monitor interactive console ready");
     }
 
     if let Some(monitor) = guard.as_mut() {

@@ -10,6 +10,7 @@
 //! - Floating point unit setup (SSE/AVX)
 //! - Model Specific Register (MSR) configuration
 
+use crate::log_debug;
 use raw_cpuid::CpuId;
 use spin::Once;
 
@@ -123,7 +124,7 @@ pub unsafe fn setup_control_registers() {
     // Configure CR0
     {
         use x86_64::registers::control::{Cr0, Cr0Flags};
-        crate::display::kernel_write_line("  [cr] CR0: begin");
+        log_debug!("CR0: begin");
         let mut f0 = Cr0::read();
         f0.insert(Cr0Flags::PROTECTED_MODE_ENABLE);
         // Do NOT enable CR0.PAGING here; CR3 must be loaded and page tables prepared
@@ -135,15 +136,15 @@ pub unsafe fn setup_control_registers() {
         f0.remove(Cr0Flags::EMULATE_COPROCESSOR);
         f0.insert(Cr0Flags::MONITOR_COPROCESSOR);
         Cr0::write(f0);
-        crate::display::kernel_write_line("  [cr] CR0: done");
+        log_debug!("CR0: done");
     }
 
     // Configure CR4
     {
         use x86_64::registers::control::Cr4;
-        crate::display::kernel_write_line("  [cr] CR4: begin");
+        log_debug!("CR4: begin");
         let _ = Cr4::read();
-        crate::display::kernel_write_line("  [cr] CR4: skip modifications");
+        log_debug!("CR4: skip modifications");
     }
 }
 
