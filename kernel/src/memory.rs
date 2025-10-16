@@ -717,13 +717,9 @@ pub use page_table_builder::PageTableBuilder;
 pub unsafe fn activate_virtual_memory(page_table_root: u64) {
     {
         use x86_64::registers::control::Cr3;
-        crate::display::kernel_write_line("[dbg] activate_virtual_memory: loading CR3 with=");
-        theseus_shared::print_hex_u64_0xe9!(page_table_root);
-        crate::display::kernel_write_line("\n");
+        log_debug!("activate_virtual_memory: loading CR3 with={:#x}", page_table_root);
         let (old, _f) = Cr3::read();
-        crate::display::kernel_write_line("[dbg] activate_virtual_memory: CR3 before=");
-        theseus_shared::print_hex_u64_0xe9!(old.start_address().as_u64());
-        crate::display::kernel_write_line("\n");
+        log_trace!("activate_virtual_memory: CR3 before={:#x}", old.start_address().as_u64());
     }
     // Load our page table root into CR3 to enable virtual memory
     core::arch::asm!(
@@ -735,9 +731,7 @@ pub unsafe fn activate_virtual_memory(page_table_root: u64) {
     {
         use x86_64::registers::control::Cr3;
         let (new, _f2) = Cr3::read();
-        crate::display::kernel_write_line("[dbg] activate_virtual_memory: CR3 after=");
-        theseus_shared::print_hex_u64_0xe9!(new.start_address().as_u64());
-        crate::display::kernel_write_line("\n");
+        log_debug!("activate_virtual_memory: CR3 after={:#x}", new.start_address().as_u64());
     }
 }
 
@@ -873,7 +867,7 @@ pub fn unmap_temporary_heap_x86<M>(mapper: &mut M, handoff: &theseus_shared::han
 where
     M: Mapper<Size4KiB>,
 {
-    crate::display::kernel_write_line("[dbg] unmap_temporary_heap_x86: begin\n");
+    log_debug!("unmap_temporary_heap_x86: begin");
     // Trait not needed for direct calls here
     let heap_virtual = TEMP_HEAP_VIRTUAL_BASE;
     let heap_size = handoff.temp_heap_size;
@@ -897,7 +891,7 @@ pub fn unmap_identity_kernel_x86<M>(mapper: &mut M, handoff: &theseus_shared::ha
 where
     M: Mapper<Size4KiB>,
 {
-    crate::display::kernel_write_line("[dbg] unmap_identity_kernel_x86: begin\n");
+    log_debug!("unmap_identity_kernel_x86: begin");
     // Trait not needed for direct calls here
     let phys_base = runtime_kernel_phys_base(handoff);
     let phys_size = handoff.kernel_image_size;

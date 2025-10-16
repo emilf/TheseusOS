@@ -84,7 +84,7 @@
 use alloc::vec::Vec;
 use spin::Mutex;
 
-use crate::display::kernel_write_line;
+use crate::{log_debug, log_error, log_trace};
 
 use super::traits::{Device, DeviceClass, DeviceId, Driver};
 
@@ -116,24 +116,23 @@ impl DriverManager {
     pub fn register_driver(&mut self, drv: &'static dyn Driver) {
         match drv.on_register() {
             Ok(true) => {
-                kernel_write_line("[driver] registering driver");
+                log_debug!("Registering driver");
                 self.drivers.push(drv);
                 self.probe_pending_devices();
             }
             Ok(false) => {
-                kernel_write_line("[driver] driver registered (deferred)");
+                log_debug!("Driver registered (deferred)");
                 self.drivers.push(drv);
             }
             Err(e) => {
-                kernel_write_line("[driver] driver registration failed: ");
-                kernel_write_line(e);
+                log_error!("Driver registration failed: {}", e);
             }
         }
     }
 
     /// Add a discovered device and run probe logic
     pub fn add_device(&mut self, device: Device) {
-        kernel_write_line("[driver] discovered device");
+        log_trace!("Discovered device");
         self.devices.push(device);
         self.probe_pending_devices();
     }
@@ -150,11 +149,10 @@ impl DriverManager {
                 match drv.probe(dev) {
                     Ok(()) => {
                         if let Err(e) = drv.init(dev) {
-                            kernel_write_line("[driver] device init failed:");
-                            kernel_write_line(e);
+                            log_error!("Device init failed: {}", e);
                             continue;
                         }
-                        kernel_write_line("[driver] device bound successfully");
+                        log_debug!("Device bound successfully");
                         break;
                     }
                     Err(_) => {

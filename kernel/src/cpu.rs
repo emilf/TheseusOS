@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! CPU setup and control module
 //!
 //! This module provides functions to configure CPU features, control registers,
@@ -283,12 +282,6 @@ pub unsafe fn has_fsgsbase() -> bool {
     if let Some(efi) = CpuId::new().get_extended_feature_info() {
         return efi.has_fsgsbase();
     }
-    false
-}
-
-/// Check if OSXSAVE is available
-unsafe fn has_osxsave() -> bool {
-    // Querying OSXSAVE via CPUID bit 27 is unreliable before CR4.OSXSAVE; treat as false
     false
 }
 

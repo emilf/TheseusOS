@@ -36,6 +36,7 @@
 //! - 0x390: Timer Current Count
 //! - 0x3E0: Timer Divide Configuration
 
+use crate::log_debug;
 use x86_64::instructions::port::Port;
 
 /// APIC error interrupt vector
@@ -98,7 +99,7 @@ unsafe fn disable_nmi() {
 /// the timer.
 unsafe fn disable_local_apic() {
     // Defer LAPIC access until after paging maps the MMIO region
-    crate::display::kernel_write_line("  [apic] deferring LAPIC access until after paging");
+    log_debug!("Deferring LAPIC access until after paging");
 }
 
 /// Mask all legacy PIC (8259) interrupts

@@ -6,7 +6,7 @@
 
 use crate::acpi::{self, PlatformInfo};
 use crate::config;
-use crate::display::kernel_write_line;
+use crate::{log_debug, log_info, log_warn};
 use crate::handoff::handoff_phys_ptr;
 
 use super::manager::driver_manager;
@@ -19,34 +19,30 @@ pub type DriverResult<T> = Result<T, &'static str>;
 
 /// Initialize the driver system using information from the handoff
 pub fn init() -> DriverResult<PlatformInfo> {
-    kernel_write_line("[driver] initializing driver system");
+    log_debug!("Initializing driver system");
 
     let handoff = unsafe { &*(handoff_phys_ptr() as *const theseus_shared::handoff::Handoff) };
 
     let platform_info = acpi::initialize_acpi(handoff.acpi_rsdp)?;
-    kernel_write_line("[driver] ACPI initialization complete");
+    log_info!("ACPI initialization complete");
 
     if let Some(madt) = &platform_info.madt_info {
         if let Some(io_apic) = madt.io_apics.first() {
             serial::install_io_apic_info(io_apic.address, io_apic.gsi_base);
-            kernel_write_line("[driver] serial IO APIC info installed");
-            kernel_write_line("  address: 0x");
-            theseus_shared::print_hex_u64_0xe9!(io_apic.address);
-            kernel_write_line(" gsi_base: ");
-            theseus_shared::print_hex_u64_0xe9!(io_apic.gsi_base as u64);
-            kernel_write_line("\n");
+            log_debug!("Serial IO APIC info installed: address={:#x} gsi_base={}",
+                io_apic.address, io_apic.gsi_base);
         }
     }
 
     serial::init_serial();
-    kernel_write_line("[driver] serial driver registered");
+    log_debug!("Serial driver registered");
 
     if handoff.hardware_device_count == 0 || handoff.hardware_inventory_ptr == 0 {
-        kernel_write_line("[driver] hardware inventory missing");
+        log_warn!("Hardware inventory missing");
         return Ok(platform_info);
     }
 
-    kernel_write_line("[driver] registering UEFI hardware inventory");
+    log_debug!("Registering UEFI hardware inventory");
 
     let count = handoff.hardware_device_count as usize;
     let bytes = handoff.hardware_inventory_size as usize;
@@ -58,19 +54,10 @@ pub fn init() -> DriverResult<PlatformInfo> {
             .ok_or("invalid hardware inventory entry")?;
 
         if crate::config::PRINT_HARDWARE_INVENTORY {
-            kernel_write_line("[driver] inventory entry index:");
-            theseus_shared::print_hex_u64_0xe9!(idx as u64);
-            kernel_write_line(" type:");
-            kernel_write_line(entry.device_type_str());
-            if let Some(addr) = entry.address {
-                kernel_write_line(" address:");
-                theseus_shared::print_hex_u64_0xe9!(addr);
-            }
-            if let Some(irq) = entry.irq {
-                kernel_write_line(" irq:");
-                theseus_shared::print_hex_u64_0xe9!(irq as u64);
-            }
-            kernel_write_line("");
+            log_debug!("Inventory entry {}: type={} address={:#x} irq={}",
+                idx, entry.device_type_str(),
+                entry.address.unwrap_or(0),
+                entry.irq.unwrap_or(0));
         }
 
         let device_id = match entry.device_type {
@@ -92,9 +79,9 @@ pub fn init() -> DriverResult<PlatformInfo> {
 
     monitor::init();
     if config::ENABLE_KERNEL_MONITOR {
-        kernel_write_line("[monitor] activated");
+        log_info!("Monitor activated");
     } else {
-        kernel_write_line("[monitor] disabled via config");
+        log_debug!("Monitor disabled via config");
     }
 
     Ok(platform_info)

@@ -128,7 +128,7 @@ use x86_64::instructions::port::Port;
 use crate::drivers::manager::driver_manager;
 use crate::drivers::traits::{Device, DeviceClass, Driver};
 use crate::interrupts;
-use crate::kernel_write_line;
+use crate::{log_debug, log_error};
 use crate::memory;
 
 pub const LEGACY_COM1_IRQ: u32 = 4;
@@ -431,10 +431,9 @@ impl Driver for SerialDriver {
         }
 
         if let Err(err) = self.configure_irq_route(dev) {
-            kernel_write_line("[serial] failed to route IO APIC entry");
-            kernel_write_line(err);
+            log_error!("Serial: failed to route IO APIC entry: {}", err);
         } else {
-            kernel_write_line("[serial] IO APIC route configured");
+            log_debug!("Serial: IO APIC route configured");
         }
 
         port.enable_interrupts();
@@ -452,7 +451,7 @@ impl Driver for SerialDriver {
                 dev.driver_data = Some(stored as *const SerialDriverState as usize);
             }
         }
-        kernel_write_line("[serial] initialized");
+        log_debug!("Serial initialized");
         Ok(())
     }
 

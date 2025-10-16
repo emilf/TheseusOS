@@ -28,6 +28,7 @@
 //! - 0x390: Current Count (decrements to zero)
 //! - 0x3E0: Divide Configuration (clock divider)
 
+use crate::{log_debug, log_trace};
 use core::sync::atomic::Ordering;
 use super::{get_apic_base, read_apic_register, write_apic_register};
 use super::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9};
@@ -64,7 +65,7 @@ use super::apic::APIC_ERROR_VECTOR;
 pub unsafe fn lapic_timer_configure() {
     let apic_base = get_apic_base();
     
-    crate::display::kernel_write_line("  [lapic] TPR=0");
+    log_debug!("LAPIC TPR=0");
     // Set Task Priority Register to 0 (allow all interrupt priorities)
     write_apic_register(apic_base, 0x80, 0x00);
     
@@ -76,14 +77,14 @@ pub unsafe fn lapic_timer_configure() {
     
     // Set Timer Divide Configuration to /16
     // This divides the bus frequency by 16 before counting
-    crate::display::kernel_write_line("  [lapic] set divide");
+    log_debug!("LAPIC set divide");
     write_apic_register(apic_base, 0x3E0, 0x3);  // 0x3 = divide by 16
     
     // Program LVT Timer register
     // Bits 0-7: Vector number (0x40)
     // Bit 16: Mask (1 = masked/disabled)
     // Bit 17: Timer mode (0 = one-shot, 1 = periodic)
-    crate::display::kernel_write_line("  [lapic] program LVT timer (masked)");
+    log_debug!("LAPIC program LVT timer (masked)");
     let lvt_timer = (APIC_TIMER_VECTOR as u32) | (1 << 16);  // Masked one-shot
     write_apic_register(apic_base, 0x320, lvt_timer);
     
@@ -111,19 +112,10 @@ pub unsafe fn lapic_timer_configure() {
     let tpr = read_apic_register(apic_base, 0x80);
     let lvt = read_apic_register(apic_base, 0x320);
     
-    print_str_0xe9("  [lapic] ID=");
-    print_hex_u64_0xe9(id as u64);
-    print_str_0xe9(" VER=");
-    print_hex_u64_0xe9(ver as u64);
-    print_str_0xe9(" SIVR=");
-    print_hex_u64_0xe9(sivr as u64);
-    print_str_0xe9(" TPR=");
-    print_hex_u64_0xe9(tpr as u64);
-    print_str_0xe9(" LVT=");
-    print_hex_u64_0xe9(lvt as u64);
-    print_str_0xe9(" ESR=");
-    print_hex_u64_0xe9(esr as u64);
-    out_char_0xe9(b'\n');
+    log_trace!(
+        "LAPIC registers: ID={:#x} VER={:#x} SIVR={:#x} TPR={:#x} LVT={:#x} ESR={:#x}",
+        id, ver, sivr, tpr, lvt, esr
+    );
 }
 
 /// Start LAPIC timer in one-shot mode
