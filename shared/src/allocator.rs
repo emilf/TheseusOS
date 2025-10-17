@@ -78,12 +78,15 @@ pub fn install_pre_exit_allocators(alloc: PreAllocFn, dealloc: PreDeallocFn) {
 /// # Safety
 /// Caller must ensure `heap_start..heap_start+heap_size` is a valid, mapped writable region.
 pub unsafe fn init_kernel_heap(heap_start: *mut u8, heap_size: usize) {
-    let mut opt = GLOBAL_ALLOCATOR.heap.lock();
-    if opt.is_none() {
-        let mut heap = Heap::empty();
-        heap.init(heap_start, heap_size);
-        *opt = Some(heap);
+    let mut guard = GLOBAL_ALLOCATOR.heap.lock();
+    // Allow reinitialisation while we're still running with the pre-exit allocator.
+    // Once we've switched to the permanent heap, leave the existing backing intact.
+    if GLOBAL_ALLOCATOR.ready_post_exit.load(Ordering::Acquire) {
+        return;
     }
+    let mut heap = Heap::empty();
+    heap.init(heap_start, heap_size);
+    *guard = Some(heap);
 }
 
 /// Switch the allocator to use the kernel heap (post-ExitBootServices).
