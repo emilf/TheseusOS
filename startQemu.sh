@@ -78,7 +78,6 @@ QEMU_CMD=(
   ${QEMU_PAUSE_ARGS[@]}
   -drive format=raw,file="$SCRIPT_DIR/build/disk.img"
   -nic none
-  -no-reboot
 )
 
 # Append extra options from QEMU_OPTS (split on spaces safely)

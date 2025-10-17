@@ -94,6 +94,11 @@ use uefi::mem::memory_map::MemoryType;
 use uefi::Status;
 // (no additional shared imports)
 
+#[no_mangle]
+#[used]
+#[link_section = ".rodata"]
+pub static THESEUS_DEBUG_SIGNATURE: [u8; 16] = *b"THESEUSDBGBASE!\0";
+
 #[cfg(all(target_arch = "x86_64", target_os = "uefi"))]
 // Provide the Windows-style stack probing symbol expected by LLVM when we rebuild
 // the bootloader with our custom DWARF-emitting target. The implementation lives
@@ -148,6 +153,8 @@ fn efi_main() -> Status {
         "Output driver initialized: {}",
         drivers::manager::current_driver_name()
     ));
+    let msg = format!("efi_main @ {:#x}", efi_main as usize);
+    theseus_shared::qemu_println!(msg);
 
     // Test panic handler (uncomment to test)
     // panic!("Testing panic handler - this should exit QEMU with error message");
