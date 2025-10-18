@@ -3,10 +3,6 @@
 //! This module provides functions for setting up the complete kernel environment
 //! including interrupts, GDT, CPU features, virtual memory, and UEFI runtime hooks.
 
-use alloc::{format, vec::Vec};
-use alloc::string::String;
-use core::slice;
-use crate::{log_debug, log_error, log_info, log_warn};
 use crate::cpu::{setup_control_registers, setup_floating_point, setup_msrs};
 use crate::gdt::setup_gdt;
 use crate::interrupts::{disable_all_interrupts, setup_idt};
@@ -15,6 +11,10 @@ use crate::memory::{
     TEMP_HEAP_VIRTUAL_BASE,
 };
 use crate::serial_debug;
+use crate::{log_debug, log_error, log_info, log_warn};
+use alloc::string::String;
+use alloc::{format, vec::Vec};
+use core::slice;
 use theseus_shared::handoff::Handoff;
 use uefi::mem::memory_map::{MemoryAttribute, MemoryDescriptor};
 use uefi::Status;
@@ -128,7 +128,7 @@ pub extern "C" fn after_high_half_entry() -> ! {
 pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
     // Reinstall IDT and continue setup now that we're in high-half
     log_debug!("Entered high-half virtual memory");
-    
+
     // Ensure TSS IST pointers are correct before installing IDT
     unsafe {
         crate::gdt::refresh_tss_ist();
@@ -195,7 +195,6 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
         log_debug!("CR4: re-enabled OSFXSR, OSXMMEXCPT, PAGE_GLOBAL");
     }
 
-
     // Enable SSE unconditionally (AVX/MSRs remain disabled for now)
     {
         let mut f = crate::cpu::CpuFeatures::new();
@@ -242,7 +241,6 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
         }
     }
 
-
     // Initialize global allocator on a high-half VA range (mapped temp heap), then migrate to permanent heap
     {
         use crate::handoff::handoff_phys_ptr;
@@ -281,7 +279,8 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
         let pml4_pa = _frame.start_address().as_u64();
         let l4_va = crate::memory::phys_to_virt_pa(pml4_pa) as *mut X86PageTable;
         let l4: &mut X86PageTable = unsafe { &mut *l4_va };
-        let mut mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(crate::memory::PHYS_OFFSET)) };
+        let mut mapper =
+            unsafe { OffsetPageTable::new(l4, VirtAddr::new(crate::memory::PHYS_OFFSET)) };
         map_kernel_heap_x86(&mut mapper, &mut frame_alloc);
         log_debug!("Kernel heap mapped");
         let perm_base = crate::memory::KERNEL_HEAP_BASE as *mut u8;
@@ -505,7 +504,6 @@ pub fn setup_kernel_environment(_handoff: &Handoff, _kernel_physical_base: u64) 
         // Mark PHYS_OFFSET mapping active for later helpers
         crate::memory::set_phys_offset_active();
 
-
         // Defer IDT installation to step 4 (pre-jump) to avoid early faults
 
         {
@@ -599,10 +597,7 @@ fn log_uefi_firmware_time() {
     }
 }
 
-fn allocate_bitmap_storage(
-    words: usize,
-    allocator: &mut BootFrameAllocator,
-) -> &'static mut [u64] {
+fn allocate_bitmap_storage(words: usize, allocator: &mut BootFrameAllocator) -> &'static mut [u64] {
     let bytes = words
         .checked_mul(core::mem::size_of::<u64>())
         .expect("bitmap size overflow");
@@ -639,9 +634,7 @@ fn allocate_bitmap_storage(
 
 /// Call UEFI's `SetVirtualAddressMap` runtime service after the kernel has established
 /// permanent mappings for all runtime regions.
-unsafe fn set_virtual_address_map_runtime(
-    handoff_phys: u64,
-) -> Result<(), Status> {
+unsafe fn set_virtual_address_map_runtime(handoff_phys: u64) -> Result<(), Status> {
     use core::mem::{align_of, size_of};
 
     let handoff = &mut *(handoff_phys as *mut Handoff);
@@ -739,16 +732,14 @@ unsafe fn set_virtual_address_map_runtime(
     log_debug!("Runtime mapping ensured");
 
     let mut temp_vec: Vec<MemoryDescriptor> = Vec::new();
-    let descriptors_slice: &mut [MemoryDescriptor] =
-        if desc_size == size_of::<MemoryDescriptor>()
-            && map_base % align_of::<MemoryDescriptor>() == 0
-        {
-            slice::from_raw_parts_mut(map_base as *mut MemoryDescriptor, count)
-        } else {
-            temp_vec.reserve_exact(count);
-            for idx in 0..count {
-                let src =
-                    (map_base + idx * desc_size) as *const MemoryDescriptor;
+    let descriptors_slice: &mut [MemoryDescriptor] = if desc_size == size_of::<MemoryDescriptor>()
+        && map_base % align_of::<MemoryDescriptor>() == 0
+    {
+        slice::from_raw_parts_mut(map_base as *mut MemoryDescriptor, count)
+    } else {
+        temp_vec.reserve_exact(count);
+        for idx in 0..count {
+            let src = (map_base + idx * desc_size) as *const MemoryDescriptor;
             temp_vec.push(*src);
         }
         temp_vec.as_mut_slice()

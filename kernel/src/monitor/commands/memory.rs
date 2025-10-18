@@ -5,6 +5,8 @@
 //! - `dump`: Dump a larger memory region
 //! - `write`: Write a single byte to memory
 //! - `fill`: Fill a memory region with a value
+//! - `ptwalk`/`pt`: Follow the current page tables for a virtual address
+//! - `ptdump`: Inspect entries from any page-table level
 
 use crate::memory::{
     self, PageTable, PAGE_SIZE, PTE_ACCESSED, PTE_DIRTY, PTE_GLOBAL, PTE_NO_EXEC, PTE_PCD,
@@ -290,6 +292,7 @@ impl Monitor {
 
         let (frame, _) = x86_64::registers::control::Cr3::read();
         let mut table_phys = frame.start_address().as_u64();
+        // Derive the individual index used at each paging level (L4 → L1).
         let indices = [
             ((va >> 39) & 0x1FF) as usize,
             ((va >> 30) & 0x1FF) as usize,
@@ -336,7 +339,7 @@ impl Monitor {
             match level {
                 4 | 3 => {
                     if level == 3 && (value & PTE_PS) != 0 {
-                        // 1 GiB page
+                        // PDPT entry with PS=1 directly maps a 1 GiB leaf.
                         let offset = va & ((1u64 << 30) - 1);
                         final_pa = Some(next_phys + offset);
                         page_size = Some(1u64 << 30);
@@ -346,7 +349,7 @@ impl Monitor {
                 }
                 2 => {
                     if (value & PTE_PS) != 0 {
-                        // 2 MiB page
+                        // PDE with PS=1 represents a 2 MiB leaf.
                         let offset = va & ((1u64 << 21) - 1);
                         final_pa = Some(next_phys + offset);
                         page_size = Some(1u64 << 21);
@@ -384,7 +387,7 @@ impl Monitor {
     /// # Arguments
     /// * `args` - `LEVEL [PML4] [PDPT] [PD] [START [COUNT]]`
     ///   - LEVEL: 4 (PML4), 3 (PDPT), 2 (PD), 1 (PT)
-    ///   - PML4/PDPT/PD: Indices needed to reach desired level
+    ///   - PML4/PDPT/PD: Indices (supplied from top to bottom) required to reach the target level
     ///   - START: Optional starting slot index (default 0)
     ///   - COUNT: Optional number of entries to show (default 16)
     ///
@@ -409,6 +412,7 @@ impl Monitor {
             }
         };
 
+        // Determine how many intermediate indices we need to descend from the top.
         let required_path = match level {
             4 => 0,
             3 => 1,
@@ -566,6 +570,11 @@ impl Monitor {
         }
     }
 
+    /// Convert a physical address pointing at a page table into a usable reference.
+    ///
+    /// If the global `PHYS_OFFSET` mapping is active, we translate the physical address
+    /// into the higher-half window; otherwise we fall back to treating it as identity
+    /// mapped (which is only safe very early in boot).
     fn page_table_from_phys(&self, phys: u64) -> Option<&'static PageTable> {
         if phys == 0 {
             return None;
@@ -578,6 +587,10 @@ impl Monitor {
         Some(unsafe { &*(va as *const PageTable) })
     }
 
+    /// Render the common architectural flag bits of a page-table entry as a compact string.
+    ///
+    /// The returned string uses the traditional shorthand (`P`, `RW`, `US`, `NX`, etc.)
+    /// so that the monitor output mirrors what low-level documentation typically shows.
     fn entry_flags_to_string(value: u64) -> String {
         if value == 0 {
             return String::from("empty");

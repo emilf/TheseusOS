@@ -10,8 +10,8 @@
 //! - Pointer management for physical and virtual access
 //! - Safe access to handoff data
 
-use crate::{log_debug, log_trace};
 use crate::memory;
+use crate::{log_debug, log_trace};
 use theseus_shared::handoff::Handoff;
 
 // Global access to bootloader handoff
@@ -34,7 +34,11 @@ pub fn set_handoff_pointers(handoff_phys: u64) {
         HANDOFF_VIRT_PTR = handoff_phys; // keep physical pointer to avoid stale HH mapping
         HANDOFF_INITIALIZED = true;
     }
-    log_trace!("Handoff addresses: phys={:#x} virt={:#x}", handoff_phys, handoff_phys);
+    log_trace!(
+        "Handoff addresses: phys={:#x} virt={:#x}",
+        handoff_phys,
+        handoff_phys
+    );
 }
 
 /// Get a reference to the handoff structure
@@ -82,7 +86,11 @@ pub fn handoff_phys_ptr() -> u64 {
 pub fn validate_handoff(h: &Handoff) -> Result<(), &'static str> {
     // Expected struct size and version
     let expected_size = core::mem::size_of::<Handoff>() as u32;
-    log_debug!("Handoff size: actual={:#x} expected={:#x}", h.size, expected_size);
+    log_debug!(
+        "Handoff size: actual={:#x} expected={:#x}",
+        h.size,
+        expected_size
+    );
 
     if h.size != expected_size {
         return Err("handoff.size does not match Handoff struct size");

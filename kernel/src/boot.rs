@@ -63,7 +63,13 @@ fn dump_registers() {
 
     log_error!("  registers:");
     log_error!("   RIP={:#x} RSP={:#x} RBP={:#x}", rip, rsp, rbp);
-    log_error!("   RAX={:#x} RBX={:#x} RCX={:#x} RDX={:#x}", rax, rbx, rcx, rdx);
+    log_error!(
+        "   RAX={:#x} RBX={:#x} RCX={:#x} RDX={:#x}",
+        rax,
+        rbx,
+        rcx,
+        rdx
+    );
     log_error!("   RSI={:#x} RDI={:#x} RFLAGS={:#x}", rsi, rdi, flags);
     log_error!("   CR3={:#x}", cr3);
 }

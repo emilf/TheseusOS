@@ -6,8 +6,8 @@
 
 use crate::acpi::{self, PlatformInfo};
 use crate::config;
-use crate::{log_debug, log_info, log_warn};
 use crate::handoff::handoff_phys_ptr;
+use crate::{log_debug, log_info, log_warn};
 
 use super::manager::driver_manager;
 use super::serial;
@@ -29,8 +29,11 @@ pub fn init() -> DriverResult<PlatformInfo> {
     if let Some(madt) = &platform_info.madt_info {
         if let Some(io_apic) = madt.io_apics.first() {
             serial::install_io_apic_info(io_apic.address, io_apic.gsi_base);
-            log_debug!("Serial IO APIC info installed: address={:#x} gsi_base={}",
-                io_apic.address, io_apic.gsi_base);
+            log_debug!(
+                "Serial IO APIC info installed: address={:#x} gsi_base={}",
+                io_apic.address,
+                io_apic.gsi_base
+            );
         }
     }
 
@@ -54,10 +57,13 @@ pub fn init() -> DriverResult<PlatformInfo> {
             .ok_or("invalid hardware inventory entry")?;
 
         if crate::config::PRINT_HARDWARE_INVENTORY {
-            log_debug!("Inventory entry {}: type={} address={:#x} irq={}",
-                idx, entry.device_type_str(),
+            log_debug!(
+                "Inventory entry {}: type={} address={:#x} irq={}",
+                idx,
+                entry.device_type_str(),
                 entry.address.unwrap_or(0),
-                entry.irq.unwrap_or(0));
+                entry.irq.unwrap_or(0)
+            );
         }
 
         let device_id = match entry.device_type {

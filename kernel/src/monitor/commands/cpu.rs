@@ -4,8 +4,8 @@
 //! - `cpuid`: Display CPUID information (vendor, brand, features)
 //! - `msr`: Read/write Model-Specific Registers
 
-use crate::monitor::Monitor;
 use crate::monitor::parsing::parse_number;
+use crate::monitor::Monitor;
 use alloc::format;
 use alloc::vec::Vec;
 

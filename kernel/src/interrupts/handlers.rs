@@ -24,12 +24,12 @@ use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
 
 // Import shared state from parent module
-use super::{TIMER_TICKS, DOUBLE_FAULT_CONTEXT};
+use super::{DOUBLE_FAULT_CONTEXT, TIMER_TICKS};
 
 // Import helper functions from parent module
-use super::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9};
+use super::get_handoff_for_timer;
 use super::{get_apic_base, write_apic_register};
-use super::get_handoff_for_timer; // # TODO: Remove this and get framebuffer via driver subsystem
+use super::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9}; // # TODO: Remove this and get framebuffer via driver subsystem
 
 // ============================================================================
 // Exception Handlers
@@ -117,18 +117,18 @@ pub(super) extern "x86-interrupt" fn handler_gp(stack: InterruptStackFrame, code
         print_str_0xe9(" RFLAGS=");
         print_hex_u64_0xe9(stack.cpu_flags);
         print_str_0xe9(" TR=");
-        
+
         // Read task register to help debug TSS-related issues
         let tr: u16;
         core::arch::asm!("str {0:x}", out(reg) tr, options(nomem, nostack, preserves_flags));
         print_hex_u64_0xe9(tr as u64);
-        
+
         // Dump 8 bytes at RIP to see what instruction caused the fault
         print_str_0xe9(" INS=");
         let rip = stack.instruction_pointer.as_u64();
         let ins = core::ptr::read_volatile(rip as *const u64);
         print_hex_u64_0xe9(ins);
-        
+
         // Dump top of stack for context
         print_str_0xe9(" STK:");
         let rsp = stack.stack_pointer.as_u64();
@@ -162,10 +162,13 @@ pub(super) extern "x86-interrupt" fn handler_gp(stack: InterruptStackFrame, code
 /// # Behavior
 /// Prints CR2 (faulting address), error code, RIP, and stack, then halts.
 /// Uses IST stack to prevent recursive faults during stack access.
-pub(super) extern "x86-interrupt" fn handler_pf(stack: InterruptStackFrame, code: PageFaultErrorCode) {
-    let cr2 = Cr2::read().as_u64();  // CR2 holds the faulting virtual address
+pub(super) extern "x86-interrupt" fn handler_pf(
+    stack: InterruptStackFrame,
+    code: PageFaultErrorCode,
+) {
+    let cr2 = Cr2::read().as_u64(); // CR2 holds the faulting virtual address
     let ec = code.bits() as u64;
-    
+
     unsafe {
         print_str_0xe9("PF EC=");
         print_hex_u64_0xe9(ec);
@@ -180,7 +183,7 @@ pub(super) extern "x86-interrupt" fn handler_pf(stack: InterruptStackFrame, code
         print_str_0xe9(" RSP=");
         let rsp = stack.stack_pointer.as_u64();
         print_hex_u64_0xe9(rsp);
-        
+
         // Dump top 6 stack entries for debugging
         print_str_0xe9(" STK:");
         for i in 0..6u64 {
@@ -214,7 +217,7 @@ pub(super) extern "x86-interrupt" fn handler_pf(stack: InterruptStackFrame, code
 pub(super) extern "x86-interrupt" fn handler_df(_stack: InterruptStackFrame, _code: u64) -> ! {
     unsafe {
         print_str_0xe9("DF at");
-        
+
         // Try to print saved context if it was captured before the fault
         if let Some(ctx) = DOUBLE_FAULT_CONTEXT {
             print_str_0xe9(" RIP=");
@@ -328,19 +331,19 @@ pub(super) extern "x86-interrupt" fn handler_timer(_stack: InterruptStackFrame) 
 /// not directly in this handler.
 pub(super) extern "x86-interrupt" fn handler_serial_rx(_stack: InterruptStackFrame) {
     let mut handled = false;
-    
+
     // Ask the driver manager to handle the IRQ
     if let Some(irq) = crate::drivers::serial::current_irq_number() {
         let mut mgr = crate::drivers::manager::driver_manager().lock();
         handled = mgr.handle_irq(irq);
     }
-    
+
     // Send EOI to LAPIC
     unsafe {
         let apic_base = get_apic_base();
         write_apic_register(apic_base, 0xB0, 0);
     }
-    
+
     // Log if interrupt was unhandled (debugging)
     if !handled {
         unsafe {
@@ -366,4 +369,3 @@ pub(super) extern "x86-interrupt" fn handler_spurious(_stack: InterruptStackFram
     }
     // Return to interrupted context without EOI
 }
-

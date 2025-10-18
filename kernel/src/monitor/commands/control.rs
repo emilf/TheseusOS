@@ -6,8 +6,8 @@
 //! - `clear`: Clear the terminal screen
 //! - `call`: Call a function at an address (dangerous!)
 
-use crate::monitor::Monitor;
 use crate::monitor::parsing::parse_number;
+use crate::monitor::Monitor;
 use alloc::format;
 use x86_64::instructions::port::Port;
 
@@ -30,7 +30,7 @@ impl Monitor {
     /// # Note
     /// This command will terminate the current session and reboot the machine.
     /// All unsaved data will be lost.
-    #[allow(unreachable_code)]  // UEFI reset never returns, but we keep fallbacks for robustness
+    #[allow(unreachable_code)] // UEFI reset never returns, but we keep fallbacks for robustness
     pub(in crate::monitor) fn cmd_reset(&self) {
         self.writeln("Resetting system via UEFI runtime services...");
 
@@ -43,10 +43,10 @@ impl Monitor {
         // This function never returns on success
         use uefi::runtime::ResetType;
         uefi::runtime::reset(ResetType::COLD, uefi::Status::SUCCESS, None);
-        
+
         // If we get here, UEFI reset is not available (no runtime services)
         // Fall back to legacy reset methods
-        
+
         self.writeln("UEFI reset unavailable, trying keyboard controller...");
         unsafe {
             let mut kbd: Port<u8> = Port::new(0x64);

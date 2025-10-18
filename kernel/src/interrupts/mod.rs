@@ -43,11 +43,11 @@ mod timer;
 
 // Re-export commonly used items from submodules
 pub use apic::{disable_all_interrupts, enable_interrupts, get_apic_base, read_apic_register};
+pub use debug::{print_gdt_summary_basic, print_idt_summary_compact};
 pub use timer::{
-    lapic_timer_configure, lapic_timer_start_oneshot, lapic_timer_start_periodic,
-    lapic_timer_mask, timer_tick_count, install_timer_vector_runtime,
+    install_timer_vector_runtime, lapic_timer_configure, lapic_timer_mask,
+    lapic_timer_start_oneshot, lapic_timer_start_periodic, timer_tick_count,
 };
-pub use debug::{print_idt_summary_compact, print_gdt_summary_basic};
 
 // Make APIC functions available to submodules
 use apic::write_apic_register;
@@ -57,9 +57,8 @@ use debug::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9};
 
 // Make handlers available to submodules and IDT setup
 use handlers::{
-    handler_de, handler_bp, handler_ud, handler_gp, handler_pf,
-    handler_df, handler_nmi, handler_mc, handler_timer,
-    handler_serial_rx, handler_spurious,
+    handler_bp, handler_de, handler_df, handler_gp, handler_mc, handler_nmi, handler_pf,
+    handler_serial_rx, handler_spurious, handler_timer, handler_ud,
 };
 
 use core::sync::atomic::AtomicU32;
@@ -71,13 +70,13 @@ use x86_64::structures::idt::InterruptDescriptorTable;
 // ============================================================================
 
 /// APIC timer interrupt vector number
-pub const APIC_TIMER_VECTOR: u8 = 0x40;  // 64
+pub const APIC_TIMER_VECTOR: u8 = 0x40; // 64
 
 /// Serial RX interrupt vector number  
-pub const SERIAL_RX_VECTOR: u8 = APIC_TIMER_VECTOR + 1;  // 65
+pub const SERIAL_RX_VECTOR: u8 = APIC_TIMER_VECTOR + 1; // 65
 
 /// APIC error interrupt vector
-const APIC_ERROR_VECTOR: u8 = 0xFE;  // 254
+const APIC_ERROR_VECTOR: u8 = 0xFE; // 254
 
 // ============================================================================
 // Shared State
@@ -102,7 +101,7 @@ pub static mut DOUBLE_FAULT_CONTEXT: Option<DoubleFaultContext> = None;
 ///
 /// The timer interrupt handler uses this to access framebuffer info
 /// for heart animation updates.
-/// 
+///
 /// # TODO: Remove this and get framebuffer via driver subsystem
 static mut HANDOFF_FOR_TIMER: Option<&'static theseus_shared::handoff::Handoff> = None;
 
@@ -232,20 +231,20 @@ pub fn set_double_fault_context(rip: u64, cr2: u64, rsp: u64, stack: [u64; 6]) {
 pub unsafe fn setup_idt() {
     let idt = IDT_X86.call_once(|| {
         let mut idt = InterruptDescriptorTable::new();
-        
+
         // Install exception handlers
         idt.divide_error.set_handler_fn(handler_de);
         idt.breakpoint.set_handler_fn(handler_bp);
         idt.invalid_opcode.set_handler_fn(handler_ud);
         idt.general_protection_fault.set_handler_fn(handler_gp);
         idt.page_fault.set_handler_fn(handler_pf);
-        
+
         // Install hardware interrupt handlers
         idt[APIC_TIMER_VECTOR as usize].set_handler_fn(handler_timer);
         idt[SERIAL_RX_VECTOR as usize].set_handler_fn(handler_serial_rx);
         idt[0xFF].set_handler_fn(handler_spurious);
         idt[APIC_ERROR_VECTOR as usize].set_handler_fn(handler_spurious);
-        
+
         // Assign IST indices for critical exceptions
         // These use dedicated stacks to prevent recursive faults
         {
@@ -265,10 +264,10 @@ pub unsafe fn setup_idt() {
                     .set_stack_index(IST_INDEX_PF);
             }
         }
-        
+
         idt
     });
-    
+
     // Load the IDT into the CPU
     idt.load();
 }
@@ -287,27 +286,27 @@ pub unsafe fn setup_idt() {
 pub unsafe fn validate_idt_basic() -> bool {
     use x86_64::instructions::tables::sidt;
     let idtr = sidt();
-    
+
     // Check that IDTR limit is reasonable (at least 256 entries = 4095 bytes)
     if idtr.limit < 4095 {
         return false;
     }
-    
+
     // Verify key exception handlers are non-zero
     let base = idtr.base.as_u64();
     for idx in [0, 3, 6, 13, 14] {
         let entry_ptr = base + (idx * 16);
         let low = core::ptr::read_unaligned(entry_ptr as *const u64);
-        
+
         // Extract handler address from low quadword
         let offset_low = low & 0xFFFF;
         let offset_mid = (low >> 48) & 0xFFFF;
-        
+
         if offset_low == 0 && offset_mid == 0 {
-            return false;  // Handler address is zero
+            return false; // Handler address is zero
         }
     }
-    
+
     true
 }
 
@@ -349,7 +348,7 @@ pub fn interrupts_enabled() -> bool {
 /// # Safety
 /// - Handoff reference must be valid for 'static lifetime
 /// - Should only be called once during initialization
-/// 
+///
 /// # TODO: Remove this and get framebuffer via driver subsystem
 pub unsafe fn set_handoff_for_timer(handoff: &'static theseus_shared::handoff::Handoff) {
     HANDOFF_FOR_TIMER = Some(handoff);
@@ -360,7 +359,7 @@ pub unsafe fn set_handoff_for_timer(handoff: &'static theseus_shared::handoff::H
 /// # Returns
 /// * `Some(&Handoff)` - Handoff is available
 /// * `None` - Handoff not yet set
-/// 
+///
 /// # TODO: Remove this and get framebuffer via driver subsystem
 pub unsafe fn get_handoff_for_timer() -> Option<&'static theseus_shared::handoff::Handoff> {
     HANDOFF_FOR_TIMER
@@ -372,4 +371,3 @@ pub unsafe fn get_handoff_for_timer() -> Option<&'static theseus_shared::handoff
 /// Can be called safely without side effects.
 #[no_mangle]
 pub extern "C" fn noop_for_test() {}
-

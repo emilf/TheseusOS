@@ -98,8 +98,8 @@ unsafe fn disable_nmi() {
 unsafe fn mask_pic_interrupts() {
     let mut master: Port<u8> = Port::new(0x21);
     let mut slave: Port<u8> = Port::new(0xA1);
-    master.write(0xFFu8);  // Mask all master PIC interrupts
-    slave.write(0xFFu8);   // Mask all slave PIC interrupts
+    master.write(0xFFu8); // Mask all master PIC interrupts
+    slave.write(0xFFu8); // Mask all slave PIC interrupts
 }
 
 /// Check if CPU supports APIC
@@ -132,7 +132,7 @@ unsafe fn has_apic() -> bool {
 /// # Safety
 /// The returned address must be mapped in virtual memory before accessing
 /// APIC registers.
-/// 
+///
 /// # TODO: Make it actually return the base address of the LAPIC MMIO region
 pub unsafe fn get_apic_base() -> u64 {
     // Use standard LAPIC base address
@@ -172,16 +172,16 @@ pub unsafe fn read_apic_register(apic_base: u64, offset: u32) -> u32 {
     // The LAPIC MMIO is mapped at PHYS_OFFSET + physical address
     let vbase = crate::memory::phys_to_virt_pa(apic_base & 0xFFFFF000);
     let addr = vbase + (offset as u64);
-    
+
     // Use volatile read to ensure the hardware access isn't optimized away
     let val = core::ptr::read_volatile(addr as *const u32);
-    
+
     // Debug MMIO operations if needed (disabled for performance)
     const APIC_MMIO_DEBUG: bool = false;
     if APIC_MMIO_DEBUG {
         log_trace!("LAPIC MMIO READ addr={:#x} val={:#x}", addr, val);
     }
-    
+
     val
 }
 
@@ -209,10 +209,10 @@ pub unsafe fn read_apic_register(apic_base: u64, offset: u32) -> u32 {
 pub(super) unsafe fn write_apic_register(apic_base: u64, offset: u32, value: u32) {
     let vbase = crate::memory::phys_to_virt_pa(apic_base & 0xFFFFF000);
     let addr = vbase + (offset as u64);
-    
+
     // Use volatile write to ensure the hardware access happens
     core::ptr::write_volatile(addr as *mut u32, value);
-    
+
     // Debug MMIO operations if needed (disabled for performance)
     const APIC_MMIO_DEBUG: bool = false;
     if APIC_MMIO_DEBUG {
@@ -233,4 +233,3 @@ pub(super) unsafe fn write_apic_register(apic_base: u64, offset: u32, value: u32
 pub unsafe fn enable_interrupts() {
     x86_64::instructions::interrupts::enable();
 }
-

@@ -94,7 +94,7 @@ unsafe fn draw_pixel_bgra(
     stride: usize,
     bgra_color: u32,
 ) {
-    const DEBUG_PIXELS: bool = false;  // Set to true to trace specific pixels
+    const DEBUG_PIXELS: bool = false; // Set to true to trace specific pixels
     if DEBUG_PIXELS
         && ((x == 100 && y == 50)
             || (x == 200 && y == 50)
@@ -103,7 +103,12 @@ unsafe fn draw_pixel_bgra(
     {
         log_trace!(
             "Pixel ({},{}) offset={:#x} stride={:#x} fb_ptr={:#x} bgra_color={:#x}",
-            x, y, get_pixel_offset(x, y, width, stride), stride, get_framebuffer_ptr() as u64, bgra_color
+            x,
+            y,
+            get_pixel_offset(x, y, width, stride),
+            stride,
+            get_framebuffer_ptr() as u64,
+            bgra_color
         );
     }
 
@@ -118,14 +123,7 @@ unsafe fn draw_pixel_bgra(
 }
 
 /// Draw a pixel at the specified coordinates with simple color
-unsafe fn draw_pixel(
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
-    stride: usize,
-    color: u8,
-) {
+unsafe fn draw_pixel(x: usize, y: usize, width: usize, height: usize, stride: usize, color: u8) {
     // Convert simple color to BGRA (Blue-Green-Red-Alpha)
     let bgra_color = match color {
         COLOR_BLACK => create_bgra_color(0x00, 0x00, 0x00, 0xFF), // Black (B=00, G=00, R=00, A=FF)
@@ -148,32 +146,25 @@ unsafe fn clear_area(
     fb_stride: usize,
     color: u8,
 ) {
-    log_trace!("clear_area called: ({},{}) size {}x{} color={:#x}", x, y, width, height, color);
+    log_trace!(
+        "clear_area called: ({},{}) size {}x{} color={:#x}",
+        x,
+        y,
+        width,
+        height,
+        color
+    );
 
     for dy in 0..height {
         for dx in 0..width {
-            draw_pixel(
-                x + dx,
-                y + dy,
-                fb_width,
-                fb_height,
-                fb_stride,
-                color,
-            );
+            draw_pixel(x + dx, y + dy, fb_width, fb_height, fb_stride, color);
         }
     }
 }
 
 /// Draw the heart pattern at the specified position
 #[allow(dead_code)]
-unsafe fn draw_heart(
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
-    stride: usize,
-    color: u8,
-) {
+unsafe fn draw_heart(x: usize, y: usize, width: usize, height: usize, stride: usize, color: u8) {
     log_trace!("Drawing heart at ({},{}) size 16x16", x, y);
 
     for row in 0..HEART_SIZE {
@@ -251,7 +242,12 @@ pub unsafe fn draw_initial_heart(handoff: &Handoff) {
 
     log_info!(
         "Framebuffer: {}x{}, stride: {}, format: {}, base: {:#x}, size: {:#x}",
-        width, height, stride, pixel_format, fb_base, fb_size
+        width,
+        height,
+        stride,
+        pixel_format,
+        fb_base,
+        fb_size
     );
 
     // Calculate bytes per pixel from handoff data

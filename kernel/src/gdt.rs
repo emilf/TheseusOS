@@ -208,4 +208,3 @@ unsafe fn reload_data_segments(data_sel: SegmentSelector) {
         options(nomem, nostack, preserves_flags)
     );
 }
-

@@ -30,4 +30,3 @@ pub fn parse_number(s: &str) -> Option<u64> {
         s.parse::<u64>().ok()
     }
 }
-

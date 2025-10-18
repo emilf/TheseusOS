@@ -63,7 +63,10 @@ pub fn parse_madt(tables: &AcpiTables<impl acpi::AcpiHandler>) -> Result<MadtInf
         // Add BSP (Bootstrap Processor) - always present
         info.cpu_apic_ids
             .push(processor_info.boot_processor.local_apic_id as u8);
-        log_debug!("BSP APIC ID: {:#x}", processor_info.boot_processor.local_apic_id);
+        log_debug!(
+            "BSP APIC ID: {:#x}",
+            processor_info.boot_processor.local_apic_id
+        );
 
         // Add Application Processors (APs)
         for ap in &processor_info.application_processors {
@@ -89,7 +92,9 @@ pub fn parse_madt(tables: &AcpiTables<impl acpi::AcpiHandler>) -> Result<MadtInf
                 info.io_apics.push(entry);
                 log_debug!(
                     "IO APIC ID: {:#x} Address: {:#x} GSI Base: {}",
-                    io_apic.id, io_apic.address, io_apic.global_system_interrupt_base
+                    io_apic.id,
+                    io_apic.address,
+                    io_apic.global_system_interrupt_base
                 );
             }
 
@@ -102,7 +107,11 @@ pub fn parse_madt(tables: &AcpiTables<impl acpi::AcpiHandler>) -> Result<MadtInf
     }
     log_debug!("Has 8259 PIC: {}", info.has_8259_pic);
 
-    log_info!("Total CPUs found: {}, IO APICs found: {}", info.cpu_apic_ids.len(), info.io_apics.len());
+    log_info!(
+        "Total CPUs found: {}, IO APICs found: {}",
+        info.cpu_apic_ids.len(),
+        info.io_apics.len()
+    );
 
     Ok(info)
 }
@@ -158,4 +167,3 @@ pub fn get_local_apic_address(madt_info: &MadtInfo) -> u64 {
 pub fn get_io_apics(madt_info: &MadtInfo) -> &[IoApicEntry] {
     &madt_info.io_apics
 }
-

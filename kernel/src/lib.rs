@@ -72,7 +72,7 @@ pub use handoff::{set_handoff_pointers, validate_handoff};
 pub extern "C" fn kernel_entry(handoff_addr: u64) -> ! {
     // Initialize logging subsystem first (before any log calls)
     crate::logging::init();
-    
+
     // Initialize kernel logging using unified logging system
     log_info!("=== TheseusOS Kernel Starting ===");
     log_info!("Kernel entry point reached successfully");
@@ -111,10 +111,7 @@ pub extern "C" fn kernel_entry(handoff_addr: u64) -> ! {
                 crate::interrupts::set_handoff_for_timer(handoff);
 
                 // Set up complete kernel environment (boot services have been exited)
-                crate::environment::setup_kernel_environment(
-                    handoff,
-                    handoff.kernel_physical_base,
-                );
+                crate::environment::setup_kernel_environment(handoff, handoff.kernel_physical_base);
             } else {
                 log_error!("ERROR: Handoff structure has invalid size");
             }

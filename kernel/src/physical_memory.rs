@@ -36,7 +36,7 @@ use alloc::vec::Vec;
 use spin::Mutex;
 use theseus_shared::handoff::Handoff;
 
-use crate::memory::{phys_offset_is_active, phys_to_virt_pa, PHYS_OFFSET, PAGE_SIZE};
+use crate::memory::{phys_offset_is_active, phys_to_virt_pa, PAGE_SIZE, PHYS_OFFSET};
 use x86_64::{
     structures::paging::{FrameAllocator, PhysFrame, Size4KiB},
     PhysAddr,
@@ -231,16 +231,16 @@ impl PhysicalMemoryManager {
     /// non-existent frames.
     fn new(base_pfn: Pfn, frame_count: u64, bitmap: &'static mut [u64]) -> Self {
         log_debug!("Physical memory manager: using provided bitmap storage");
-        
+
         // Calculate required bitmap size
         let required_words = ((frame_count + 63) / 64) as usize;
         assert!(bitmap.len() >= required_words, "bitmap storage too small");
-        
+
         // Mark any excess words beyond required_words as fully allocated
         for word in bitmap.iter_mut().skip(required_words) {
             *word = u64::MAX;
         }
-        
+
         // If frame_count isn't a multiple of 64, mark the unused bits
         // in the last word as allocated to prevent invalid allocations
         if frame_count % 64 != 0 {
@@ -250,7 +250,7 @@ impl PhysicalMemoryManager {
                 *last |= mask;
             }
         }
-        
+
         log_debug!("Physical memory manager: bitmap ready");
         Self {
             base_pfn,
@@ -342,12 +342,12 @@ impl PhysicalMemoryManager {
             let inverted = !*word;
             let bit = inverted.trailing_zeros() as usize;
             let idx = word_index * 64 + bit;
-            
+
             // Bounds check: ensure we don't allocate beyond total_frames
             if idx as u64 >= self.total_frames {
                 break;
             }
-            
+
             // Mark the frame as allocated
             *word |= 1u64 << bit;
             self.free_frames = self.free_frames.saturating_sub(1);
@@ -367,7 +367,8 @@ static PHYS_MANAGER: Mutex<Option<PhysicalMemoryManager>> = Mutex::new(None);
 const BOOT_CONSUMED_CAPACITY_BYTES: usize = 16 * 1024;
 
 /// Number of consumed region entries that can be logged before initialization.
-const BOOT_CONSUMED_CAPACITY: usize = BOOT_CONSUMED_CAPACITY_BYTES / core::mem::size_of::<ConsumedRegion>();
+const BOOT_CONSUMED_CAPACITY: usize =
+    BOOT_CONSUMED_CAPACITY_BYTES / core::mem::size_of::<ConsumedRegion>();
 
 /// Boot-time log of consumed memory regions.
 ///
@@ -459,39 +460,43 @@ where
     if is_initialised() {
         return Err(AllocError::UnknownFrame);
     }
-    
+
     // Get a pointer to the UEFI memory map (either virtual or identity-mapped)
     let memmap_ptr = accessible_memmap_ptr(handoff)?;
     if memmap_ptr.is_null() {
         return Err(AllocError::NoMemoryMap);
     }
-    
+
     log_debug!("Physical memory init: collecting regions");
     let regions = collect_regions(handoff, memmap_ptr);
     log_debug!("Physical memory init: regions collected");
-    
+
     // Determine the range of memory we need to track
     let (base_pfn, frame_count) = compute_bounds(&regions)?;
 
-    log_debug!("Constructing bitmap allocator: base_pfn={:#x} frames={}", base_pfn.start_address(), frame_count);
-    
+    log_debug!(
+        "Constructing bitmap allocator: base_pfn={:#x} frames={}",
+        base_pfn.start_address(),
+        frame_count
+    );
+
     // Allocate bitmap storage and construct the manager
     let words = ((frame_count + 63) / 64) as usize;
     let bitmap_storage = bitmap_alloc(words);
     let mut manager = PhysicalMemoryManager::new(base_pfn, frame_count, bitmap_storage);
-    
+
     log_info!("Physical memory allocator constructed");
-    
+
     // Mark all reserved regions from the UEFI memory map
     for region in &regions {
         if matches!(region.kind, RegionKind::Reserved) {
             manager.reserve_range(region.start, region.end.0.saturating_sub(region.start.0));
         }
     }
-    
+
     // Reserve regions consumed during early boot (before this allocator existed)
     reserve_boot_consumed(&mut manager);
-    
+
     // Reserve explicitly provided consumed regions
     for region in consumed {
         reserve_region(&mut manager, *region);
@@ -512,18 +517,18 @@ fn reserve_boot_consumed(manager: &mut PhysicalMemoryManager) {
     if boot.len == 0 {
         return; // Nothing to reserve
     }
-    
+
     let len = boot.len;
     // Merge overlapping/adjacent regions to reduce reservation overhead
     let merged = merge_regions_in_place(&mut boot.regions, len);
-    
+
     // Clear the log
     for entry in boot.regions.iter_mut().take(len) {
         *entry = ConsumedRegion::EMPTY;
     }
     boot.len = 0;
     drop(boot);
-    
+
     // Reserve the merged regions
     for region in merged {
         reserve_region(manager, region);
@@ -550,11 +555,11 @@ fn merge_regions_in_place(regions: &mut [ConsumedRegion], len: usize) -> Vec<Con
         .copied()
         .filter(|r| r.size != 0)
         .collect();
-        
+
     if entries.is_empty() {
         return Vec::new();
     }
-    
+
     // Sort by start address
     entries.sort_by(|a, b| a.start.cmp(&b.start));
 
@@ -563,7 +568,7 @@ fn merge_regions_in_place(regions: &mut [ConsumedRegion], len: usize) -> Vec<Con
         if let Some(last) = merged.last_mut() {
             let last_end = last.start.saturating_add(last.size);
             let region_end = region.start.saturating_add(region.size);
-            
+
             // Check if this region overlaps or is adjacent to the last one
             if region.start <= last_end {
                 // Merge: extend the last region to cover both
@@ -628,9 +633,9 @@ pub fn drain_boot_consumed() -> Vec<ConsumedRegion> {
     if len == 0 {
         return Vec::new();
     }
-    
+
     let merged = merge_regions_in_place(&mut boot.regions, len);
-    
+
     // Clear the log
     for entry in boot.regions.iter_mut().take(len) {
         *entry = ConsumedRegion::EMPTY;
@@ -706,7 +711,9 @@ pub fn dump_state() {
     if let Some(mgr) = PHYS_MANAGER.lock().as_ref() {
         log_info!(
             "PhysicalMemoryManager state: base_pfn={:#x} total_frames={} free_frames={}",
-            mgr.base_pfn.start_address(), mgr.total_frames, mgr.free_frames
+            mgr.base_pfn.start_address(),
+            mgr.total_frames,
+            mgr.free_frames
         );
     } else {
         log_error!("PhysicalMemoryManager not initialized");
@@ -867,24 +874,24 @@ fn collect_regions(handoff: &Handoff, base_ptr: *const u8) -> Vec<Region> {
     let mut regions = Vec::new();
     let desc_size = handoff.memory_map_descriptor_size as usize;
     let count = handoff.memory_map_entries as usize;
-    
+
     for i in 0..count {
         // Compute pointer to this descriptor
         let p = unsafe { base_ptr.add(i * desc_size) };
         // Parse the descriptor
         let view = unsafe { MemoryDescriptorView::new(p, handoff.memory_map_descriptor_size) };
-        
+
         // Convert to PFN range
         let start = Pfn::containing(view.phys_start);
         let end = Pfn::containing(view.phys_start + view.num_pages * FRAME_SIZE);
-        
+
         // Determine region kind
         let kind = if view.ty == UEFI_CONVENTIONAL_MEMORY {
             RegionKind::Free
         } else {
             RegionKind::Reserved
         };
-        
+
         regions.push(Region { start, end, kind });
     }
     regions
@@ -907,24 +914,20 @@ fn compute_bounds(regions: &[Region]) -> AllocResult<(Pfn, u64)> {
         .iter()
         .filter(|r| matches!(r.kind, RegionKind::Free))
         .collect();
-        
+
     if free_regions.is_empty() {
         return Err(AllocError::OutOfMemory);
     }
-    
+
     // Sort by start address
     free_regions.sort_by(|a, b| a.start.cmp(&b.start));
-    
+
     // Base PFN is the start of the first free region
     let base = free_regions.first().unwrap().start;
-    
+
     // End PFN is the maximum end of any free region
-    let end = free_regions
-        .iter()
-        .map(|r| r.end)
-        .max()
-        .unwrap_or(base);
-        
+    let end = free_regions.iter().map(|r| r.end).max().unwrap_or(base);
+
     Ok((base, end.0.saturating_sub(base.0)))
 }
 
@@ -997,12 +1000,12 @@ fn reserve_region(manager: &mut PhysicalMemoryManager, region: ConsumedRegion) {
     if region.size == 0 {
         return; // Empty region, nothing to do
     }
-    
+
     // Convert byte address to PFN (rounding down)
     let start_pfn = Pfn::containing(region.start);
-    
+
     // Compute number of pages, rounding up to cover partial pages
     let pages = (region.size + FRAME_SIZE - 1) / FRAME_SIZE;
-    
+
     manager.reserve_range(start_pfn, pages);
 }

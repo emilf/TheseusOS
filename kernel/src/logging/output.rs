@@ -38,7 +38,7 @@ impl OutputTarget {
             _ => None,
         }
     }
-    
+
     /// Convert to string
     pub const fn as_str(&self) -> &'static str {
         match self {
@@ -64,7 +64,7 @@ static OUTPUT_TARGETS: [AtomicU8; 5] = [
 /// Initialize default output targets from config
 pub(super) fn init_default_targets() {
     use crate::config;
-    
+
     // Set output targets for each level from config
     set_output_target(LogLevel::Error, config::LOG_OUTPUT_ERROR);
     set_output_target(LogLevel::Warn, config::LOG_OUTPUT_WARN);
@@ -85,7 +85,7 @@ pub fn get_output_target(level: LogLevel) -> OutputTarget {
     if idx >= OUTPUT_TARGETS.len() {
         return OutputTarget::None;
     }
-    
+
     let val = OUTPUT_TARGETS[idx].load(Ordering::Relaxed);
     u8_to_target(val)
 }
@@ -150,7 +150,7 @@ fn write_serial(bytes: &[u8]) {
     if crate::drivers::serial::write_bytes_direct(bytes).is_ok() {
         return;
     }
-    
+
     // Fallback to direct COM1 port I/O (3F8h)
     unsafe {
         let mut port: Port<u8> = Port::new(0x3F8);
@@ -171,4 +171,3 @@ fn u8_to_target(val: u8) -> OutputTarget {
         _ => OutputTarget::None,
     }
 }
-

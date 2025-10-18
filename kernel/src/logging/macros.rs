@@ -192,7 +192,7 @@ macro_rules! log_debug {
             let buf_slice = &mut *buf_ptr;
             let mut writer = $crate::logging::StackWriter::new(buf_slice);
             let _ = write!(writer, $($arg)*);
-            
+
             // Try to extract function name from type_name
             fn f() {}
             fn type_name_of<T>(_: T) -> &'static str {
@@ -200,7 +200,7 @@ macro_rules! log_debug {
             }
             let name = type_name_of(f);
             let func = name.rsplit("::").nth(1).unwrap_or("unknown");
-            
+
             $crate::logging::log_impl(
                 $crate::logging::LogLevel::Debug,
                 module_path!(),
@@ -243,7 +243,7 @@ macro_rules! log_trace {
             let buf_slice = &mut *buf_ptr;
             let mut writer = $crate::logging::StackWriter::new(buf_slice);
             let _ = write!(writer, $($arg)*);
-            
+
             // Try to extract function name from type_name
             fn f() {}
             fn type_name_of<T>(_: T) -> &'static str {
@@ -251,7 +251,7 @@ macro_rules! log_trace {
             }
             let name = type_name_of(f);
             let func = name.rsplit("::").nth(1).unwrap_or("unknown");
-            
+
             $crate::logging::log_impl(
                 $crate::logging::LogLevel::Trace,
                 module_path!(),
@@ -263,4 +263,3 @@ macro_rules! log_trace {
         }
     }};
 }
-

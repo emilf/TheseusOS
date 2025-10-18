@@ -5,8 +5,8 @@
 //! - `gdt`: Display Global Descriptor Table
 //! - `mmap`: Display UEFI memory map
 
-use crate::monitor::Monitor;
 use crate::monitor::parsing::parse_number;
+use crate::monitor::Monitor;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -93,16 +93,16 @@ impl Monitor {
 
         let selector = entry.selector;
         let type_attr = entry.type_attr;
-        let ist = entry.ist & 0x7;  // IST index is only 3 bits (0-7)
-        
+        let ist = entry.ist & 0x7; // IST index is only 3 bits (0-7)
+
         // Reconstruct 64-bit handler offset from three 16/32-bit pieces
         let offset = (entry.offset_low as u64)          // Bits 0-15
             | ((entry.offset_mid as u64) << 16)         // Bits 16-31
-            | ((entry.offset_high as u64) << 32);       // Bits 32-63
-        
-        let gate_type = type_attr & 0x0F;               // Type field (bits 0-3)
-        let present = (type_attr & 0x80) != 0;          // Present bit (bit 7)
-        let dpl = (type_attr >> 5) & 0x3;               // DPL (bits 5-6)
+            | ((entry.offset_high as u64) << 32); // Bits 32-63
+
+        let gate_type = type_attr & 0x0F; // Type field (bits 0-3)
+        let present = (type_attr & 0x80) != 0; // Present bit (bit 7)
+        let dpl = (type_attr >> 5) & 0x3; // DPL (bits 5-6)
 
         self.writeln(&format!(
             "  [{:02}] selector=0x{:04X} offset=0x{:016X} type:{} dpl:{} ist:{} attr=0x{:02X} {}",
@@ -206,10 +206,10 @@ impl Monitor {
 
         // Decode access byte (bits 40-47)
         let access = ((raw_low >> 40) & 0xFF) as u8;
-        let s = (access & 0x10) != 0;        // S bit: 1=code/data, 0=system
-        let typ = access & 0x0F;             // Type field (bits 0-3)
-        let dpl = (access >> 5) & 0x03;      // Descriptor Privilege Level
-        let present = (access & 0x80) != 0;  // Present bit
+        let s = (access & 0x10) != 0; // S bit: 1=code/data, 0=system
+        let typ = access & 0x0F; // Type field (bits 0-3)
+        let dpl = (access >> 5) & 0x03; // Descriptor Privilege Level
+        let present = (access & 0x80) != 0; // Present bit
 
         // Decode limit (20-bit: bits 0-15 and 48-51)
         let limit_low = (raw_low & 0xFFFF) as u32;
@@ -223,10 +223,10 @@ impl Monitor {
 
         // Decode flags (bits 52-55)
         let flags = ((raw_low >> 52) & 0xF) as u8;
-        let avl = (flags & 0x1) != 0;  // Available for system use
-        let l = (flags & 0x2) != 0;    // Long mode (64-bit code segment)
-        let db = (flags & 0x4) != 0;   // Default operation size (0=16bit, 1=32bit)
-        let g = (flags & 0x8) != 0;    // Granularity (0=byte, 1=4KiB pages)
+        let avl = (flags & 0x1) != 0; // Available for system use
+        let l = (flags & 0x2) != 0; // Long mode (64-bit code segment)
+        let db = (flags & 0x4) != 0; // Default operation size (0=16bit, 1=32bit)
+        let g = (flags & 0x8) != 0; // Granularity (0=byte, 1=4KiB pages)
 
         // For system descriptors (TSS, LDT), use upper 64 bits for extended base
         if let Some(high) = raw_high {
@@ -236,7 +236,7 @@ impl Monitor {
         // Calculate actual limit in bytes
         // If granularity bit set, limit is in 4KiB pages
         let limit_bytes = if g {
-            ((limit as u64) << 12) | 0xFFF  // Multiply by 4096 and add 4095
+            ((limit as u64) << 12) | 0xFFF // Multiply by 4096 and add 4095
         } else {
             limit as u64
         };
@@ -358,10 +358,10 @@ impl Monitor {
 
         // Determine display mode based on arguments
         enum MemoryMapMode {
-            SummaryOnly,                      // Just per-type totals
+            SummaryOnly,                        // Just per-type totals
             SummaryAndSample { sample: usize }, // Summary + first N entries
-            Entries { limit: Option<usize> }, // All entries (or limited)
-            Single { index: usize },          // Single entry detail
+            Entries { limit: Option<usize> },   // All entries (or limited)
+            Single { index: usize },            // Single entry detail
         }
 
         let mode = if let Some(first) = args.get(0) {
@@ -651,7 +651,7 @@ unsafe fn read_uefi_descriptor(
     index: usize,
 ) -> UefiMemoryDescriptor {
     let ptr = buffer.add(index * desc_size);
-    
+
     // UEFI memory descriptor layout (minimum 32 bytes, may be larger):
     // Offset 0-3:   Type (u32)
     // Offset 4-7:   Padding
@@ -659,7 +659,7 @@ unsafe fn read_uefi_descriptor(
     // Offset 16-23: VirtualStart (u64)
     // Offset 24-31: NumberOfPages (u64)
     // Offset 32-39: Attribute (u64)
-    
+
     let typ = core::ptr::read_unaligned(ptr as *const u32);
     let phys_start = if desc_size >= 16 {
         core::ptr::read_unaligned(ptr.add(8) as *const u64)

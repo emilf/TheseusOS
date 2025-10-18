@@ -34,10 +34,7 @@ impl Monitor {
             let free_bytes = stats.free_frames.saturating_mul(page_size);
             let guard = memory::runtime_kernel_lower_guard();
             self.writeln("Persistent Physical Memory Manager:");
-            self.writeln(&format!(
-                "  base PFN:    0x{:016X}",
-                stats.base_pfn
-            ));
+            self.writeln(&format!("  base PFN:    0x{:016X}", stats.base_pfn));
             self.writeln(&format!(
                 "  total frames: {} ({:#X} bytes)",
                 stats.total_frames, total_bytes
@@ -367,7 +364,7 @@ impl Monitor {
             self.cmd_log_show_levels();
             return;
         }
-        
+
         match args[0] {
             "level" if args.len() >= 2 => {
                 // loglevel command
@@ -399,38 +396,53 @@ impl Monitor {
             }
         }
     }
-    
+
     fn cmd_log_show_levels(&self) {
-        use crate::logging::{ModuleFilter, get_output_target, LogLevel};
-        
+        use crate::logging::{get_output_target, LogLevel, ModuleFilter};
+
         self.writeln("Current Logging Configuration:");
         self.writeln("");
-        
+
         // Show default level
         let default = ModuleFilter::get_default();
         self.writeln(&format!("  Default Level: {}", default.as_str()));
-        
+
         self.writeln("");
         self.writeln("Output Targets:");
-        self.writeln(&format!("  ERROR: {}", get_output_target(LogLevel::Error).as_str()));
-        self.writeln(&format!("  WARN:  {}", get_output_target(LogLevel::Warn).as_str()));
-        self.writeln(&format!("  INFO:  {}", get_output_target(LogLevel::Info).as_str()));
-        self.writeln(&format!("  DEBUG: {}", get_output_target(LogLevel::Debug).as_str()));
-        self.writeln(&format!("  TRACE: {}", get_output_target(LogLevel::Trace).as_str()));
-        
+        self.writeln(&format!(
+            "  ERROR: {}",
+            get_output_target(LogLevel::Error).as_str()
+        ));
+        self.writeln(&format!(
+            "  WARN:  {}",
+            get_output_target(LogLevel::Warn).as_str()
+        ));
+        self.writeln(&format!(
+            "  INFO:  {}",
+            get_output_target(LogLevel::Info).as_str()
+        ));
+        self.writeln(&format!(
+            "  DEBUG: {}",
+            get_output_target(LogLevel::Debug).as_str()
+        ));
+        self.writeln(&format!(
+            "  TRACE: {}",
+            get_output_target(LogLevel::Trace).as_str()
+        ));
+
         // Note: Can't show per-module levels since we only store hashes
         self.writeln("");
         self.writeln("Note: Per-module levels are stored by hash (not displayed)");
     }
-    
+
     fn cmd_log_set_module(&self, module: &str, args: &[&str]) {
         use crate::logging::{set_module_level, LogLevel};
-        
+
         if args.is_empty() {
             self.writeln("Usage: loglevel MODULE LEVEL");
             return;
         }
-        
+
         match LogLevel::from_str(args[0]) {
             Some(level) => {
                 set_module_level(module, level);
@@ -442,15 +454,15 @@ impl Monitor {
             }
         }
     }
-    
+
     fn cmd_log_set_default(&self, args: &[&str]) {
-        use crate::logging::{ModuleFilter, LogLevel};
-        
+        use crate::logging::{LogLevel, ModuleFilter};
+
         if args.is_empty() {
             self.writeln("Usage: loglevel default LEVEL");
             return;
         }
-        
+
         match LogLevel::from_str(args[0]) {
             Some(level) => {
                 ModuleFilter::set_default(level);
@@ -462,10 +474,10 @@ impl Monitor {
             }
         }
     }
-    
+
     fn cmd_log_set_output(&self, level_str: &str, target_str: &str) {
         use crate::logging::{set_output_target, LogLevel, OutputTarget};
-        
+
         let level = match LogLevel::from_str(level_str) {
             Some(l) => l,
             None => {
@@ -474,7 +486,7 @@ impl Monitor {
                 return;
             }
         };
-        
+
         let target = match OutputTarget::from_str(target_str) {
             Some(t) => t,
             None => {
@@ -483,9 +495,13 @@ impl Monitor {
                 return;
             }
         };
-        
+
         set_output_target(level, target);
-        self.writeln(&format!("Set {} output to {}", level.as_str(), target.as_str()));
+        self.writeln(&format!(
+            "Set {} output to {}",
+            level.as_str(),
+            target.as_str()
+        ));
     }
 }
 
@@ -561,10 +577,10 @@ fn parse_rsdp_info(rsdp_phys: u64) -> Result<RsdpInfo, &'static str> {
         for i in 0..6 {
             oem_id[i] = core::ptr::read_volatile(ptr.add(9 + i));
         }
-        
+
         // Read revision (offset 15) - determines RSDP version
         let revision = core::ptr::read_volatile(ptr.add(15));
-        
+
         // Read RSDT address (offset 16-19)
         let rsdt_address = core::ptr::read_unaligned(ptr.add(16) as *const u32) as u64;
 
@@ -592,9 +608,9 @@ fn parse_rsdp_info(rsdp_phys: u64) -> Result<RsdpInfo, &'static str> {
         };
 
         // Verify checksums
-        let checksum_ok = verify_checksum(ptr, 20);  // Basic checksum (first 20 bytes)
+        let checksum_ok = verify_checksum(ptr, 20); // Basic checksum (first 20 bytes)
         let extended_checksum_ok = if revision >= 2 {
-            Some(verify_checksum(ptr, length as usize))  // Extended checksum (all bytes)
+            Some(verify_checksum(ptr, length as usize)) // Extended checksum (all bytes)
         } else {
             None
         };
@@ -632,4 +648,3 @@ fn verify_checksum(ptr: *const u8, len: usize) -> bool {
     }
     sum == 0
 }
-

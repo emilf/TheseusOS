@@ -39,8 +39,8 @@ mod output;
 #[macro_use]
 pub mod macros;
 
-pub use filter::{set_module_level, get_module_level, list_module_levels, ModuleFilter};
-pub use output::{OutputTarget, set_output_target, get_output_target};
+pub use filter::{get_module_level, list_module_levels, set_module_level, ModuleFilter};
+pub use output::{get_output_target, set_output_target, OutputTarget};
 
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -104,10 +104,10 @@ pub fn init() {
     if LOGGING_INITIALIZED.swap(true, Ordering::SeqCst) {
         return; // Already initialized
     }
-    
+
     // Load default filters from config
     filter::init_default_filters();
-    
+
     // Set up default output targets
     output::init_default_targets();
 }
@@ -141,17 +141,17 @@ pub fn log_impl(
     if !filter::should_log(module, level) {
         return;
     }
-    
+
     // Get output target for this level
     let target = output::get_output_target(level);
     if target == OutputTarget::None {
         return;
     }
-    
+
     // Format log entry on stack (no heap allocation)
     let mut buf = [0u8; 512];
     let len = format_log_entry(&mut buf, level, module, file, line, function, message);
-    
+
     // Output to appropriate target(s)
     output::write_bytes(target, &buf[..len]);
 }
@@ -174,7 +174,7 @@ fn format_log_entry(
     message: &str,
 ) -> usize {
     let mut pos = 0;
-    
+
     // Write "[LEVEL "
     buf[pos] = b'[';
     pos += 1;
@@ -187,7 +187,7 @@ fn format_log_entry(
     }
     buf[pos] = b' ';
     pos += 1;
-    
+
     // Write module name (strip crate name prefix to keep lines shorter)
     // "theseus_kernel::environment" -> "environment"
     // "theseus_kernel" -> "kernel" (for crate root)
@@ -201,15 +201,16 @@ fn format_log_entry(
         // Unknown format - use as-is
         module
     };
-    
-    for byte in module_to_write.bytes().take(64) {  // Limit module name length
+
+    for byte in module_to_write.bytes().take(64) {
+        // Limit module name length
         if pos >= buf.len() {
             return pos;
         }
         buf[pos] = byte;
         pos += 1;
     }
-    
+
     // For DEBUG/TRACE, add file/line/function
     if level >= LogLevel::Debug {
         if let Some(func) = function {
@@ -226,11 +227,11 @@ fn format_log_entry(
                 pos += 1;
             }
         }
-        
+
         // Write "@file:line"
         buf[pos] = b'@';
         pos += 1;
-        
+
         // Extract just filename from path
         let filename = file.rsplit('/').next().unwrap_or(file);
         for byte in filename.bytes().take(32) {
@@ -240,33 +241,34 @@ fn format_log_entry(
             buf[pos] = byte;
             pos += 1;
         }
-        
+
         buf[pos] = b':';
         pos += 1;
-        
+
         // Write line number (decimal)
         pos += write_u32_decimal(&mut buf[pos..], line);
     }
-    
+
     // Write "] "
     buf[pos] = b']';
     pos += 1;
     buf[pos] = b' ';
     pos += 1;
-    
+
     // Write message
     for byte in message.bytes() {
-        if pos >= buf.len() - 2 {  // Reserve space for \n
+        if pos >= buf.len() - 2 {
+            // Reserve space for \n
             break;
         }
         buf[pos] = byte;
         pos += 1;
     }
-    
+
     // Write newline
     buf[pos] = b'\n';
     pos += 1;
-    
+
     pos
 }
 
@@ -279,17 +281,17 @@ fn write_u32_decimal(buf: &mut [u8], mut value: u32) -> usize {
         buf[0] = b'0';
         return 1;
     }
-    
+
     // Build digits in reverse
     let mut digits = [0u8; 10];
     let mut count = 0;
-    
+
     while value > 0 && count < 10 {
         digits[count] = b'0' + (value % 10) as u8;
         value /= 10;
         count += 1;
     }
-    
+
     // Write in forward order
     for i in 0..count {
         if i >= buf.len() {
@@ -297,7 +299,7 @@ fn write_u32_decimal(buf: &mut [u8], mut value: u32) -> usize {
         }
         buf[i] = digits[count - 1 - i];
     }
-    
+
     count
 }
 
@@ -315,7 +317,7 @@ impl StackWriter {
     pub fn new(buf: &'static mut [u8]) -> Self {
         Self { buf, pos: 0 }
     }
-    
+
     /// Get the written content as a string slice
     pub fn as_str(&self) -> &str {
         core::str::from_utf8(&self.buf[..self.pos]).unwrap_or("<invalid utf-8>")
@@ -327,11 +329,10 @@ impl core::fmt::Write for StackWriter {
         let bytes = s.as_bytes();
         let remaining = self.buf.len() - self.pos;
         let to_write = bytes.len().min(remaining);
-        
+
         self.buf[self.pos..self.pos + to_write].copy_from_slice(&bytes[..to_write]);
         self.pos += to_write;
-        
+
         Ok(())
     }
 }
-

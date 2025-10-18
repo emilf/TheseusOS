@@ -28,15 +28,15 @@
 //! - 0x390: Current Count (decrements to zero)
 //! - 0x3E0: Divide Configuration (clock divider)
 
+use super::{get_apic_base, read_apic_register, write_apic_register};
 use crate::{log_debug, log_trace};
 use core::sync::atomic::Ordering;
-use super::{get_apic_base, read_apic_register, write_apic_register};
 // Debug output functions kept for potential low-level debugging
+use super::apic::APIC_ERROR_VECTOR;
+use super::handler_timer;
 #[allow(unused_imports)]
 use super::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9};
 use super::{APIC_TIMER_VECTOR, TIMER_TICKS};
-use super::handler_timer;
-use super::apic::APIC_ERROR_VECTOR;
 
 /// Configure LAPIC timer (does not start it)
 ///
@@ -66,57 +66,62 @@ use super::apic::APIC_ERROR_VECTOR;
 /// ```
 pub unsafe fn lapic_timer_configure() {
     let apic_base = get_apic_base();
-    
+
     log_debug!("LAPIC TPR=0");
     // Set Task Priority Register to 0 (allow all interrupt priorities)
     write_apic_register(apic_base, 0x80, 0x00);
-    
+
     // Enable APIC via SIVR (Spurious Interrupt Vector Register)
     // Bits 0-7: Spurious vector (0xFF)
     // Bit 8: APIC Software Enable (1 = enabled)
     let siv = (read_apic_register(apic_base, 0xF0) & !0xFF) | 0xFF | 0x100;
     write_apic_register(apic_base, 0xF0, siv);
-    
+
     // Set Timer Divide Configuration to /16
     // This divides the bus frequency by 16 before counting
     log_debug!("LAPIC set divide");
-    write_apic_register(apic_base, 0x3E0, 0x3);  // 0x3 = divide by 16
-    
+    write_apic_register(apic_base, 0x3E0, 0x3); // 0x3 = divide by 16
+
     // Program LVT Timer register
     // Bits 0-7: Vector number (0x40)
     // Bit 16: Mask (1 = masked/disabled)
     // Bit 17: Timer mode (0 = one-shot, 1 = periodic)
     log_debug!("LAPIC program LVT timer (masked)");
-    let lvt_timer = (APIC_TIMER_VECTOR as u32) | (1 << 16);  // Masked one-shot
+    let lvt_timer = (APIC_TIMER_VECTOR as u32) | (1 << 16); // Masked one-shot
     write_apic_register(apic_base, 0x320, lvt_timer);
-    
+
     // Mask external interrupts LINT0 and LINT1 (legacy INT/NMI pins)
     let mut lint0 = read_apic_register(apic_base, 0x350);
-    lint0 |= 1 << 16;  // Set mask bit
+    lint0 |= 1 << 16; // Set mask bit
     write_apic_register(apic_base, 0x350, lint0);
-    
+
     let mut lint1 = read_apic_register(apic_base, 0x360);
-    lint1 |= 1 << 16;  // Set mask bit
+    lint1 |= 1 << 16; // Set mask bit
     write_apic_register(apic_base, 0x360, lint1);
-    
+
     // Set error LVT vector
     let lvt_err = (read_apic_register(apic_base, 0x370) & !0xFF) | (APIC_ERROR_VECTOR as u32);
     write_apic_register(apic_base, 0x370, lvt_err);
-    
+
     // Clear Error Status Register (ESR) by writing then reading
     write_apic_register(apic_base, 0x280, 0);
     let esr = read_apic_register(apic_base, 0x280);
-    
+
     // Read and display APIC configuration for debugging
     let id = read_apic_register(apic_base, 0x20);
     let ver = read_apic_register(apic_base, 0x30);
     let sivr = read_apic_register(apic_base, 0xF0);
     let tpr = read_apic_register(apic_base, 0x80);
     let lvt = read_apic_register(apic_base, 0x320);
-    
+
     log_trace!(
         "LAPIC registers: ID={:#x} VER={:#x} SIVR={:#x} TPR={:#x} LVT={:#x} ESR={:#x}",
-        id, ver, sivr, tpr, lvt, esr
+        id,
+        ver,
+        sivr,
+        tpr,
+        lvt,
+        esr
     );
 }
 
@@ -148,16 +153,16 @@ pub unsafe fn lapic_timer_configure() {
 /// ```
 pub unsafe fn lapic_timer_start_oneshot(initial_count: u32) {
     let apic_base = get_apic_base();
-    
+
     // Unmask timer (clear bit 16) for one-shot mode
     // Bit 17 is 0 for one-shot mode
     let mut lvt = read_apic_register(apic_base, 0x320);
-    lvt &= !(1 << 16);  // Clear mask bit
+    lvt &= !(1 << 16); // Clear mask bit
     write_apic_register(apic_base, 0x320, lvt);
-    
+
     // Write initial count to start countdown
     write_apic_register(apic_base, 0x380, initial_count);
-    
+
     // Read current count for debugging
     let cur = read_apic_register(apic_base, 0x390);
     log_debug!("LAPIC current count={:#x}", cur);
@@ -189,13 +194,13 @@ pub unsafe fn lapic_timer_start_oneshot(initial_count: u32) {
 /// ```
 pub unsafe fn lapic_timer_start_periodic(initial_count: u32) {
     let apic_base = get_apic_base();
-    
+
     // Configure LVT Timer for periodic mode
     let mut lvt = read_apic_register(apic_base, 0x320);
-    lvt |= 1 << 17;      // Set periodic mode (bit 17)
-    lvt &= !(1 << 16);   // Clear mask bit (enable timer)
+    lvt |= 1 << 17; // Set periodic mode (bit 17)
+    lvt &= !(1 << 16); // Clear mask bit (enable timer)
     write_apic_register(apic_base, 0x320, lvt);
-    
+
     // Write initial count to start periodic countdown
     write_apic_register(apic_base, 0x380, initial_count);
 }
@@ -216,32 +221,38 @@ pub unsafe fn lapic_timer_mask() {
 
     // TODO: When get_apic_base() is updated to return the actual base address, fix this.
     let vbase = crate::memory::PHYS_OFFSET + (apic_base & 0xFFFFF000);
-    
+
     // Debug: print APIC addresses and CR3
     use x86_64::registers::control::Cr3;
     let (frame, _f) = Cr3::read();
     let cr3pa = frame.start_address().as_u64();
-    
+
     log_trace!(
         "LAPIC mask: apic_base={:#x} vbase={:#x} CR3={:#x} LVT_addr={:#x}",
-        apic_base, vbase, cr3pa, vbase + 0x320
+        apic_base,
+        vbase,
+        cr3pa,
+        vbase + 0x320
     );
-    
+
     // Read current LVT value
     let val = read_apic_register(apic_base, 0x320);
     log_trace!("LAPIC LVT before mask={:#x}", val);
-    
+
     // Set mask bit to disable timer
     let new = val | (1 << 16);
     write_apic_register(apic_base, 0x320, new);
-    
+
     // Verify the write succeeded
     let val2 = read_apic_register(apic_base, 0x320);
     log_trace!("LAPIC LVT after mask={:#x}", val2);
-    
+
     // Verify CR3 didn't change (helps debug page table issues)
     let (frame2, _f2) = Cr3::read();
-    log_trace!("LAPIC mask CR3 after={:#x}", frame2.start_address().as_u64());
+    log_trace!(
+        "LAPIC mask CR3 after={:#x}",
+        frame2.start_address().as_u64()
+    );
 }
 
 /// Get current timer tick count
@@ -283,31 +294,30 @@ pub fn timer_tick_count() -> u32 {
 /// - Should only be called during initialization
 pub unsafe fn install_timer_vector_runtime() {
     use x86_64::instructions::tables::sidt;
-    
+
     // Get IDT base address
     let idtr = sidt();
     let base = idtr.base.as_u64();
-    
+
     // Calculate address of timer vector entry (16 bytes per entry)
     let ent = base + ((APIC_TIMER_VECTOR as u64) * 16);
-    
+
     // Get handler address and code segment selector
     let handler = handler_timer as usize as u64;
     let selector = crate::gdt::KERNEL_CS as u64;
-    
+
     // Build IDT entry low 64 bits
     let mut low: u64 = 0;
-    low |= (handler & 0xFFFF) as u64;          // Bits 0-15: offset_low
-    low |= selector << 16;                      // Bits 16-31: selector
-    low |= (0u64) << 32;                        // Bits 32-39: ist=0, reserved
-    low |= (0x8Eu64) << 40;                     // Bits 40-47: type_attr (present, interrupt gate)
-    low |= ((handler >> 16) & 0xFFFF) << 48;   // Bits 48-63: offset_mid
-    
+    low |= (handler & 0xFFFF) as u64; // Bits 0-15: offset_low
+    low |= selector << 16; // Bits 16-31: selector
+    low |= (0u64) << 32; // Bits 32-39: ist=0, reserved
+    low |= (0x8Eu64) << 40; // Bits 40-47: type_attr (present, interrupt gate)
+    low |= ((handler >> 16) & 0xFFFF) << 48; // Bits 48-63: offset_mid
+
     // Build IDT entry high 64 bits
-    let high: u64 = (handler >> 32) & 0xFFFF_FFFF;  // Bits 0-31: offset_high, 32-63: reserved
-    
+    let high: u64 = (handler >> 32) & 0xFFFF_FFFF; // Bits 0-31: offset_high, 32-63: reserved
+
     // Write the 16-byte IDT entry
     core::ptr::write_unaligned(ent as *mut u64, low);
     core::ptr::write_unaligned((ent + 8) as *mut u64, high);
 }
-

@@ -44,9 +44,9 @@
 
 use alloc::vec::Vec;
 
-use crate::log_info;
 use crate::drivers::manager::driver_manager;
 use crate::drivers::traits::DeviceClass;
+use crate::log_info;
 
 const MAX_LINE: usize = 256;
 

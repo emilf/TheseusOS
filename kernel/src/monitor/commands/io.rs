@@ -4,8 +4,8 @@
 //! - `io`: Read/write I/O ports (8/16/32-bit)
 //! - `int`: Trigger software interrupts
 
-use crate::monitor::Monitor;
 use crate::monitor::parsing::parse_number;
+use crate::monitor::Monitor;
 use alloc::format;
 use x86_64::instructions::port::Port;
 
@@ -139,19 +139,19 @@ impl Monitor {
                     match width {
                         8 => {
                             let mut p: Port<u8> = Port::new(port);
-                            let value = (raw_value & 0xFF) as u8;  // Mask to 8 bits
+                            let value = (raw_value & 0xFF) as u8; // Mask to 8 bits
                             p.write(value);
                             self.writeln(&format!("OUT8  0x{:04X} <- 0x{:02X}", port, value));
                         }
                         16 => {
                             let mut p: Port<u16> = Port::new(port);
-                            let value = (raw_value & 0xFFFF) as u16;  // Mask to 16 bits
+                            let value = (raw_value & 0xFFFF) as u16; // Mask to 16 bits
                             p.write(value);
                             self.writeln(&format!("OUT16 0x{:04X} <- 0x{:04X}", port, value));
                         }
                         32 => {
                             let mut p: Port<u32> = Port::new(port);
-                            let value = raw_value as u32;  // Full 32 bits
+                            let value = raw_value as u32; // Full 32 bits
                             p.write(value);
                             self.writeln(&format!("OUT32 0x{:04X} <- 0x{:08X}", port, value));
                         }

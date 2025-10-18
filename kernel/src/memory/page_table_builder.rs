@@ -4,8 +4,8 @@
 //! a centralized mapping policy (prefers 2MiB huge pages when aligned) which
 //! simplifies higher-level mapping logic.
 
-use crate::memory::FrameSource;
 use crate::memory::mapping::map_range_with_policy;
+use crate::memory::FrameSource;
 use crate::memory::{PageTable, PAGE_SIZE};
 
 pub struct PageTableBuilder<'a, F: FrameSource> {

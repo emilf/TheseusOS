@@ -128,8 +128,8 @@ use x86_64::instructions::port::Port;
 use crate::drivers::manager::driver_manager;
 use crate::drivers::traits::{Device, DeviceClass, Driver};
 use crate::interrupts;
-use crate::{log_debug, log_error};
 use crate::memory;
+use crate::{log_debug, log_error};
 
 pub const LEGACY_COM1_IRQ: u32 = 4;
 pub const LEGACY_COM1_BASE: u16 = theseus_shared::constants::io_ports::com1::DATA;

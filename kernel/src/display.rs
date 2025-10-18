@@ -136,7 +136,7 @@ pub fn dump_handoff_bytes(ptr: *const u8, size: usize) {
             line_bytes[count] = unsafe { core::ptr::read_volatile(ptr.add(offset + count)) };
             count += 1;
         }
-        
+
         // Log the line
         if count > 0 {
             log_trace!("  +{:#06x}: {:02x?}", offset, &line_bytes[..count]);

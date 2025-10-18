@@ -3,13 +3,13 @@
 //! This module provides ACPI table parsing capabilities for the kernel using the acpi crate.
 //! It implements the AcpiHandler trait to map physical memory regions using PHYS_OFFSET.
 
-use crate::{log_debug, log_error, log_info, log_trace, log_warn};
 use crate::handoff::handoff_phys_ptr;
 use crate::memory::{
     current_pml4_phys, map_range_with_policy, phys_to_virt_pa, PageTable, PTE_GLOBAL, PTE_NO_EXEC,
     PTE_PRESENT, PTE_WRITABLE,
 };
 use crate::physical_memory;
+use crate::{log_debug, log_error, log_info, log_trace, log_warn};
 use acpi::{sdt::SdtHeader, AcpiHandler, AcpiTables, PhysicalMapping};
 use core::{
     ptr::NonNull,
@@ -279,7 +279,10 @@ fn extract_platform_info(
     if let Some(processor_info) = &platform_info_acpi.processor_info {
         platform_info.cpu_count = processor_info.application_processors.len() + 1; // BSP + APs
 
-        log_debug!("BSP APIC ID: {:#x}", processor_info.boot_processor.local_apic_id);
+        log_debug!(
+            "BSP APIC ID: {:#x}",
+            processor_info.boot_processor.local_apic_id
+        );
 
         for ap in &processor_info.application_processors {
             log_debug!("AP APIC ID: {:#x}", ap.local_apic_id);
@@ -296,18 +299,30 @@ fn extract_platform_info(
             platform_info.local_apic_address = apic_info.local_apic_address as u64;
             platform_info.has_legacy_pic = apic_info.also_has_legacy_pics;
 
-            log_debug!("Local APIC address: {:#x}", platform_info.local_apic_address);
+            log_debug!(
+                "Local APIC address: {:#x}",
+                platform_info.local_apic_address
+            );
 
             // Extract IO APIC information
             for io_apic in &apic_info.io_apics {
                 log_debug!(
                     "IO APIC ID: {:#x} Address: {:#x} GSI Base: {}",
-                    io_apic.id, io_apic.address, io_apic.global_system_interrupt_base
+                    io_apic.id,
+                    io_apic.address,
+                    io_apic.global_system_interrupt_base
                 );
             }
 
             // Check for 8259 PIC support
-            log_debug!("Has 8259 PIC: {}", if apic_info.also_has_legacy_pics { "Yes" } else { "No" });
+            log_debug!(
+                "Has 8259 PIC: {}",
+                if apic_info.also_has_legacy_pics {
+                    "Yes"
+                } else {
+                    "No"
+                }
+            );
         }
         _ => {
             log_warn!("No APIC interrupt model found");
@@ -329,7 +344,11 @@ fn extract_platform_info(
         }
     }
 
-    log_info!("Total CPUs: {} IO APICs: {}", platform_info.cpu_count, platform_info.io_apic_count);
+    log_info!(
+        "Total CPUs: {} IO APICs: {}",
+        platform_info.cpu_count,
+        platform_info.io_apic_count
+    );
 
     Ok(platform_info)
 }
@@ -512,7 +531,12 @@ fn parse_madt(madt_address: u64) -> Result<PlatformInfo, &'static str> {
                     let io_apic_addr =
                         core::ptr::read_unaligned(entry_ptr.add(4) as *const u32) as u64;
                     let gsi_base = core::ptr::read_unaligned(entry_ptr.add(8) as *const u32);
-                    log_trace!("IO APIC ID: {:#x} Address: {:#x} GSI Base: {}", io_apic_id, io_apic_addr, gsi_base);
+                    log_trace!(
+                        "IO APIC ID: {:#x} Address: {:#x} GSI Base: {}",
+                        io_apic_id,
+                        io_apic_addr,
+                        gsi_base
+                    );
                 }
                 5 => {
                     let override_addr = core::ptr::read_unaligned(entry_ptr.add(4) as *const u64);
@@ -533,7 +557,9 @@ fn parse_madt(madt_address: u64) -> Result<PlatformInfo, &'static str> {
 
         log_debug!(
             "Local APIC address: {:#x}, Total CPUs: {}, IO APICs: {}",
-            platform_info.local_apic_address, platform_info.cpu_count, platform_info.io_apic_count
+            platform_info.local_apic_address,
+            platform_info.cpu_count,
+            platform_info.io_apic_count
         );
 
         Ok(platform_info)
@@ -567,7 +593,13 @@ fn dump_table_header(tag: &str, phys_addr: u64, min_len: usize) {
         let length = (*header_ptr).length;
         let sig_bytes = core::slice::from_raw_parts(&sig as *const _ as *const u8, 4);
         let sig_str = core::str::from_utf8_unchecked(sig_bytes);
-        log_trace!("Mapping header for {} @ {:#x}: signature={} length={:#x}", tag, phys_addr, sig_str, length);
+        log_trace!(
+            "Mapping header for {} @ {:#x}: signature={} length={:#x}",
+            tag,
+            phys_addr,
+            sig_str,
+            length
+        );
     }
 }
 
