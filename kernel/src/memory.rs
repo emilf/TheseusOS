@@ -51,7 +51,7 @@
 #![allow(dead_code)]
 #![allow(static_mut_refs)]
 
-use crate::{log_debug, log_error, log_trace};
+use crate::{config, log_debug, log_error, log_trace};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 extern "C" {
@@ -372,96 +372,11 @@ impl MemoryManager {
         let pml4: &mut PageTable = &mut *(pml4_phys as *mut PageTable);
         log_trace!("Got PML4");
 
-        // Identity map first 1 GiB
-        {
-            log_debug!("Identity-mapping 1GiB begin");
-            // Bootstrap identity map using frame-backed tables
-            identity_map_first_1gb_2mb_alloc(pml4, &mut early_frame_alloc);
-            log_debug!("Identity-mapping 1GiB done");
-        }
-        // Do not clone bootloader HH entry; create our own HH structures deterministically
-
-        // Map the kernel image high-half
-        {
-            log_debug!("Mapping kernel high-half begin");
-            // Map kernel code/data into the high-half using 4KiB pages with frame allocator
-            map_kernel_high_half_4k_alloc(pml4, handoff, &mut early_frame_alloc);
-            log_debug!("Mapping kernel high-half done");
-            let hh_index = ((KERNEL_VIRTUAL_BASE >> 39) & 0x1FF) as usize;
-            let pml4_addr = pml4 as *mut PageTable as u64;
-            let entry_val = core::ptr::read_volatile((pml4_addr as *const u64).add(hh_index));
-            log_trace!("PML4[HH] entry={:#x}", entry_val);
-            if entry_val == 0 {
-                // Force-create HH PDPT so the entry is present
-                let _ = get_or_create_page_table_alloc(
-                    pml4.get_entry(hh_index),
-                    &mut early_frame_alloc,
-                );
-                let entry_val2 = core::ptr::read_volatile((pml4_addr as *const u64).add(hh_index));
-                log_trace!("PML4[HH] forced={:#x}", entry_val2);
-            }
-        }
-
-        // Map framebuffer and temp heap using frame allocator
-        {
-            log_debug!("Mapping framebuffer/heap begin");
-            if handoff.gop_fb_base != 0 {
-                map_framebuffer_alloc(pml4, handoff, &mut early_frame_alloc);
-            }
-            if handoff.temp_heap_base != 0 {
-                map_temporary_heap_alloc(pml4, handoff, &mut early_frame_alloc);
-            }
-            log_debug!("Mapping framebuffer/heap done");
-        }
-        if crate::config::MAP_LEGACY_PHYS_OFFSET_1GIB {
-            log_debug!("Mapping PHYS_OFFSET 1GiB begin");
-            mapping::map_phys_offset_1gb_2mb_alloc(pml4, &mut early_frame_alloc);
-            log_debug!("Mapping PHYS_OFFSET 1GiB done");
-        } else {
-            log_debug!("Mapping PHYS_OFFSET 64MiB begin");
-            mapping::map_phys_offset_range_2mb_alloc(
-                pml4,
-                &mut early_frame_alloc,
-                64 * 1024 * 1024,
-            );
-            log_debug!("Mapping PHYS_OFFSET 64MiB done");
-            let memmap_len = handoff.memory_map_size as usize;
-            if memmap_len > 0 {
-                let page_size = PAGE_SIZE as u64;
-                let phys_base = handoff.memory_map_buffer_ptr & !(page_size - 1);
-                let offset = handoff.memory_map_buffer_ptr - phys_base;
-                let size_aligned =
-                    ((offset + memmap_len as u64 + page_size - 1) / page_size) * page_size;
-                mapping::map_range_with_policy(
-                    pml4,
-                    HANDOFF_MEMMAP_WINDOW_BASE,
-                    phys_base,
-                    size_aligned,
-                    PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_NO_EXEC,
-                    &mut early_frame_alloc,
-                );
-                let new_ptr = HANDOFF_MEMMAP_WINDOW_BASE + offset;
-                let handoff_mut: *mut theseus_shared::handoff::Handoff =
-                    handoff as *const _ as *mut _;
-                unsafe {
-                    (*handoff_mut).memory_map_buffer_ptr = new_ptr;
-                }
-            }
-        }
-
-        // Map LAPIC MMIO region (0xFEE00000-0xFEEFFFFF)
-        {
-            log_debug!("Mapping LAPIC MMIO begin");
-            map_lapic_mmio_alloc(pml4, &mut early_frame_alloc);
-            log_debug!("Mapping LAPIC MMIO done");
-        }
-
-        // Map IO APIC MMIO region (0xFEC00000-0xFECFFFFF)
-        {
-            log_debug!("Mapping IO APIC MMIO begin");
-            mapping::map_io_apic_mmio_alloc(pml4, &mut early_frame_alloc);
-            log_debug!("Mapping IO APIC MMIO done");
-        }
+        Self::map_boot_identity_region(pml4, &mut early_frame_alloc);
+        Self::map_kernel_high_half_region(pml4, handoff, &mut early_frame_alloc);
+        Self::map_boot_resources(pml4, handoff, &mut early_frame_alloc);
+        Self::map_phys_offset_windows(pml4, handoff, &mut early_frame_alloc);
+        Self::map_platform_mmio_regions(pml4, &mut early_frame_alloc);
 
         let kernel_heap_start = KERNEL_HEAP_BASE;
         let kernel_heap_end = kernel_heap_start + KERNEL_HEAP_SIZE as u64;
@@ -566,6 +481,114 @@ impl MemoryManager {
             in("rax") target,
             options(noreturn)
         );
+    }
+
+    /// Identity map the low 1 GiB region required during the hand-off from the bootloader.
+    ///
+    /// This isolates the early identity map step so the main constructor reads like a
+    /// high-level boot script.
+    unsafe fn map_boot_identity_region(pml4: &mut PageTable, allocator: &mut impl FrameSource) {
+        log_debug!("Identity-mapping 1GiB begin");
+        identity_map_first_1gb_2mb_alloc(pml4, allocator);
+        log_debug!("Identity-mapping 1GiB done");
+    }
+
+    /// Populate the kernel's higher-half image mappings and ensure the PML4 slot is live.
+    unsafe fn map_kernel_high_half_region(
+        pml4: &mut PageTable,
+        handoff: &theseus_shared::handoff::Handoff,
+        allocator: &mut impl FrameSource,
+    ) {
+        log_debug!("Mapping kernel high-half begin");
+        map_kernel_high_half_4k_alloc(pml4, handoff, allocator);
+        log_debug!("Mapping kernel high-half done");
+
+        // Confirm the entry is non-empty; if the bootloader left it unused we create it now.
+        let hh_index = ((KERNEL_VIRTUAL_BASE >> 39) & 0x1FF) as usize;
+        let entry_val =
+            core::ptr::read_volatile((pml4 as *mut PageTable as *const u64).add(hh_index));
+        log_trace!("PML4[HH] entry={:#x}", entry_val);
+        if entry_val == 0 {
+            let _ = get_or_create_page_table_alloc(pml4.get_entry(hh_index), allocator);
+            let forced =
+                core::ptr::read_volatile((pml4 as *mut PageTable as *const u64).add(hh_index));
+            log_trace!("PML4[HH] forced present={:#x}", forced);
+        }
+    }
+
+    /// Map bootloader-provided resources such as the framebuffer and temporary heap.
+    unsafe fn map_boot_resources(
+        pml4: &mut PageTable,
+        handoff: &theseus_shared::handoff::Handoff,
+        allocator: &mut impl FrameSource,
+    ) {
+        log_debug!("Mapping framebuffer/temporary heap begin");
+        if handoff.gop_fb_base != 0 {
+            map_framebuffer_alloc(pml4, handoff, allocator);
+        }
+        if handoff.temp_heap_base != 0 {
+            map_temporary_heap_alloc(pml4, handoff, allocator);
+        }
+        log_debug!("Mapping framebuffer/temporary heap done");
+    }
+
+    /// Establish the PHYS_OFFSET linear window and remap the UEFI memory map buffer.
+    unsafe fn map_phys_offset_windows(
+        pml4: &mut PageTable,
+        handoff: &theseus_shared::handoff::Handoff,
+        allocator: &mut impl FrameSource,
+    ) {
+        if config::MAP_LEGACY_PHYS_OFFSET_1GIB {
+            log_debug!("Mapping PHYS_OFFSET 1GiB begin");
+            mapping::map_phys_offset_1gb_2mb_alloc(pml4, allocator);
+            log_debug!("Mapping PHYS_OFFSET 1GiB done");
+            return;
+        }
+
+        log_debug!("Mapping PHYS_OFFSET 64MiB begin");
+        mapping::map_phys_offset_range_2mb_alloc(pml4, allocator, 64 * 1024 * 1024);
+        log_debug!("Mapping PHYS_OFFSET 64MiB done");
+
+        let memmap_len = handoff.memory_map_size as usize;
+        if memmap_len == 0 {
+            return;
+        }
+
+        let page_size = PAGE_SIZE as u64;
+        let phys_base = handoff.memory_map_buffer_ptr & !(page_size - 1);
+        let offset = handoff.memory_map_buffer_ptr - phys_base;
+        let size_aligned = (offset + memmap_len as u64).div_ceil(page_size) * page_size;
+
+        mapping::map_range_with_policy(
+            pml4,
+            HANDOFF_MEMMAP_WINDOW_BASE,
+            phys_base,
+            size_aligned,
+            PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_NO_EXEC,
+            allocator,
+        );
+
+        debug_assert!(
+            offset < size_aligned && (memmap_len as u64) <= size_aligned,
+            "memory map window must encompass the entire descriptor buffer"
+        );
+        let new_ptr = HANDOFF_MEMMAP_WINDOW_BASE + offset;
+        log_debug!(
+            "Remapped UEFI memory map: phys_base=0x{:016X} new_ptr=0x{:016X} length={:#X}",
+            phys_base,
+            new_ptr,
+            memmap_len
+        );
+        let handoff_mut: *mut theseus_shared::handoff::Handoff = handoff as *const _ as *mut _;
+        (*handoff_mut).memory_map_buffer_ptr = new_ptr;
+    }
+
+    /// Map the LAPIC and IOAPIC MMIO apertures so interrupt controllers remain reachable.
+    unsafe fn map_platform_mmio_regions(pml4: &mut PageTable, allocator: &mut impl FrameSource) {
+        log_debug!("Mapping LAPIC/IOAPIC MMIO regions begin");
+        map_lapic_mmio_alloc(pml4, allocator);
+        mapping::map_io_apic_mmio_alloc(pml4, allocator);
+        log_debug!("Mapping LAPIC/IOAPIC MMIO regions done");
     }
 }
 

@@ -11,6 +11,42 @@ use crate::memory::page_table_builder::PageTableBuilder;
 use crate::memory::FrameSource;
 use core::fmt;
 
+/// Captures the essential ranges needed to mirror the kernel image into the high half.
+#[derive(Clone, Copy, Debug)]
+struct KernelMappingExtents {
+    phys_base: u64,
+    phys_size: u64,
+    guard: u64,
+}
+
+impl KernelMappingExtents {
+    /// Physical start after extending downward by the guard window.
+    fn guarded_phys_start(&self) -> u64 {
+        self.phys_base.saturating_sub(self.guard)
+    }
+
+    /// Virtual start after extending downward by the guard window.
+    fn guarded_va_start(&self) -> u64 {
+        KERNEL_VIRTUAL_BASE.saturating_sub(self.guard)
+    }
+}
+
+fn kernel_mapping_extents(
+    handoff: &theseus_shared::handoff::Handoff,
+) -> Option<KernelMappingExtents> {
+    let phys_base = runtime_kernel_phys_base(handoff);
+    let phys_size = handoff.kernel_image_size;
+    if phys_base == 0 || phys_size == 0 {
+        return None;
+    }
+    let guard = core::cmp::min(crate::memory::runtime_kernel_lower_guard(), phys_base);
+    Some(KernelMappingExtents {
+        phys_base,
+        phys_size,
+        guard,
+    })
+}
+
 /// Set up identity mapping for first 1 GiB using 2 MiB pages
 /// Identity-map the first 1 GiB of physical memory using 2MiB pages.
 ///
@@ -101,13 +137,11 @@ pub unsafe fn map_kernel_high_half_4k_alloc<F: FrameSource>(
     handoff: &theseus_shared::handoff::Handoff,
     fa: &mut F,
 ) {
-    let phys_base = runtime_kernel_phys_base(handoff);
-    let phys_size = handoff.kernel_image_size;
-    if phys_base == 0 || phys_size == 0 {
+    let Some(extents) = kernel_mapping_extents(handoff) else {
         return;
-    }
+    };
     const KERNEL_IMAGE_PAD: u64 = 8 * 1024 * 1024;
-    let mut total_bytes = phys_size + KERNEL_IMAGE_PAD;
+    let mut total_bytes = extents.phys_size + KERNEL_IMAGE_PAD;
     if total_bytes >= PAGE_SIZE as u64 {
         // Avoid mapping an unnecessary trailing guard page when the padded size
         // already falls on a page boundary.
@@ -121,12 +155,11 @@ pub unsafe fn map_kernel_high_half_4k_alloc<F: FrameSource>(
     let pages = total_bytes.div_ceil(page_bytes);
     let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL;
     let mut builder = PageTableBuilder::new(pml4, fa);
-    let guard = crate::memory::runtime_kernel_lower_guard();
-    let guard = core::cmp::min(guard, phys_base);
+    let guard = extents.guard;
     // Extend the mapping downward by `guard` bytes so that low trampoline code or
     // relocation thunks that executed before entering the high-half remain reachable.
-    let va_start = KERNEL_VIRTUAL_BASE.saturating_sub(guard);
-    let pa_start = phys_base.saturating_sub(guard);
+    let va_start = extents.guarded_va_start();
+    let pa_start = extents.guarded_phys_start();
     let total = guard + pages * PAGE_SIZE as u64;
     builder.map_range(va_start, pa_start, total, flags);
 }
@@ -281,22 +314,16 @@ pub unsafe fn map_kernel_high_half_2mb<F: FrameSource>(
     fa: &mut F,
 ) {
     let two_mb: u64 = 2 * 1024 * 1024;
-    let phys_base = runtime_kernel_phys_base(handoff);
-    let phys_size = handoff.kernel_image_size;
-    if phys_base == 0 || phys_size == 0 {
+    let Some(extents) = kernel_mapping_extents(handoff) else {
         return;
-    }
-
-    let guard = crate::memory::runtime_kernel_lower_guard();
-    let guard = core::cmp::min(guard, phys_base);
-
-    // Mirror the low-guard region below the recorded kernel base so early boot
-    // code that lives before the official start stays mapped once paging flips.
-    let phys_guarded = phys_base.saturating_sub(guard);
-    let va_guarded = KERNEL_VIRTUAL_BASE.saturating_sub(guard);
+    };
+    // Mirror the low-guard region below the recorded kernel base so early boot code that
+    // lives before the official start stays mapped once paging flips.
+    let phys_guarded = extents.guarded_phys_start();
+    let va_guarded = extents.guarded_va_start();
 
     let phys_start = phys_guarded & !(two_mb - 1);
-    let phys_end = (phys_base + phys_size + two_mb - 1) & !(two_mb - 1);
+    let phys_end = (extents.phys_base + extents.phys_size + two_mb - 1) & !(two_mb - 1);
     let va_start = va_guarded.wrapping_sub(phys_guarded.wrapping_sub(phys_start));
     let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL;
     let mut pa = phys_start;
@@ -335,6 +362,9 @@ pub unsafe fn map_existing_region_va_to_its_pa<F: FrameSource>(
 /// page mappings. This helper centralizes page-size decisions in one place.
 /// Map a VA/PA range using a simple policy that prefers 2MiB pages when
 /// possible and falls back to 4KiB pages for unaligned/tail regions.
+///
+/// The caller should supply base flags that do *not* include `PTE_PS`; the helper
+/// sets the bit automatically when it materialises a huge-page leaf entry.
 pub unsafe fn map_range_with_policy<F: FrameSource>(
     pml4: &mut PageTable,
     mut va: u64,
@@ -359,7 +389,7 @@ pub unsafe fn map_range_with_policy<F: FrameSource>(
     }
     // Map as many 2MiB pages as possible
     while size >= TWO_MB {
-        map_2mb_page_alloc(pml4, va, pa, flags | PTE_PS, fa);
+        map_2mb_page_alloc(pml4, va, pa, flags, fa);
         va = va.wrapping_add(TWO_MB);
         pa = pa.wrapping_add(TWO_MB);
         size = size.saturating_sub(TWO_MB);

@@ -6,13 +6,13 @@
 - Boot-time frame allocation mixes parsing of the UEFI memory map, tracking, and reserved-pool policy inside `BootFrameAllocator`, which makes the pointer arithmetic harder to audit.
 
 ## Suggested Improvements
-- **Extract mapping phases**: Break `MemoryManager::new` into clearly named private methods (e.g., `identity_map_low_memory`, `map_kernel_image`, `map_phys_offset_regions`, `map_mmio_devices`). Each method can capture its logging/guard math, making the boot sequence easier to follow and test in isolation.
-- **Clarify high-half guard math**: The guard-window computation in `map_kernel_high_half_4k_alloc` mixes padding and guard handling. Consider introducing a helper that returns `(va_start, pa_start, length)` and documents why a page is subtracted when `total_bytes >= PAGE_SIZE`.
-- **Centralize mapping policy**: `map_2mb_page_alloc` always ORs `PTE_PS`, yet `map_range_with_policy` also sets the bit. Removing the duplication (and making the expected flag shape explicit in one place) reduces subtle flag mismatches.
-- **Ensure TLB consistency**: `TemporaryWindow::map_phys_frame` and `unmap` write raw entries without issuing `invlpg`. After re-mapping the window to a new frame, the CPU may still hold the old translation. Add an `x86_64::instructions::tlb::flush()` or explicit `invlpg` on `TEMP_WINDOW_VA` to guarantee correctness.
-- **Encapsulate descriptor parsing**: Move the hard-coded offsets in `BootFrameAllocator::advance_to_next_region` into a small `MemoryDescriptorView` helper. This would make the iterator logic clearer and safer against descriptor-layout changes.
-- **Expose reserved-pool intent**: The reserved-frame pool currently lives in a fixed-size `[u64; 16]`. A lightweight wrapper (e.g., `ReservedPool`) with methods like `push`, `pop`, `is_full` would surface the policy better and allow unit tests.
-- **Validate handoff remapping**: When remapping the UEFI memory map buffer, the code patches the handoff pointer in place. Add a small verification step (length sanity, alignment) or log assertion to catch truncated buffers.
+- ✅ **Extract mapping phases**: `MemoryManager::new` now delegates to small helpers (`map_boot_identity_region`, `map_kernel_high_half_region`, etc.) so the boot sequence reads like a checklist.
+- ✅ **Clarify high-half guard math**: Introduced `KernelMappingExtents` to compute guard-adjusted bases once, shared by both 4 KiB and 2 MiB mapping helpers.
+- ✅ **Centralize mapping policy**: `map_range_with_policy` no longer fiddles with `PTE_PS`; huge-page flagging happens solely inside `map_2mb_page_alloc`.
+- ✅ **Ensure TLB consistency**: `TemporaryWindow` flushes the `TEMP_WINDOW_VA` translation whenever it maps or unmaps a frame.
+- ✅ **Encapsulate descriptor parsing**: Added `MemoryDescriptorView` to hide raw offset math when iterating the UEFI map.
+- ✅ **Expose reserved-pool intent**: Wrapped the critical-frame stash in a `ReservedPool` helper with explicit `push`/`pop` semantics.
+- ✅ **Validate handoff remapping**: Added assertions and logging before rewriting the handoff’s memory-map pointer to catch mismatches early.
 
 ## Simplifications & Future Work
 - Introduce constants such as `const TWO_MB: u64` in a shared module to avoid repeated literal recomputation across helpers.

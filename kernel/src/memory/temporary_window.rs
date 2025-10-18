@@ -4,6 +4,7 @@
 //! zero newly allocated page-table frames).
 
 use crate::memory::{FrameSource, PageTable, PageTableEntry, PAGE_SIZE};
+use x86_64::{instructions::tlb, VirtAddr};
 
 /// Fixed virtual address used for temporary mappings
 pub const TEMP_WINDOW_VA: u64 = 0xFFFF_FFFE_0000_0000u64;
@@ -32,9 +33,8 @@ impl TemporaryWindow {
 
     /// Map a single 4KiB physical frame into the temporary window and return the VA.
     ///
-    /// Callers should invalidate the TLB entry for `TEMP_WINDOW_VA` if the CPU may have
-    /// cached a previous translation for the window.
-    ///
+    /// The helper issues an `invlpg` via `tlb::flush` so callers always observe the
+    /// fresh translation even if the window previously pointed somewhere else.
     /// # Safety
     /// `fa` must implement `FrameSource` used to allocate intermediate page
     /// tables if they are missing. This function will overwrite any existing mapping
@@ -49,6 +49,7 @@ impl TemporaryWindow {
             super::PTE_PRESENT | super::PTE_WRITABLE,
             fa,
         );
+        tlb::flush(VirtAddr::new(self.window_va));
         self.window_va
     }
 
@@ -124,6 +125,7 @@ impl TemporaryWindow {
         let pt = &mut *(pd.entries[pd_index].physical_addr() as *mut PageTable);
         // Clear the PT entry
         *pt.get_entry(pt_index) = PageTableEntry::new(0, 0);
+        tlb::flush(VirtAddr::new(self.window_va));
     }
 }
 

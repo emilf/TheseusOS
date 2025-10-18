@@ -14,8 +14,7 @@
 //! that page tables, IST stacks, and other essential structures always have
 //! frames available even if the general pool is temporarily exhausted.
 //!
-//! - `reserved`: Array storing physical addresses of reserved frames
-//! - `reserved_count`: Number of frames currently in the reserved pool
+//! - `ReservedPool`: fixed-capacity stack storing physical addresses of reserved frames
 //! - LIFO allocation: Last frame reserved is first frame allocated
 //! - Fallback behavior: If reserved pool empty, falls back to general pool
 
@@ -27,6 +26,71 @@ use x86_64::{
 };
 
 const UEFI_CONVENTIONAL_MEMORY: u32 = 7; // UEFI spec: conventional memory type
+
+/// Lightweight view over a raw UEFI `MemoryDescriptor`.
+///
+/// We avoid pulling in the `uefi` crate's definition here to keep the boot-time
+/// allocator standalone; instead we read the handful of fields we care about
+/// using this wrapper.
+#[derive(Clone, Copy)]
+struct MemoryDescriptorView {
+    ptr: *const u8,
+}
+
+impl MemoryDescriptorView {
+    unsafe fn new(ptr: *const u8) -> Self {
+        Self { ptr }
+    }
+
+    unsafe fn kind(&self) -> u32 {
+        read_u32(self.ptr, 0)
+    }
+
+    unsafe fn physical_start(&self) -> u64 {
+        read_u64(self.ptr, 8)
+    }
+
+    unsafe fn page_count(&self) -> u64 {
+        read_u64(self.ptr, 24)
+    }
+}
+
+/// Fixed-capacity stack of reserved frames kept aside for critical boot-time needs.
+#[derive(Clone, Copy)]
+struct ReservedPool {
+    slots: [u64; 16],
+    count: usize,
+}
+
+impl ReservedPool {
+    const fn new() -> Self {
+        Self {
+            slots: [0; 16],
+            count: 0,
+        }
+    }
+
+    fn push(&mut self, frame_pa: u64) -> bool {
+        if self.count >= self.slots.len() {
+            return false;
+        }
+        self.slots[self.count] = frame_pa;
+        self.count += 1;
+        true
+    }
+
+    fn pop(&mut self) -> Option<u64> {
+        if self.count == 0 {
+            return None;
+        }
+        self.count -= 1;
+        Some(self.slots[self.count])
+    }
+
+    fn is_full(&self) -> bool {
+        self.count >= self.slots.len()
+    }
+}
 
 /// Trait abstracting over sources of physical frames for page-table building and
 /// general allocations. Implemented by both the boot-time allocator and the
@@ -46,11 +110,8 @@ pub struct BootFrameAllocator {
     cur_index: usize,
     cur_next_addr: u64,
     cur_remaining_pages: u64,
-    // Reserved frames pool for critical boot-time allocations. Stores physical
-    // addresses of frames that have been removed from the general pool and are
-    // held back for critical kernel needs (page tables, IST stacks, etc.).
-    reserved: [u64; 16],
-    reserved_count: usize,
+    // Reserved frames pool for critical boot-time allocations.
+    reserved: ReservedPool,
     tracking_enabled: bool,
 }
 
@@ -63,8 +124,7 @@ impl BootFrameAllocator {
             cur_index: 0,
             cur_next_addr: 0,
             cur_remaining_pages: 0,
-            reserved: [0u64; 16],
-            reserved_count: 0,
+            reserved: ReservedPool::new(),
             tracking_enabled: false,
         }
     }
@@ -87,8 +147,9 @@ impl BootFrameAllocator {
         let mut conventional_pages: u128 = 0;
         for i in 0..count {
             let p = base_ptr.add(i * desc_size);
-            let typ = read_u32(p, 0);
-            let num_pages = read_u64(p, 24) as u128;
+            let desc = MemoryDescriptorView::new(p);
+            let typ = desc.kind();
+            let num_pages = desc.page_count() as u128;
             total_pages = total_pages.wrapping_add(num_pages);
             if typ == UEFI_CONVENTIONAL_MEMORY {
                 conventional_pages = conventional_pages.wrapping_add(num_pages);
@@ -107,8 +168,7 @@ impl BootFrameAllocator {
             cur_index: 0,
             cur_next_addr: 0,
             cur_remaining_pages: 0,
-            reserved: [0u64; 16],
-            reserved_count: 0,
+            reserved: ReservedPool::new(),
             tracking_enabled: false,
         };
         s.advance_to_next_region();
@@ -126,13 +186,21 @@ impl BootFrameAllocator {
     /// internal reserved pool for critical kernel use.
     pub fn reserve_frames(&mut self, mut n: usize) -> usize {
         let mut got = 0usize;
-        while n > 0 && self.reserved_count < self.reserved.len() {
+        while n > 0 && !self.reserved.is_full() {
             if let Some(frame) = self.allocate_frame() {
                 let pa = frame.start_address().as_u64();
-                self.reserved[self.reserved_count] = pa;
-                self.reserved_count += 1;
-                got += 1;
-                n -= 1;
+                if self.reserved.push(pa) {
+                    got += 1;
+                    n -= 1;
+                } else {
+                    // Pool filled between the loop condition and push; rewind allocator state
+                    // so the frame is handed out normally on the next request.
+                    self.cur_next_addr = self
+                        .cur_next_addr
+                        .saturating_sub(crate::memory::PAGE_SIZE as u64);
+                    self.cur_remaining_pages = self.cur_remaining_pages.saturating_add(1);
+                    break;
+                }
             } else {
                 break;
             }
@@ -142,12 +210,9 @@ impl BootFrameAllocator {
 
     /// Allocate a frame from the reserved pool (LIFO allocation).
     pub fn allocate_reserved_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
-        if self.reserved_count == 0 {
-            return None;
-        }
-        self.reserved_count -= 1;
-        let pa = self.reserved[self.reserved_count];
-        Some(PhysFrame::containing_address(PhysAddr::new(pa)))
+        self.reserved
+            .pop()
+            .map(|pa| PhysFrame::containing_address(PhysAddr::new(pa)))
     }
 
     unsafe fn advance_to_next_region(&mut self) {
@@ -156,9 +221,10 @@ impl BootFrameAllocator {
             // UEFI memory descriptors are laid out as defined in the spec:
             // type @ 0, physical start @ 8, number of pages @ 24. We read the fields
             // using helper accessors to avoid struct definitions that would pull in `uefi`.
-            let typ = read_u32(p, 0);
-            let phys_start = read_u64(p, 8);
-            let num_pages = read_u64(p, 24);
+            let desc = MemoryDescriptorView::new(p);
+            let typ = desc.kind();
+            let phys_start = desc.physical_start();
+            let num_pages = desc.page_count();
             if self.cur_index < 3 {
                 log_trace!(
                     "desc[{}] @ {:#x}: type={} start={:#x} pages={}",
