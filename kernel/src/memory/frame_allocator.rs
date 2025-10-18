@@ -19,12 +19,12 @@
 //! - LIFO allocation: Last frame reserved is first frame allocated
 //! - Fallback behavior: If reserved pool empty, falls back to general pool
 
+use crate::physical_memory;
 use crate::{log_debug, log_trace};
 use x86_64::{
     structures::paging::{FrameAllocator, PhysFrame, Size4KiB},
     PhysAddr,
 };
-use crate::physical_memory;
 
 const UEFI_CONVENTIONAL_MEMORY: u32 = 7; // UEFI spec: conventional memory type
 
@@ -76,7 +76,9 @@ impl BootFrameAllocator {
         let count = h.memory_map_entries as usize;
         log_trace!(
             "Frame allocator: base_ptr={:#x} desc_size={} count={}",
-            base_ptr as u64, desc_size, count
+            base_ptr as u64,
+            desc_size,
+            count
         );
         // Memory map diagnostics: Compute summary statistics of the UEFI memory map
         // to verify the allocator sees the full system RAM. This helps debug memory
@@ -94,7 +96,8 @@ impl BootFrameAllocator {
         }
         log_debug!(
             "Memory map: total_pages={:#x} conventional_pages={:#x}",
-            total_pages, conventional_pages
+            total_pages,
+            conventional_pages
         );
 
         let mut s = Self {
@@ -159,7 +162,11 @@ impl BootFrameAllocator {
             if self.cur_index < 3 {
                 log_trace!(
                     "desc[{}] @ {:#x}: type={} start={:#x} pages={}",
-                    self.cur_index, p as u64, typ, phys_start, num_pages
+                    self.cur_index,
+                    p as u64,
+                    typ,
+                    phys_start,
+                    num_pages
                 );
             }
             self.cur_index += 1;
@@ -188,7 +195,11 @@ impl BootFrameAllocator {
                     self.cur_next_addr = aligned_start;
                     self.cur_remaining_pages = adj_pages;
                 }
-                log_trace!("Frame allocator region: start={:#x} pages={}", self.cur_next_addr, self.cur_remaining_pages);
+                log_trace!(
+                    "Frame allocator region: start={:#x} pages={}",
+                    self.cur_next_addr,
+                    self.cur_remaining_pages
+                );
                 return;
             }
         }
@@ -230,8 +241,7 @@ impl FrameSource for BootFrameAllocator {
     }
 
     fn alloc_page_table_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
-        self
-            .allocate_reserved_frame()
+        self.allocate_reserved_frame()
             .or_else(|| FrameAllocator::<Size4KiB>::allocate_frame(self))
     }
 }

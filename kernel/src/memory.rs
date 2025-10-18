@@ -178,9 +178,7 @@ pub fn runtime_kernel_phys_base(handoff: &theseus_shared::handoff::Handoff) -> u
     let guard_bytes = core::cmp::min(guard_pages * PAGE_SIZE as u64, min_phys);
 
     // Align down to 4KiB to match paging granularity and ensure we cover whole pages.
-    let base = min_phys
-        .saturating_sub(guard_bytes)
-        & !((PAGE_SIZE as u64) - 1);
+    let base = min_phys.saturating_sub(guard_bytes) & !((PAGE_SIZE as u64) - 1);
     if RUNTIME_BASE_LOGGED
         .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
         .is_ok()
@@ -190,9 +188,20 @@ pub fn runtime_kernel_phys_base(handoff: &theseus_shared::handoff::Handoff) -> u
              entry_phys={:#x} after_phys={:#x} cont_phys={:#x} stack_switch_phys={:#x} \
              disable_irqs_phys={:#x} setup_idt_phys={:#x} setup_gdt_phys={:#x} \
              setup_ctrl_phys={:#x} min_phys={:#x} final={:#x}",
-            raw_base, guard_bytes, virt_base, virt_entry, entry_phys, after_entry_phys,
-            cont_entry_phys, stack_switch_phys, disable_irqs_phys, setup_idt_phys,
-            setup_gdt_phys, setup_ctrl_phys, min_phys, base
+            raw_base,
+            guard_bytes,
+            virt_base,
+            virt_entry,
+            entry_phys,
+            after_entry_phys,
+            cont_entry_phys,
+            stack_switch_phys,
+            disable_irqs_phys,
+            setup_idt_phys,
+            setup_gdt_phys,
+            setup_ctrl_phys,
+            min_phys,
+            base
         );
     }
     ACTUAL_KERNEL_LOWER_GUARD.store(guard_bytes, Ordering::Relaxed);
@@ -515,7 +524,10 @@ impl MemoryManager {
         if verbose {
             log_trace!(
                 "Jump info: phys_base={:#x} rip_now={:#x} sym={:#x} target={:#x}",
-                phys_base, rip_now, sym, target
+                phys_base,
+                rip_now,
+                sym,
+                target
             );
         }
 
@@ -697,9 +709,15 @@ pub use page_table_builder::PageTableBuilder;
 pub unsafe fn activate_virtual_memory(page_table_root: u64) {
     {
         use x86_64::registers::control::Cr3;
-        log_debug!("activate_virtual_memory: loading CR3 with={:#x}", page_table_root);
+        log_debug!(
+            "activate_virtual_memory: loading CR3 with={:#x}",
+            page_table_root
+        );
         let (old, _f) = Cr3::read();
-        log_trace!("activate_virtual_memory: CR3 before={:#x}", old.start_address().as_u64());
+        log_trace!(
+            "activate_virtual_memory: CR3 before={:#x}",
+            old.start_address().as_u64()
+        );
     }
     // Load our page table root into CR3 to enable virtual memory
     core::arch::asm!(
@@ -711,7 +729,10 @@ pub unsafe fn activate_virtual_memory(page_table_root: u64) {
     {
         use x86_64::registers::control::Cr3;
         let (new, _f2) = Cr3::read();
-        log_debug!("activate_virtual_memory: CR3 after={:#x}", new.start_address().as_u64());
+        log_debug!(
+            "activate_virtual_memory: CR3 after={:#x}",
+            new.start_address().as_u64()
+        );
     }
 }
 

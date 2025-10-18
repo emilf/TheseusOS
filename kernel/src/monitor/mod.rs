@@ -241,7 +241,7 @@ impl Monitor {
             0x03 => {
                 // Ctrl+C - cancel current line
                 self.line_buffer.clear();
-                self.write("^C");  // Show cancellation indicator
+                self.write("^C"); // Show cancellation indicator
                 self.write(PROMPT);
             }
             0x0C => {
@@ -254,7 +254,7 @@ impl Monitor {
                 // Printable ASCII (space through tilde)
                 if self.line_buffer.len() < MAX_LINE {
                     self.line_buffer.push(byte as char);
-                    self.write_bytes(&[byte]);  // Echo character
+                    self.write_bytes(&[byte]); // Echo character
                 }
             }
             _ => {
@@ -284,6 +284,8 @@ impl Monitor {
             "dump" | "d" => self.cmd_dump(&parts[1..]),
             "write" | "w" => self.cmd_write(&parts[1..]),
             "fill" | "f" => self.cmd_fill(&parts[1..]),
+            "ptwalk" | "pt" => self.cmd_ptwalk(&parts[1..]),
+            "ptdump" => self.cmd_ptdump(&parts[1..]),
             "devices" | "dev" => self.cmd_devices(),
             "acpi" => self.cmd_acpi(),
             "phys" | "physmem" => self.cmd_phys(),
@@ -315,6 +317,8 @@ impl Monitor {
         self.writeln("  dump|d ADDR [LEN]   - Dump memory region (default: 256 bytes)");
         self.writeln("  write|w ADDR VALUE  - Write byte to memory");
         self.writeln("  fill|f ADDR LEN VAL - Fill memory region with value");
+        self.writeln("  ptwalk|pt VIRT      - Walk page tables for virtual address");
+        self.writeln("  ptdump LEVEL [...]  - Dump entries from a page-table level");
         self.writeln("");
         self.writeln("System Inspection:");
         self.writeln("  regs|r              - Display CPU registers");
@@ -347,5 +351,3 @@ impl Monitor {
         self.writeln("  help|?              - Show this help");
     }
 }
-
-

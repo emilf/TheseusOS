@@ -39,11 +39,7 @@ impl TemporaryWindow {
     /// `fa` must implement `FrameSource` used to allocate intermediate page
     /// tables if they are missing. This function will overwrite any existing mapping
     /// at the temporary window.
-    pub unsafe fn map_phys_frame(
-        &mut self,
-        phys_frame_pa: u64,
-        fa: &mut impl FrameSource,
-    ) -> u64 {
+    pub unsafe fn map_phys_frame(&mut self, phys_frame_pa: u64, fa: &mut impl FrameSource) -> u64 {
         let pml4 = &mut *self.pml4;
         // If an existing mapping is present, simply overwrite the PT entry
         super::map_page_alloc(

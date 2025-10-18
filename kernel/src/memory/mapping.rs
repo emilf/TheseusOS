@@ -1,14 +1,14 @@
 //! Mapping helpers moved out of `memory.rs` to isolate page-table construction
 //! and mapping policies.
 
-use crate::log_debug;
 use super::{
-    runtime_kernel_phys_base, PageTable, PageTableEntry, KERNEL_VIRTUAL_BASE, PAGE_SIZE, PHYS_OFFSET,
-    PTE_GLOBAL, PTE_NO_EXEC, PTE_PCD, PTE_PRESENT, PTE_PS, PTE_PWT, PTE_WRITABLE,
+    runtime_kernel_phys_base, PageTable, PageTableEntry, KERNEL_VIRTUAL_BASE, PAGE_SIZE,
+    PHYS_OFFSET, PTE_GLOBAL, PTE_NO_EXEC, PTE_PCD, PTE_PRESENT, PTE_PS, PTE_PWT, PTE_WRITABLE,
     TEMP_HEAP_VIRTUAL_BASE,
 };
-use crate::memory::FrameSource;
+use crate::log_debug;
 use crate::memory::page_table_builder::PageTableBuilder;
+use crate::memory::FrameSource;
 
 /// Set up identity mapping for first 1 GiB using 2 MiB pages
 /// Identity-map the first 1 GiB of physical memory using 2MiB pages.
