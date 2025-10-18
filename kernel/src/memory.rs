@@ -200,6 +200,9 @@ pub fn runtime_kernel_phys_base(handoff: &theseus_shared::handoff::Handoff) -> u
     base
 }
 
+/// Amount of the kernel image (in bytes) that needs to be mapped below the discovered
+/// physical base so that early entry trampolines continue to be reachable once paging
+/// is active.
 pub fn runtime_kernel_lower_guard() -> u64 {
     ACTUAL_KERNEL_LOWER_GUARD.load(Ordering::Relaxed)
 }

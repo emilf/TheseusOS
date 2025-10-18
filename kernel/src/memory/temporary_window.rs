@@ -32,6 +32,9 @@ impl TemporaryWindow {
 
     /// Map a single 4KiB physical frame into the temporary window and return the VA.
     ///
+    /// Callers should invalidate the TLB entry for `TEMP_WINDOW_VA` if the CPU may have
+    /// cached a previous translation for the window.
+    ///
     /// # Safety
     /// `fa` must implement `FrameSource` used to allocate intermediate page
     /// tables if they are missing. This function will overwrite any existing mapping
@@ -94,6 +97,8 @@ impl TemporaryWindow {
     where
         F: FnOnce(u64) -> R,
     {
+        // Map the requested frame, run the caller-provided closure, then eagerly
+        // tear the mapping down so the window never leaks across control transfers.
         let va = self.map_phys_frame(phys_frame_pa, fa);
         let res = f(va);
         // Ensure we unmap before returning

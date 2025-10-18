@@ -150,6 +150,9 @@ impl BootFrameAllocator {
     unsafe fn advance_to_next_region(&mut self) {
         while self.cur_index < self.count {
             let p = self.base_ptr.add(self.cur_index * self.desc_size);
+            // UEFI memory descriptors are laid out as defined in the spec:
+            // type @ 0, physical start @ 8, number of pages @ 24. We read the fields
+            // using helper accessors to avoid struct definitions that would pull in `uefi`.
             let typ = read_u32(p, 0);
             let phys_start = read_u64(p, 8);
             let num_pages = read_u64(p, 24);
@@ -163,6 +166,8 @@ impl BootFrameAllocator {
             if typ == UEFI_CONVENTIONAL_MEMORY && num_pages > 0 {
                 let aligned_start = phys_start & !((crate::memory::PAGE_SIZE as u64) - 1);
                 let adj_pages = if aligned_start > phys_start {
+                    // If aligning up skipped the first partial page, reduce the count so
+                    // we never hand out a frame whose first bytes sit outside the descriptor.
                     num_pages.saturating_sub(1)
                 } else {
                     num_pages
@@ -175,6 +180,8 @@ impl BootFrameAllocator {
                     if adj_pages <= 1 {
                         continue;
                     }
+                    // Skip physical frame 0 entirely to avoid handing out a null-mappable
+                    // page to subsystems that treat address 0 as special.
                     self.cur_next_addr = aligned_start + crate::memory::PAGE_SIZE as u64;
                     self.cur_remaining_pages = adj_pages.saturating_sub(1);
                 } else {

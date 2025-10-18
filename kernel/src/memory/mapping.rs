@@ -83,6 +83,8 @@ pub unsafe fn map_kernel_high_half_4k_alloc<F: FrameSource>(
     const KERNEL_IMAGE_PAD: u64 = 8 * 1024 * 1024;
     let mut total_bytes = phys_size + KERNEL_IMAGE_PAD;
     if total_bytes >= PAGE_SIZE as u64 {
+        // Avoid mapping an unnecessary trailing guard page when the padded size
+        // already falls on a page boundary.
         total_bytes -= PAGE_SIZE as u64;
     }
     let pages: u64 = (total_bytes + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64;
@@ -90,6 +92,8 @@ pub unsafe fn map_kernel_high_half_4k_alloc<F: FrameSource>(
     let mut builder = PageTableBuilder::new(pml4, fa);
     let guard = crate::memory::runtime_kernel_lower_guard();
     let guard = core::cmp::min(guard, phys_base);
+    // Extend the mapping downward by `guard` bytes so that low trampoline code or
+    // relocation thunks that executed before entering the high-half remain reachable.
     let va_start = KERNEL_VIRTUAL_BASE.saturating_sub(guard);
     let pa_start = phys_base.saturating_sub(guard);
     let total = guard + pages * PAGE_SIZE as u64;
@@ -236,6 +240,8 @@ pub unsafe fn map_kernel_high_half_2mb<F: FrameSource>(
     let guard = crate::memory::runtime_kernel_lower_guard();
     let guard = core::cmp::min(guard, phys_base);
 
+    // Mirror the low-guard region below the recorded kernel base so early boot
+    // code that lives before the official start stays mapped once paging flips.
     let phys_guarded = phys_base.saturating_sub(guard);
     let va_guarded = KERNEL_VIRTUAL_BASE.saturating_sub(guard);
 
@@ -290,6 +296,7 @@ pub unsafe fn map_range_with_policy<F: FrameSource>(
     const TWO_MB: u64 = 2 * 1024 * 1024;
     // Handle leading unaligned portion to reach 2MiB alignment
     while size > 0 && (va & (TWO_MB - 1) != 0 || pa & (TWO_MB - 1) != 0) {
+        // Bump each address in lockstep until both sides are aligned for a huge-page insert.
         map_page_alloc(pml4, va, pa, flags, fa);
         va = va.wrapping_add(PAGE_SIZE as u64);
         pa = pa.wrapping_add(PAGE_SIZE as u64);
@@ -304,6 +311,7 @@ pub unsafe fn map_range_with_policy<F: FrameSource>(
     }
     // Tail with 4KiB pages
     while size > 0 {
+        // Whatever remains is smaller than 2 MiB, so fall back to standard 4 KiB leaves.
         map_page_alloc(pml4, va, pa, flags, fa);
         va = va.wrapping_add(PAGE_SIZE as u64);
         pa = pa.wrapping_add(PAGE_SIZE as u64);
