@@ -1,0 +1,14 @@
+[Unit]
+Description=Persistent QEMU Serial Relay (named pipe pair)
+After=default.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/rm -f /tmp/qemu-serial.in /tmp/qemu-serial.out
+ExecStart=/usr/bin/mkfifo /tmp/qemu-serial.in /tmp/qemu-serial.out; \
+           exec /usr/bin/socat -u PIPE:/tmp/qemu-serial.in PIPE:/tmp/qemu-serial.out
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=default.target
