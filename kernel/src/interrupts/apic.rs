@@ -36,7 +36,7 @@
 //! - 0x390: Timer Current Count
 //! - 0x3E0: Timer Divide Configuration
 
-use crate::{log_debug, log_trace};
+use crate::log_trace;
 use x86_64::instructions::port::Port;
 
 /// APIC error interrupt vector
