@@ -67,9 +67,6 @@ pub unsafe fn disable_all_interrupts() {
     // Disable Non-Maskable Interrupts
     disable_nmi();
 
-    // Disable local APIC interrupts
-    disable_local_apic();
-
     // Mask all legacy PIC interrupts
     mask_pic_interrupts();
 }
@@ -86,20 +83,6 @@ unsafe fn disable_nmi() {
     // Write to CMOS index port with NMI disable bit (bit 7 = 0x80)
     let mut port: Port<u8> = Port::new(0x70);
     port.write(0x80u8);
-}
-
-/// Disable local APIC interrupts
-///
-/// In early boot, we defer LAPIC access until paging is set up and the
-/// APIC MMIO region is mapped. This placeholder logs that we're deferring.
-///
-/// # Note
-/// LAPIC MMIO can be probed after paging via `probe_lapic_mmio_after_paging()`.
-/// Actual interrupt masking is done in `lapic_timer_configure()` when setting up
-/// the timer.
-unsafe fn disable_local_apic() {
-    // Defer LAPIC access until after paging maps the MMIO region
-    log_debug!("Deferring LAPIC access until after paging");
 }
 
 /// Mask all legacy PIC (8259) interrupts

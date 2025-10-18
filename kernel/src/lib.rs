@@ -107,6 +107,7 @@ pub extern "C" fn kernel_entry(handoff_addr: u64) -> ! {
                 }
 
                 // Set up handoff for timer interrupt access
+                // TODO: Does this in a more fancy way in the future.
                 crate::interrupts::set_handoff_for_timer(handoff);
 
                 // Set up complete kernel environment (boot services have been exited)
