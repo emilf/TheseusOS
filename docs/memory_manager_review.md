@@ -22,6 +22,6 @@
 - Explore merging the boot-time `FrameSource` trait with the later `FrameAllocator` usage so that the same abstraction drives both early and steady-state mapping paths.
 
 ## Quick Wins
-- Add inline assertions (e.g., `debug_assert!(PAGE_SIZE.is_power_of_two())`) at key mapping helpers to document assumptions.
-- Replace manual loops that compute page counts with `size.div_ceil(PAGE_SIZE as u64)` once stabilized, or provide a small local helper to clarify intent.
-- Expand the logging around MMIO mappings to include flag summaries, making it easier to audit cacheability choices at runtime.
+- ✅ Add inline assertions (e.g., `debug_assert!(PAGE_SIZE.is_power_of_two())`) at key mapping helpers to document assumptions.
+- ✅ Replace manual loops that compute page counts with `size.div_ceil(PAGE_SIZE as u64)` once stabilized, or provide a small local helper to clarify intent.
+- ✅ Expand the logging around MMIO mappings to include flag summaries, making it easier to audit cacheability choices at runtime.

@@ -771,7 +771,7 @@ fn map_kernel_high_half_x86<M>(
         return;
     }
 
-    let pages = ((phys_size + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) as u64;
+    let pages = phys_size.div_ceil(PAGE_SIZE as u64);
     let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE; // executable by default
     for i in 0..pages {
         let pa = PhysAddr::new(phys_base + i * PAGE_SIZE as u64);
@@ -795,7 +795,7 @@ fn map_framebuffer_x86<M>(
     let fb_physical = handoff.gop_fb_base;
     let fb_virtual = 0xFFFFFFFF90000000u64;
     let fb_size = handoff.gop_fb_size;
-    let pages = ((fb_size + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) as u64;
+    let pages = fb_size.div_ceil(PAGE_SIZE as u64);
     let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
     for i in 0..pages {
         let pa = PhysAddr::new(fb_physical + i * PAGE_SIZE as u64);
@@ -819,7 +819,7 @@ fn map_temporary_heap_x86<M>(
     let heap_physical = handoff.temp_heap_base;
     let heap_virtual = 0xFFFFFFFFA0000000u64;
     let heap_size = handoff.temp_heap_size;
-    let pages = ((heap_size + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) as u64;
+    let pages = heap_size.div_ceil(PAGE_SIZE as u64);
     let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
     for i in 0..pages {
         let pa = PhysAddr::new(heap_physical + i * PAGE_SIZE as u64);
@@ -839,7 +839,7 @@ where
     F: FrameAllocator<Size4KiB>,
 {
     use x86_64::structures::paging::PageTableFlags as F;
-    let pages = (KERNEL_HEAP_SIZE as u64 + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64;
+    let pages = (KERNEL_HEAP_SIZE as u64).div_ceil(PAGE_SIZE as u64);
     let flags = F::PRESENT | F::WRITABLE | F::NO_EXECUTE;
 
     for i in 0..pages {
@@ -875,7 +875,7 @@ where
     if heap_size == 0 {
         return;
     }
-    let pages = ((heap_size + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) as u64;
+    let pages = heap_size.div_ceil(PAGE_SIZE as u64);
     for i in 0..pages {
         let page = Page::<Size4KiB>::containing_address(VirtAddr::new(
             heap_virtual + i * PAGE_SIZE as u64,
@@ -899,7 +899,7 @@ where
     if phys_base == 0 || phys_size == 0 {
         return;
     }
-    let pages = ((phys_size + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) as u64;
+    let pages = phys_size.div_ceil(PAGE_SIZE as u64);
     for i in 0..pages {
         let va = VirtAddr::new(phys_base + i * PAGE_SIZE as u64);
         let page = Page::<Size4KiB>::containing_address(va);
