@@ -24,8 +24,6 @@ use x86_64::{
     VirtAddr,
 };
 
-// Legacy manual GDT removed; we use x86_64's GDT entirely
-
 struct GdtState {
     gdt: GlobalDescriptorTable,
     code_sel: SegmentSelector,
@@ -196,7 +194,9 @@ unsafe fn reload_data_segments(data_sel: SegmentSelector) {
     DS::set_reg(data_sel);
     ES::set_reg(data_sel);
     SS::set_reg(data_sel);
+
     // Leave FS/GS at 0 for now; TLS via GS base MSR is configured elsewhere
+    // This only marks the segments as disabled, but doesn't actually clear them.
     core::arch::asm!(
         "xor eax, eax",
         "mov fs, ax",
@@ -209,4 +209,3 @@ unsafe fn reload_data_segments(data_sel: SegmentSelector) {
     );
 }
 
-// CS is reloaded via x86_64 crate APIs; legacy helper removed

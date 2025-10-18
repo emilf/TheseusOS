@@ -264,8 +264,6 @@ unsafe fn enable_avx() {
     }
 }
 
-// raw_cpuid replaces inline cpuid
-
 /// Check if FSGSBASE is available
 ///
 /// This function checks if the CPU supports the FSGSBASE instruction set,

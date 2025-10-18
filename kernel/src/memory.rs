@@ -367,8 +367,6 @@ impl MemoryManager {
             identity_map_first_1gb_2mb_alloc(pml4, &mut early_frame_alloc);
             log_debug!("Identity-mapping 1GiB done");
         }
-        // legacy path removed
-
         // Do not clone bootloader HH entry; create our own HH structures deterministically
 
         // Map the kernel image high-half
@@ -391,7 +389,6 @@ impl MemoryManager {
                 log_trace!("PML4[HH] forced={:#x}", entry_val2);
             }
         }
-        // legacy path removed
 
         // Map framebuffer and temp heap using frame allocator
         {
