@@ -23,6 +23,43 @@ impl<'a, F: FrameSource> PageTableBuilder<'a, F> {
     ///
     /// This applies the mapping immediately using the policy implemented in
     /// `map_range_with_policy`.
+    ///
+    /// # Examples
+    /// ```rust,ignore
+    /// use crate::memory::{page_table_builder::PageTableBuilder, FrameSource, PageTable,
+    ///     PTE_PRESENT, PTE_WRITABLE};
+    /// use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
+    /// use x86_64::PhysAddr;
+    ///
+    /// struct DummyAlloc {
+    ///     frame: u64,
+    ///     used: bool,
+    /// }
+    ///
+    /// unsafe impl FrameAllocator<Size4KiB> for DummyAlloc {
+    ///     fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+    ///         if self.used {
+    ///             return None;
+    ///         }
+    ///         self.used = true;
+    ///         Some(PhysFrame::containing_address(PhysAddr::new(self.frame)))
+    ///     }
+    /// }
+    ///
+    /// impl FrameSource for DummyAlloc {}
+    ///
+    /// let mut pml4 = PageTable::new();
+    /// let mut allocator = DummyAlloc { frame: 0x2000, used: false };
+    /// let mut builder = PageTableBuilder::new(&mut pml4, &mut allocator);
+    /// unsafe {
+    ///     builder.map_range(
+    ///         0xFFFF_8000_0000_0000,
+    ///         0x0,
+    ///         4096,
+    ///         PTE_PRESENT | PTE_WRITABLE,
+    ///     );
+    /// }
+    /// ```
     pub unsafe fn map_range(&mut self, va: u64, pa: u64, size: u64, flags: u64) {
         if size == 0 {
             return;

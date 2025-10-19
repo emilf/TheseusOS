@@ -80,6 +80,10 @@ pub const PT_LEVEL: usize = 3;
 /// Page size constants
 pub const PAGE_SIZE: usize = 4096;
 pub const PAGE_MASK: u64 = 0xFFF;
+/// Size of a 2 MiB huge page (used by PD entries with `PTE_PS` set).
+pub const PAGE_SIZE_2MB: u64 = 2 * 1024 * 1024;
+/// Size of a 1 GiB huge page (used by PDPT entries with `PTE_PS` set).
+pub const PAGE_SIZE_1GB: u64 = 1024 * 1024 * 1024;
 
 /// Virtual memory layout
 pub const KERNEL_VIRTUAL_BASE: u64 = 0xFFFFFFFF80000000;
@@ -90,6 +94,30 @@ pub const TEMP_HEAP_VIRTUAL_BASE: u64 = 0xFFFFFFFFA0000000;
 /// Physical memory linear mapping base (maps [0..N) -> [PHYS_OFFSET..PHYS_OFFSET+N))
 pub const PHYS_OFFSET: u64 = 0xFFFF800000000000;
 const HANDOFF_MEMMAP_WINDOW_BASE: u64 = 0xFFFF_FF88_0000_0000;
+
+/// Extract the PML4 index (level 4) from a canonical virtual address.
+#[inline(always)]
+pub const fn pml4_index(va: u64) -> usize {
+    ((va >> 39) & 0x1FF) as usize
+}
+
+/// Extract the PDPT index (level 3) from a canonical virtual address.
+#[inline(always)]
+pub const fn pdpt_index(va: u64) -> usize {
+    ((va >> 30) & 0x1FF) as usize
+}
+
+/// Extract the PD index (level 2) from a canonical virtual address.
+#[inline(always)]
+pub const fn pd_index(va: u64) -> usize {
+    ((va >> 21) & 0x1FF) as usize
+}
+
+/// Extract the PT index (level 1) from a canonical virtual address.
+#[inline(always)]
+pub const fn pt_index(va: u64) -> usize {
+    ((va >> 12) & 0x1FF) as usize
+}
 
 /// Convert a physical address into the kernel's high-half virtual address using
 /// the fixed `PHYS_OFFSET` mapping.
@@ -389,6 +417,9 @@ impl MemoryManager {
             panic!("PML4[0] not present");
         }
 
+        #[cfg(debug_assertions)]
+        Self::debug_verify_boot_mappings(pml4, handoff);
+
         // Done
         Self {
             pml4,
@@ -453,7 +484,7 @@ impl MemoryManager {
         let mapper = unsafe { OffsetPageTable::new(l4, VirtAddr::new(PHYS_OFFSET)) };
 
         // Check PML4 entry for high-half
-        let hh_index = ((KERNEL_VIRTUAL_BASE >> 39) & 0x1FF) as usize;
+        let hh_index = pml4_index(KERNEL_VIRTUAL_BASE);
         let pml4_entry_val =
             unsafe { core::ptr::read_volatile((pml4_pa as *const u64).add(hh_index)) };
         if pml4_entry_val == 0 {
@@ -504,7 +535,7 @@ impl MemoryManager {
         log_debug!("Mapping kernel high-half done");
 
         // Confirm the entry is non-empty; if the bootloader left it unused we create it now.
-        let hh_index = ((KERNEL_VIRTUAL_BASE >> 39) & 0x1FF) as usize;
+        let hh_index = pml4_index(KERNEL_VIRTUAL_BASE);
         let entry_val =
             core::ptr::read_volatile((pml4 as *mut PageTable as *const u64).add(hh_index));
         log_trace!("PML4[HH] entry={:#x}", entry_val);
@@ -590,6 +621,43 @@ impl MemoryManager {
         mapping::map_io_apic_mmio_alloc(pml4, allocator);
         log_debug!("Mapping LAPIC/IOAPIC MMIO regions done");
     }
+
+    #[cfg(debug_assertions)]
+    fn debug_verify_boot_mappings(pml4: &PageTable, handoff: &theseus_shared::handoff::Handoff) {
+        let identity_slot = 0usize;
+        debug_assert!(
+            pml4.entries[identity_slot].is_present(),
+            "PML4[0] should remain present for identity mapping"
+        );
+
+        let high_half_slot = pml4_index(KERNEL_VIRTUAL_BASE);
+        debug_assert!(
+            pml4.entries[high_half_slot].is_present(),
+            "High-half PML4 entry missing after kernel mapping"
+        );
+
+        let phys_slot = pml4_index(PHYS_OFFSET);
+        debug_assert!(
+            pml4.entries[phys_slot].is_present(),
+            "PHYS_OFFSET PML4 entry missing"
+        );
+
+        if handoff.gop_fb_base != 0 {
+            let fb_slot = pml4_index(0xFFFF_FFFF_9000_0000u64);
+            debug_assert!(
+                pml4.entries[fb_slot].is_present(),
+                "Framebuffer mapping expected but PML4 entry not present"
+            );
+        }
+
+        if handoff.temp_heap_base != 0 {
+            let temp_slot = pml4_index(TEMP_HEAP_VIRTUAL_BASE);
+            debug_assert!(
+                pml4.entries[temp_slot].is_present(),
+                "Temporary heap mapping expected but PML4 entry not present"
+            );
+        }
+    }
 }
 
 /// Check whether a virtual address is currently mapped by the active page tables.
@@ -623,20 +691,20 @@ pub fn virt_addr_has_flags(va: u64, flags_mask: u64) -> bool {
     }
 
     // Extract indices
-    let pml4_index = ((va >> 39) & 0x1FF) as usize;
-    let pdpt_index = ((va >> 30) & 0x1FF) as usize;
-    let pd_index = ((va >> 21) & 0x1FF) as usize;
-    let pt_index = ((va >> 12) & 0x1FF) as usize;
+    let l4 = pml4_index(va);
+    let l3 = pdpt_index(va);
+    let l2 = pd_index(va);
+    let l1 = pt_index(va);
 
     // Walk PML4
-    let pml4e = unsafe { read_entry(table_pa, pml4_index) };
+    let pml4e = unsafe { read_entry(table_pa, l4) };
     if pml4e & PTE_PRESENT == 0 {
         return false;
     }
     // Next level
     table_pa = pml4e & 0x000ffffffffff000u64;
 
-    let pdpte = unsafe { read_entry(table_pa, pdpt_index) };
+    let pdpte = unsafe { read_entry(table_pa, l3) };
     if pdpte & PTE_PRESENT == 0 {
         return false;
     }
@@ -646,7 +714,7 @@ pub fn virt_addr_has_flags(va: u64, flags_mask: u64) -> bool {
     }
     table_pa = pdpte & 0x000ffffffffff000u64;
 
-    let pde = unsafe { read_entry(table_pa, pd_index) };
+    let pde = unsafe { read_entry(table_pa, l2) };
     if pde & PTE_PRESENT == 0 {
         return false;
     }
@@ -656,7 +724,7 @@ pub fn virt_addr_has_flags(va: u64, flags_mask: u64) -> bool {
     }
     table_pa = pde & 0x000ffffffffff000u64;
 
-    let pte = unsafe { read_entry(table_pa, pt_index) };
+    let pte = unsafe { read_entry(table_pa, l1) };
     if pte & PTE_PRESENT == 0 {
         return false;
     }
@@ -940,8 +1008,8 @@ fn identity_map_first_1gb_x86(
 ) {
     use x86_64::structures::paging::{Mapper, PageTableFlags as F, Size2MiB};
     let flags = F::PRESENT | F::WRITABLE | F::GLOBAL;
-    let two_mb: u64 = 2 * 1024 * 1024;
-    let one_gb: u64 = 1024 * 1024 * 1024;
+    let two_mb: u64 = PAGE_SIZE_2MB;
+    let one_gb: u64 = PAGE_SIZE_1GB;
     let mut addr: u64 = 0;
     while addr < one_gb {
         let page = Page::<Size2MiB>::containing_address(VirtAddr::new(addr));

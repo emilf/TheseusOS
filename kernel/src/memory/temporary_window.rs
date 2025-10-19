@@ -3,7 +3,9 @@
 //! single physical frame into a fixed virtual window for safe access (e.g., to
 //! zero newly allocated page-table frames).
 
-use crate::memory::{FrameSource, PageTable, PageTableEntry, PAGE_SIZE};
+use crate::memory::{
+    pd_index, pdpt_index, pml4_index, pt_index, FrameSource, PageTable, PageTableEntry, PAGE_SIZE,
+};
 use x86_64::{instructions::tlb, VirtAddr};
 
 /// Fixed virtual address used for temporary mappings
@@ -106,25 +108,25 @@ impl TemporaryWindow {
     /// Unmap the temporary window (clears the leaf PTE). Does not free page tables.
     pub unsafe fn unmap(&mut self) {
         let pml4 = &mut *self.pml4;
-        let pml4_index = ((self.window_va >> 39) & 0x1FF) as usize;
-        let pdpt_index = ((self.window_va >> 30) & 0x1FF) as usize;
-        let pd_index = ((self.window_va >> 21) & 0x1FF) as usize;
-        let pt_index = ((self.window_va >> 12) & 0x1FF) as usize;
+        let l4 = pml4_index(self.window_va);
+        let l3 = pdpt_index(self.window_va);
+        let l2 = pd_index(self.window_va);
+        let l1 = pt_index(self.window_va);
 
-        if !pml4.entries[pml4_index].is_present() {
+        if !pml4.entries[l4].is_present() {
             return;
         }
-        let pdpt = &mut *(pml4.entries[pml4_index].physical_addr() as *mut PageTable);
-        if !pdpt.entries[pdpt_index].is_present() {
+        let pdpt = &mut *(pml4.entries[l4].physical_addr() as *mut PageTable);
+        if !pdpt.entries[l3].is_present() {
             return;
         }
-        let pd = &mut *(pdpt.entries[pdpt_index].physical_addr() as *mut PageTable);
-        if !pd.entries[pd_index].is_present() {
+        let pd = &mut *(pdpt.entries[l3].physical_addr() as *mut PageTable);
+        if !pd.entries[l2].is_present() {
             return;
         }
-        let pt = &mut *(pd.entries[pd_index].physical_addr() as *mut PageTable);
+        let pt = &mut *(pd.entries[l2].physical_addr() as *mut PageTable);
         // Clear the PT entry
-        *pt.get_entry(pt_index) = PageTableEntry::new(0, 0);
+        *pt.get_entry(l1) = PageTableEntry::new(0, 0);
         tlb::flush(VirtAddr::new(self.window_va));
     }
 }

@@ -95,9 +95,15 @@ impl ReservedPool {
 /// Trait abstracting over sources of physical frames for page-table building and
 /// general allocations. Implemented by both the boot-time allocator and the
 /// persistent allocator so mapping helpers can operate on either.
-pub trait FrameSource {
-    fn alloc_frame(&mut self) -> Option<PhysFrame<Size4KiB>>;
+pub trait FrameSource: FrameAllocator<Size4KiB> {
+    /// Allocate a general-purpose frame. The default implementation defers to the
+    /// `FrameAllocator` super-trait.
+    fn alloc_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        FrameAllocator::<Size4KiB>::allocate_frame(self)
+    }
 
+    /// Allocate a frame suitable for use as a page table. Implementors can override
+    /// this to prefer reserved pools; by default it reuses [`FrameSource::alloc_frame`].
     fn alloc_page_table_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
         self.alloc_frame()
     }
@@ -193,12 +199,10 @@ impl BootFrameAllocator {
                     got += 1;
                     n -= 1;
                 } else {
-                    // Pool filled between the loop condition and push; rewind allocator state
-                    // so the frame is handed out normally on the next request.
-                    self.cur_next_addr = self
-                        .cur_next_addr
-                        .saturating_sub(crate::memory::PAGE_SIZE as u64);
-                    self.cur_remaining_pages = self.cur_remaining_pages.saturating_add(1);
+                    debug_assert!(
+                        !self.reserved.is_full(),
+                        "ReservedPool push failed unexpectedly"
+                    );
                     break;
                 }
             } else {
@@ -302,10 +306,6 @@ unsafe impl FrameAllocator<Size4KiB> for BootFrameAllocator {
 }
 
 impl FrameSource for BootFrameAllocator {
-    fn alloc_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
-        FrameAllocator::<Size4KiB>::allocate_frame(self)
-    }
-
     fn alloc_page_table_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
         self.allocate_reserved_frame()
             .or_else(|| FrameAllocator::<Size4KiB>::allocate_frame(self))

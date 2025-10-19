@@ -773,11 +773,7 @@ unsafe impl FrameAllocator<Size4KiB> for PersistentFrameAllocator {
     }
 }
 
-impl crate::memory::FrameSource for PersistentFrameAllocator {
-    fn alloc_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
-        FrameAllocator::<Size4KiB>::allocate_frame(self)
-    }
-}
+impl crate::memory::FrameSource for PersistentFrameAllocator {}
 
 /// A consumed memory region descriptor.
 ///

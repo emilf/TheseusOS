@@ -9,8 +9,9 @@
 //! - `ptdump`: Inspect entries from any page-table level
 
 use crate::memory::{
-    self, PageTable, PAGE_SIZE, PTE_ACCESSED, PTE_DIRTY, PTE_GLOBAL, PTE_NO_EXEC, PTE_PCD,
-    PTE_PRESENT, PTE_PS, PTE_PWT, PTE_USER, PTE_WRITABLE,
+    self, pd_index, pdpt_index, pml4_index, pt_index, PageTable, PAGE_SIZE, PAGE_SIZE_1GB,
+    PAGE_SIZE_2MB, PTE_ACCESSED, PTE_DIRTY, PTE_GLOBAL, PTE_NO_EXEC, PTE_PCD, PTE_PRESENT, PTE_PS,
+    PTE_PWT, PTE_USER, PTE_WRITABLE,
 };
 use crate::monitor::parsing::parse_number;
 use crate::monitor::Monitor;
@@ -293,12 +294,7 @@ impl Monitor {
         let (frame, _) = x86_64::registers::control::Cr3::read();
         let mut table_phys = frame.start_address().as_u64();
         // Derive the individual index used at each paging level (L4 → L1).
-        let indices = [
-            ((va >> 39) & 0x1FF) as usize,
-            ((va >> 30) & 0x1FF) as usize,
-            ((va >> 21) & 0x1FF) as usize,
-            ((va >> 12) & 0x1FF) as usize,
-        ];
+        let indices = [pml4_index(va), pdpt_index(va), pd_index(va), pt_index(va)];
 
         self.writeln(&format!(
             "Page table walk for VA 0x{:016X} (CR3=0x{:016X}):",
@@ -340,9 +336,9 @@ impl Monitor {
                 4 | 3 => {
                     if level == 3 && (value & PTE_PS) != 0 {
                         // PDPT entry with PS=1 directly maps a 1 GiB leaf.
-                        let offset = va & ((1u64 << 30) - 1);
+                        let offset = va & (PAGE_SIZE_1GB - 1);
                         final_pa = Some(next_phys + offset);
-                        page_size = Some(1u64 << 30);
+                        page_size = Some(PAGE_SIZE_1GB);
                         break;
                     }
                     table_phys = next_phys;
@@ -350,9 +346,9 @@ impl Monitor {
                 2 => {
                     if (value & PTE_PS) != 0 {
                         // PDE with PS=1 represents a 2 MiB leaf.
-                        let offset = va & ((1u64 << 21) - 1);
+                        let offset = va & (PAGE_SIZE_2MB - 1);
                         final_pa = Some(next_phys + offset);
-                        page_size = Some(1u64 << 21);
+                        page_size = Some(PAGE_SIZE_2MB);
                         break;
                     }
                     table_phys = next_phys;

@@ -2,9 +2,10 @@
 //! and mapping policies.
 
 use super::{
-    runtime_kernel_phys_base, PageTable, PageTableEntry, KERNEL_VIRTUAL_BASE, PAGE_SIZE,
-    PHYS_OFFSET, PTE_ACCESSED, PTE_DIRTY, PTE_GLOBAL, PTE_NO_EXEC, PTE_PCD, PTE_PRESENT, PTE_PS,
-    PTE_PWT, PTE_USER, PTE_WRITABLE, TEMP_HEAP_VIRTUAL_BASE,
+    pd_index, pdpt_index, pml4_index, pt_index, runtime_kernel_phys_base, PageTable,
+    PageTableEntry, KERNEL_VIRTUAL_BASE, PAGE_SIZE, PAGE_SIZE_1GB, PAGE_SIZE_2MB, PHYS_OFFSET,
+    PTE_ACCESSED, PTE_DIRTY, PTE_GLOBAL, PTE_NO_EXEC, PTE_PCD, PTE_PRESENT, PTE_PS, PTE_PWT,
+    PTE_USER, PTE_WRITABLE, TEMP_HEAP_VIRTUAL_BASE,
 };
 use crate::log_debug;
 use crate::memory::page_table_builder::PageTableBuilder;
@@ -58,8 +59,8 @@ pub unsafe fn identity_map_first_1gb_2mb_alloc<F: FrameSource>(pml4: &mut PageTa
         "PAGE_SIZE must be a power of two"
     );
     let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_PS;
-    let gigabyte: u64 = 1 << 30;
-    let two_mb: u64 = 2 * 1024 * 1024;
+    let gigabyte: u64 = PAGE_SIZE_1GB;
+    let two_mb: u64 = PAGE_SIZE_2MB;
     let mut addr: u64 = 0;
     let mut count: u32 = 0;
     while addr < gigabyte {
@@ -92,14 +93,14 @@ pub unsafe fn map_page_alloc<F: FrameSource>(
         0,
         "physical address must be 4 KiB aligned"
     );
-    let pml4_index = ((virtual_addr >> 39) & 0x1FF) as usize;
-    let pdpt_index = ((virtual_addr >> 30) & 0x1FF) as usize;
-    let pd_index = ((virtual_addr >> 21) & 0x1FF) as usize;
-    let pt_index = ((virtual_addr >> 12) & 0x1FF) as usize;
-    let pdpt = super::get_or_create_page_table_alloc(pml4.get_entry(pml4_index), fa);
-    let pd = super::get_or_create_page_table_alloc(pdpt.get_entry(pdpt_index), fa);
-    let pt = super::get_or_create_page_table_alloc(pd.get_entry(pd_index), fa);
-    *pt.get_entry(pt_index) = PageTableEntry::new(physical_addr, flags);
+    let l4 = pml4_index(virtual_addr);
+    let l3 = pdpt_index(virtual_addr);
+    let l2 = pd_index(virtual_addr);
+    let l1 = pt_index(virtual_addr);
+    let pdpt = super::get_or_create_page_table_alloc(pml4.get_entry(l4), fa);
+    let pd = super::get_or_create_page_table_alloc(pdpt.get_entry(l3), fa);
+    let pt = super::get_or_create_page_table_alloc(pd.get_entry(l2), fa);
+    *pt.get_entry(l1) = PageTableEntry::new(physical_addr, flags);
 }
 
 /// Map a single 2 MiB page using frame-backed table allocation
@@ -111,23 +112,22 @@ pub unsafe fn map_2mb_page_alloc<F: FrameSource>(
     flags: u64,
     fa: &mut F,
 ) {
-    const TWO_MB: u64 = 2 * 1024 * 1024;
     debug_assert_eq!(
-        virtual_addr & (TWO_MB - 1),
+        virtual_addr & (PAGE_SIZE_2MB - 1),
         0,
         "virtual address must be 2 MiB aligned"
     );
     debug_assert_eq!(
-        physical_addr & (TWO_MB - 1),
+        physical_addr & (PAGE_SIZE_2MB - 1),
         0,
         "physical address must be 2 MiB aligned"
     );
-    let pml4_index = ((virtual_addr >> 39) & 0x1FF) as usize;
-    let pdpt_index = ((virtual_addr >> 30) & 0x1FF) as usize;
-    let pd_index = ((virtual_addr >> 21) & 0x1FF) as usize;
-    let pdpt = super::get_or_create_page_table_alloc(pml4.get_entry(pml4_index), fa);
-    let pd = super::get_or_create_page_table_alloc(pdpt.get_entry(pdpt_index), fa);
-    *pd.get_entry(pd_index) = PageTableEntry::new(physical_addr, flags | PTE_PS);
+    let l4 = pml4_index(virtual_addr);
+    let l3 = pdpt_index(virtual_addr);
+    let l2 = pd_index(virtual_addr);
+    let pdpt = super::get_or_create_page_table_alloc(pml4.get_entry(l4), fa);
+    let pd = super::get_or_create_page_table_alloc(pdpt.get_entry(l3), fa);
+    *pd.get_entry(l2) = PageTableEntry::new(physical_addr, flags | PTE_PS);
 }
 
 /// Map kernel HH using 4KiB pages
@@ -219,7 +219,7 @@ pub unsafe fn map_phys_offset_range_2mb_alloc<F: FrameSource>(
     fa: &mut F,
     max_phys_addr: u64,
 ) {
-    let two_mb: u64 = 2 * 1024 * 1024;
+    let two_mb: u64 = PAGE_SIZE_2MB;
     if max_phys_addr == 0 {
         return;
     }
@@ -293,8 +293,8 @@ pub unsafe fn map_io_apic_mmio_alloc<F: FrameSource>(pml4: &mut PageTable, fa: &
 /// Map kernel to high-half using a single 2 MiB page
 /// Map the first 1GiB into the kernel high-half using 2MiB pages.
 pub unsafe fn map_high_half_1gb_2mb<F: FrameSource>(pml4: &mut PageTable, fa: &mut F) {
-    let two_mb: u64 = 2 * 1024 * 1024;
-    let one_gb: u64 = 1024 * 1024 * 1024;
+    let two_mb: u64 = PAGE_SIZE_2MB;
+    let one_gb: u64 = PAGE_SIZE_1GB;
     let virt_base = KERNEL_VIRTUAL_BASE & !(two_mb - 1);
     let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL;
     let mut offset: u64 = 0;
@@ -313,7 +313,7 @@ pub unsafe fn map_kernel_high_half_2mb<F: FrameSource>(
     handoff: &theseus_shared::handoff::Handoff,
     fa: &mut F,
 ) {
-    let two_mb: u64 = 2 * 1024 * 1024;
+    let two_mb: u64 = PAGE_SIZE_2MB;
     let Some(extents) = kernel_mapping_extents(handoff) else {
         return;
     };
@@ -373,14 +373,13 @@ pub unsafe fn map_range_with_policy<F: FrameSource>(
     flags: u64,
     fa: &mut F,
 ) {
-    const TWO_MB: u64 = 2 * 1024 * 1024;
     debug_assert_eq!(
-        TWO_MB % PAGE_SIZE as u64,
+        PAGE_SIZE_2MB % PAGE_SIZE as u64,
         0,
         "2 MiB huge pages must be divisible by PAGE_SIZE"
     );
     // Handle leading unaligned portion to reach 2MiB alignment
-    while size > 0 && (va & (TWO_MB - 1) != 0 || pa & (TWO_MB - 1) != 0) {
+    while size > 0 && (va & (PAGE_SIZE_2MB - 1) != 0 || pa & (PAGE_SIZE_2MB - 1) != 0) {
         // Bump each address in lockstep until both sides are aligned for a huge-page insert.
         map_page_alloc(pml4, va, pa, flags, fa);
         va = va.wrapping_add(PAGE_SIZE as u64);
@@ -388,11 +387,11 @@ pub unsafe fn map_range_with_policy<F: FrameSource>(
         size = size.saturating_sub(PAGE_SIZE as u64);
     }
     // Map as many 2MiB pages as possible
-    while size >= TWO_MB {
+    while size >= PAGE_SIZE_2MB {
         map_2mb_page_alloc(pml4, va, pa, flags, fa);
-        va = va.wrapping_add(TWO_MB);
-        pa = pa.wrapping_add(TWO_MB);
-        size = size.saturating_sub(TWO_MB);
+        va = va.wrapping_add(PAGE_SIZE_2MB);
+        pa = pa.wrapping_add(PAGE_SIZE_2MB);
+        size = size.saturating_sub(PAGE_SIZE_2MB);
     }
     // Tail with 4KiB pages
     while size > 0 {
