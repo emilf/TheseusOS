@@ -275,6 +275,9 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
         log_debug!("Setting up permanent allocator");
         let mut frame_alloc = unsafe { BootFrameAllocator::from_handoff(h) };
         frame_alloc.enable_tracking();
+        crate::physical_memory::visit_boot_consumed(|regions| {
+            frame_alloc.skip_consumed_regions(regions);
+        });
         let (_frame, _flags) = Cr3::read();
         let pml4_pa = _frame.start_address().as_u64();
         let l4_va = crate::memory::phys_to_virt_pa(pml4_pa) as *mut X86PageTable;

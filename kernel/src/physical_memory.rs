@@ -421,6 +421,19 @@ impl BootConsumedLog {
 /// Global log of consumed regions during early boot.
 static BOOT_CONSUMED: Mutex<BootConsumedLog> = Mutex::new(BootConsumedLog::new());
 
+/// Runs a closure with a view of the boot-time consumed region log.
+///
+/// This avoids allocating heap memory while still allowing callers to inspect
+/// the regions recorded before the persistent allocator is initialised.
+pub fn visit_boot_consumed<R, F>(f: F) -> R
+where
+    F: FnOnce(&[ConsumedRegion]) -> R,
+{
+    let log = BOOT_CONSUMED.lock();
+    let slice = &log.regions[..log.len];
+    f(slice)
+}
+
 /// Initialises the persistent allocator using the UEFI memory map plus any
 /// pre-consumed regions (page tables, stacks, etc.).
 ///

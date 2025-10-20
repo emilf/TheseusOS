@@ -48,29 +48,39 @@ fn kernel_mapping_extents(
     })
 }
 
-/// Set up identity mapping for first 1 GiB using 2 MiB pages
-/// Identity-map the first 1 GiB of physical memory using 2MiB pages.
+/// Identity-map a low physical memory range using 2 MiB pages.
 ///
 /// This is used during early boot so that low-VA virtual accesses still find
 /// expected physical frames while the higher-half mappings are established.
-pub unsafe fn identity_map_first_1gb_2mb_alloc<F: FrameSource>(pml4: &mut PageTable, fa: &mut F) {
+pub unsafe fn identity_map_range_2mb_alloc<F: FrameSource>(
+    pml4: &mut PageTable,
+    fa: &mut F,
+    max_phys_addr: u64,
+) {
     debug_assert!(
         PAGE_SIZE.is_power_of_two(),
         "PAGE_SIZE must be a power of two"
     );
     let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_PS;
-    let gigabyte: u64 = PAGE_SIZE_1GB;
     let two_mb: u64 = PAGE_SIZE_2MB;
+    if max_phys_addr == 0 {
+        return;
+    }
+    let limit = max_phys_addr.saturating_add(two_mb - 1) & !(two_mb - 1);
     let mut addr: u64 = 0;
     let mut count: u32 = 0;
-    while addr < gigabyte {
+    while addr < limit {
         if count < 4 {
             log_debug!("map2m {:#x} -> {:#x}", addr, addr);
         }
         super::map_2mb_page_alloc(pml4, addr, addr, flags, fa);
-        addr += two_mb;
+        addr = addr.saturating_add(two_mb);
         count += 1;
     }
+}
+
+pub unsafe fn identity_map_first_1gb_2mb_alloc<F: FrameSource>(pml4: &mut PageTable, fa: &mut F) {
+    identity_map_range_2mb_alloc(pml4, fa, PAGE_SIZE_1GB);
 }
 
 /// Map a single page using frame-backed table allocation

@@ -18,7 +18,7 @@
 //! - LIFO allocation: Last frame reserved is first frame allocated
 //! - Fallback behavior: If reserved pool empty, falls back to general pool
 
-use crate::physical_memory;
+use crate::physical_memory::{self, ConsumedRegion};
 use crate::{log_debug, log_trace};
 use x86_64::{
     structures::paging::{FrameAllocator, PhysFrame, Size4KiB},
@@ -135,6 +135,36 @@ impl BootFrameAllocator {
         }
     }
 
+    /// Return the exclusive upper bound of the conventional memory regions seen in the
+    /// firmware handoff. The result is rounded exactly to the end of the last descriptor
+    /// (no additional alignment is applied).
+    pub fn max_conventional_memory_end(&self) -> u64 {
+        if self.base_ptr.is_null() || self.desc_size == 0 || self.count == 0 {
+            return 0;
+        }
+
+        let mut max_end = 0u64;
+        for i in 0..self.count {
+            let ptr = unsafe { self.base_ptr.add(i * self.desc_size) };
+            let desc = unsafe { MemoryDescriptorView::new(ptr) };
+            let typ = unsafe { desc.kind() };
+            if typ != UEFI_CONVENTIONAL_MEMORY {
+                continue;
+            }
+            let start = unsafe { desc.physical_start() };
+            let pages = unsafe { desc.page_count() };
+            if pages == 0 {
+                continue;
+            }
+            let bytes = pages.saturating_mul(crate::memory::PAGE_SIZE as u64);
+            let end = start.saturating_add(bytes);
+            if end > max_end {
+                max_end = end;
+            }
+        }
+        max_end
+    }
+
     pub unsafe fn from_handoff(h: &theseus_shared::handoff::Handoff) -> Self {
         log_debug!("Frame allocator: from_handoff begin");
         let base_ptr = h.memory_map_buffer_ptr as *const u8;
@@ -210,6 +240,44 @@ impl BootFrameAllocator {
             }
         }
         got
+    }
+
+    /// Advance the allocator past any frames that were already consumed earlier in boot.
+    ///
+    /// This is used when constructing a fresh `BootFrameAllocator` later in the boot
+    /// sequence so that it does not hand out frames that were already used for page
+    /// tables, stacks, or other critical structures recorded via
+    /// `physical_memory::record_boot_consumed_region`.
+    pub fn skip_consumed_regions(&mut self, regions: &[ConsumedRegion]) {
+        if regions.is_empty() {
+            return;
+        }
+        let page_size = crate::memory::PAGE_SIZE as u64;
+        let mut frames_to_skip: u64 = 0;
+        for region in regions {
+            if region.size == 0 {
+                continue;
+            }
+            let start_aligned = region.start & !(page_size - 1);
+            let end = region.start.saturating_add(region.size);
+            if end <= start_aligned {
+                continue;
+            }
+            let end_aligned = (end + page_size - 1) & !(page_size - 1);
+            let span = end_aligned.saturating_sub(start_aligned);
+            frames_to_skip = frames_to_skip.saturating_add(span / page_size);
+        }
+        if frames_to_skip == 0 {
+            return;
+        }
+        let was_tracking = self.tracking_enabled;
+        self.tracking_enabled = false;
+        for _ in 0..frames_to_skip {
+            if self.allocate_frame().is_none() {
+                break;
+            }
+        }
+        self.tracking_enabled = was_tracking;
     }
 
     /// Allocate a frame from the reserved pool (LIFO allocation).

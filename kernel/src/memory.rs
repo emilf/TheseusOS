@@ -350,9 +350,9 @@ impl MemoryManager {
     ///
     /// Construct a new MemoryManager and build an initial PML4 with the
     /// following mappings established:
-    /// - identity mapping for the first 1 GiB (2MiB pages)
+    /// - identity mapping covering all discovered physical RAM (2MiB pages)
     /// - kernel image mapped into the high-half (4KiB pages)
-    /// - a PHYS_OFFSET linear mapping for the first 1 GiB
+    /// - a PHYS_OFFSET linear mapping for the discovered RAM (minimum 1 GiB)
     /// - framebuffer and temporary heap mappings if provided by the handoff
     ///
     /// # Arguments
@@ -400,10 +400,38 @@ impl MemoryManager {
         let pml4: &mut PageTable = &mut *(pml4_phys as *mut PageTable);
         log_trace!("Got PML4");
 
-        Self::map_boot_identity_region(pml4, &mut early_frame_alloc);
+        let mut identity_limit = early_frame_alloc.max_conventional_memory_end();
+        log_debug!(
+            "Boot conventional memory max end: 0x{:016X} (~{} MiB)",
+            identity_limit,
+            identity_limit / (1024 * 1024)
+        );
+        let kernel_end = runtime_kernel_base.saturating_add(handoff.kernel_image_size);
+        identity_limit = identity_limit.max(kernel_end);
+        if handoff.temp_heap_base != 0 {
+            identity_limit = identity_limit.max(
+                handoff
+                    .temp_heap_base
+                    .saturating_add(handoff.temp_heap_size),
+            );
+        }
+        if handoff.gop_fb_base != 0 {
+            identity_limit =
+                identity_limit.max(handoff.gop_fb_base.saturating_add(handoff.gop_fb_size));
+        }
+        log_debug!(
+            "Identity map coverage request (post resources): 0x{:016X} (~{} MiB)",
+            identity_limit,
+            identity_limit / (1024 * 1024)
+        );
+        if identity_limit == 0 {
+            identity_limit = PAGE_SIZE_1GB;
+        }
+
+        Self::map_boot_identity_region(pml4, identity_limit, &mut early_frame_alloc);
         Self::map_kernel_high_half_region(pml4, handoff, &mut early_frame_alloc);
         Self::map_boot_resources(pml4, handoff, &mut early_frame_alloc);
-        Self::map_phys_offset_windows(pml4, handoff, &mut early_frame_alloc);
+        Self::map_phys_offset_windows(pml4, handoff, &mut early_frame_alloc, identity_limit);
         Self::map_platform_mmio_regions(pml4, &mut early_frame_alloc);
 
         let kernel_heap_start = KERNEL_HEAP_BASE;
@@ -514,14 +542,28 @@ impl MemoryManager {
         );
     }
 
-    /// Identity map the low 1 GiB region required during the hand-off from the bootloader.
+    /// Identity-map the low physical memory region required during the hand-off from the bootloader.
     ///
-    /// This isolates the early identity map step so the main constructor reads like a
-    /// high-level boot script.
-    unsafe fn map_boot_identity_region(pml4: &mut PageTable, allocator: &mut impl FrameSource) {
-        log_debug!("Identity-mapping 1GiB begin");
-        identity_map_first_1gb_2mb_alloc(pml4, allocator);
-        log_debug!("Identity-mapping 1GiB done");
+    /// `identity_limit` specifies the exclusive upper bound (in bytes) that should be identity
+    /// mapped. The value is rounded up to the nearest 2 MiB boundary internally.
+    unsafe fn map_boot_identity_region(
+        pml4: &mut PageTable,
+        identity_limit: u64,
+        allocator: &mut impl FrameSource,
+    ) {
+        let requested = if identity_limit == 0 {
+            PAGE_SIZE_1GB
+        } else {
+            identity_limit
+        };
+        let aligned = requested.saturating_add(PAGE_SIZE_2MB - 1) & !(PAGE_SIZE_2MB - 1);
+        log_debug!(
+            "Identity-mapping low memory up to 0x{:016X} (~{} MiB) begin",
+            aligned,
+            aligned / (1024 * 1024)
+        );
+        mapping::identity_map_range_2mb_alloc(pml4, allocator, requested);
+        log_debug!("Identity-mapping low memory done");
     }
 
     /// Populate the kernel's higher-half image mappings and ensure the PML4 slot is live.
@@ -568,17 +610,32 @@ impl MemoryManager {
         pml4: &mut PageTable,
         handoff: &theseus_shared::handoff::Handoff,
         allocator: &mut impl FrameSource,
+        phys_window_limit: u64,
     ) {
         if config::MAP_LEGACY_PHYS_OFFSET_1GIB {
-            log_debug!("Mapping PHYS_OFFSET 1GiB begin");
-            mapping::map_phys_offset_1gb_2mb_alloc(pml4, allocator);
-            log_debug!("Mapping PHYS_OFFSET 1GiB done");
+            let requested = phys_window_limit.max(PAGE_SIZE_1GB);
+            log_debug!(
+                "Mapping PHYS_OFFSET window up to 0x{:016X} (~{} MiB) begin (legacy mode)",
+                requested,
+                requested / (1024 * 1024)
+            );
+            mapping::map_phys_offset_range_2mb_alloc(pml4, allocator, requested);
+            log_debug!("Mapping PHYS_OFFSET window done");
             return;
         }
 
-        log_debug!("Mapping PHYS_OFFSET 64MiB begin");
-        mapping::map_phys_offset_range_2mb_alloc(pml4, allocator, 64 * 1024 * 1024);
-        log_debug!("Mapping PHYS_OFFSET 64MiB done");
+        let requested = if phys_window_limit == 0 {
+            64 * 1024 * 1024
+        } else {
+            phys_window_limit.max(64 * 1024 * 1024)
+        };
+        log_debug!(
+            "Mapping PHYS_OFFSET window up to 0x{:016X} (~{} MiB) begin",
+            requested,
+            requested / (1024 * 1024)
+        );
+        mapping::map_phys_offset_range_2mb_alloc(pml4, allocator, requested);
+        log_debug!("Mapping PHYS_OFFSET window done");
 
         let memmap_len = handoff.memory_map_size as usize;
         if memmap_len == 0 {
