@@ -65,19 +65,39 @@ fi
 ## Build QEMU command as an array (robust quoting, no eval needed)
 QEMU_CMD=(
   qemu-system-x86_64
-  -machine q35,accel=kvm:tcg
+  -machine q35,accel=kvm:tcg,kernel-irqchip=split
   -cpu max
-  -m 1G
+  -smp 4
+  -m 2G
+  # UEFI firmware
   -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE"
   -drive if=pflash,format=raw,file="$OVMF_VARS_RW"
+  # Debug channels
   -device isa-debug-exit,iobase=0xf4,iosize=0x04
   ${QEMU_DEBUG_ARGS[@]}
   ${QEMU_DEBUG_CHAR_ARGS[@]}
   ${QEMU_DISPLAY_ARGS[@]}
   ${QEMU_MONITOR_ARGS[@]}
   ${QEMU_PAUSE_ARGS[@]}
-  -drive format=raw,file="$SCRIPT_DIR/build/disk.img"
+  # System disk (NVMe, PCIe)
+  -drive if=none,id=nvme0,file="$SCRIPT_DIR/build/disk.img",format=raw
+  -device nvme,drive=nvme0,serial=deadbeef
+  # Add a PCIe root port hierarchy
+  -device pcie-root-port,id=rp0,slot=0,chassis=1
+  -device pcie-root-port,id=rp1,slot=1,chassis=2
+  -device pcie-root-port,id=rp2,slot=2,chassis=3
+  # GPU on its own root port
+  -device virtio-gpu-pci,bus=rp0
+  # XHCI USB3 controller + USB devices
+  -device qemu-xhci,id=xhci0,bus=rp1
+  -device usb-kbd,bus=xhci0.0
+  -device usb-mouse,bus=xhci0.0
+  # NIC on its own root port
+  -device virtio-net-pci,id=nic0,bus=rp2
+  # IOMMU
+  -device intel-iommu,intremap=on,caching-mode=on,aw-bits=48
   -nic none
+  -no-reboot
 )
 
 # Append extra options from QEMU_OPTS (split on spaces safely)
