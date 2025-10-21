@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use crate::acpi::{self, PlatformInfo};
 use crate::config;
 use crate::handoff::handoff_phys_ptr;
-use crate::{log_debug, log_info, log_warn};
+use crate::{log_debug, log_info, log_trace, log_warn};
 
 use super::manager::driver_manager;
 use super::pci;
@@ -95,11 +95,25 @@ pub fn init() -> DriverResult<PlatformInfo> {
 
     let mut pci_devices: Vec<Device> = Vec::new();
     for info in pci_functions.iter() {
+        let class = classify_pci_device(info);
+        if class == DeviceClass::Bridge {
+            log_trace!(
+                "Skipping PCI bridge {:04x}:{:02x}:{:02x}.{}",
+                info.segment,
+                info.bus,
+                info.device,
+                info.function
+            );
+            continue;
+        }
+
         let mut device = Device::new(DeviceId::Pci {
+            segment: info.segment,
             bus: info.bus,
             device: info.device,
             function: info.function,
         });
+        device.class = class;
 
         if let Some(bar) = info.first_memory_bar() {
             if let Some(base) = bar.memory_base() {
@@ -112,7 +126,8 @@ pub fn init() -> DriverResult<PlatformInfo> {
         }
 
         log_debug!(
-            "Registering PCI {:02x}:{:02x}.{} vendor={:04x} device={:04x} class={:02x}{:02x}{:02x} irq={:?}",
+            "Registering PCI {:04x}:{:02x}:{:02x}.{} vendor={:04x} device={:04x} class={:02x}{:02x}{:02x} -> {:?} irq={:?}",
+            info.segment,
             info.bus,
             info.device,
             info.function,
@@ -121,6 +136,7 @@ pub fn init() -> DriverResult<PlatformInfo> {
             info.class_code,
             info.subclass,
             info.prog_if,
+            device.class,
             device.irq
         );
 
@@ -142,4 +158,20 @@ pub fn init() -> DriverResult<PlatformInfo> {
     }
 
     Ok(platform_info)
+}
+
+fn classify_pci_device(info: &pci::PciDeviceInfo) -> DeviceClass {
+    match info.class_code {
+        0x0C => match info.subclass {
+            0x03 => DeviceClass::UsbController,
+            _ => DeviceClass::Unknown,
+        },
+        0x01 => DeviceClass::Storage,
+        0x02 => DeviceClass::Network,
+        0x06 => match info.subclass {
+            0x00 | 0x04 => DeviceClass::Bridge,
+            _ => DeviceClass::Unknown,
+        },
+        _ => DeviceClass::Unknown,
+    }
 }

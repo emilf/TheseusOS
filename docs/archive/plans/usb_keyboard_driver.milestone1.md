@@ -1,18 +1,25 @@
 # USB Keyboard Driver – Milestone 1 (PCI Discovery)
 
-Milestone 1 called for a baseline PCI discovery layer that future USB work can rely on. The kernel now owns the legacy configuration space path and feeds discovered devices into the driver manager, so later stages can match on class/subclass instead of relying solely on UEFI inventory dumps.
+Milestone 1 establishes a clean PCI discovery layer that future USB work can build on. The focus was to rely entirely on ACPI-provided ECAM windows, walk the bus hierarchy accurately, and expose only meaningful devices (e.g. xHCI controllers) to the driver subsystem.
 
-## New Capabilities
-- Added `kernel/src/drivers/pci.rs` with an ECAM-aware config-space reader, BAR decoder, and a full bus/device/function enumerator (no legacy 0xCF8/0xCFC path).
-- `kernel/src/acpi/mod.rs:314` now parses MCFG entries, maps the ECAM windows once, and publishes them through `PlatformInfo::pci_config_regions`, so other subsystems can reach configuration space safely.
-- The driver system wires the enumerator into initialization (`kernel/src/drivers/system.rs:96`), logging each function and registering it as a `DeviceId::Pci` so the driver manager can route future PCI-aware drivers.
-- Basic BAR analysis identifies the first memory-mapped region for each function and records interrupt line wiring when present, giving upcoming xHCI work the MMIO base and IRQ number without additional plumbing.
-- The persistent physical allocator gained `alloc_contiguous` / `free_contiguous` (`kernel/src/physical_memory.rs:708`) to supply aligned DMA buffers for things like xHCI rings and scratchpads.
+## Completed Deliverables
+- **Pure ECAM access**: `kernel/src/acpi/mod.rs:314` parses the MCFG table, maps each ECAM window uncached, and exposes the regions through `PlatformInfo::pci_config_regions`, eliminating the legacy 0xCF8/0xCFC path.
+- **Bridge-aware enumeration**: `kernel/src/drivers/pci.rs:110` performs a depth-first walk of the PCI hierarchy via secondary/subordinate bus numbers, logging bridges at trace level and emitting every reachable function exactly once.
+- **Driver-manager integration**: `kernel/src/drivers/system.rs:96` consumes the enumerator, classifies functions (USB/storage/network), skips bridges, and registers actionable devices with the driver manager so upcoming USB code can bind cleanly.
+- **BAR/IRQ metadata**: BAR decoding captures the first MMIO BAR and any assigned interrupt line so xHCI bring-up already has the physical base and edge-triggered IRQ details.
+- **DMA buffer helper**: `kernel/src/memory/dma.rs:1` wraps the contiguous allocator to provide aligned, zeroed, kernel-mapped buffers suitable for xHCI command/event rings or other DMA-heavy peripherals.
 
-## Outstanding Work
-- Bridge/CardBus headers still skip BAR decoding; we should extend the parser to expose secondary bus numbers and windows.
-- We need a policy for mapping PCI class codes to `DeviceClass` variants so USB/xHCI functions can advertise themselves to the driver manager without bespoke probe code.
-- Interrupt routing still relies on IO APIC programming; MSI/MSI-X support will be required before the xHCI driver can rely on edge-triggered events.
+## Outstanding Tasks
+1. **Bridge data exposure**: Surface secondary/subordinate bus numbers, window apertures, and vendor IDs via a dedicated structure so later stages (e.g. hotplug/resource managers) can reason about bridges directly.
+2. **Class-to-driver mapping**: Extend the classifier to cover more subclasses (AHCI, NVMe, USB companion controllers) and wire those classes into future drivers.
+3. **Interrupt model upgrade**: Add MSI/MSI-X capability enablement; the current IO-APIC routing works but is not ideal for a high-throughput xHCI driver.
+4. **Diagnostics tooling**: Provide a kernel monitor command that dumps the enumerated PCI tree and BAR assignments, mirroring QEMU’s `info pci`.
 
-## Testing Notes
-- QEMU headless runs continue to fail inside the sandbox because `startQemu.sh` cannot create its `/tmp/qemu-*` pipes; rerun locally to confirm the new PCI discovery logs list the expected `qemu-xhci` controller and its BAR/IRQ metadata.
+## Testing & Verification
+- Sandbox runs reach the `=== Kernel environment setup complete ===` marker; serial/monitor pipes are intentionally disabled, so the harness exits immediately afterwards.
+- On a developer workstation, run `./startQemu.sh headless 15` and confirm the logs contain `PCI scan:` plus the USB controller entry (class `0c0330` from `qemu-xhci`).
+
+## Next Milestone Preview
+- Feed the refined PCI class information into driver binding so xHCI and storage drivers can auto-attach.
+- Prototype an xHCI init stub that touches the new DMA helper and verifies ECAM reads/writes succeed.
+- Implement MSI/MSI-X setup and fallback logic so USB interrupts no longer depend on legacy IO-APIC routing.

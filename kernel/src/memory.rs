@@ -135,6 +135,8 @@ pub const fn pt_index(va: u64) -> usize {
 mod page_tables;
 pub use page_tables::{get_or_create_page_table_alloc, PageTable, PageTableEntry};
 
+pub mod dma;
+
 /// Memory manager
 pub struct MemoryManager {
     pub pml4: &'static mut PageTable,

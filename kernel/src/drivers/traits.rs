@@ -96,6 +96,10 @@ use core::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeviceClass {
     Serial,
+    UsbController,
+    Storage,
+    Network,
+    Bridge,
     Unknown,
 }
 
@@ -105,7 +109,12 @@ pub enum DeviceId {
     /// ACPI hardware ID (HID) such as "PNP0A08"
     Acpi(&'static str),
     /// PCI Bus/Device/Function tuple
-    Pci { bus: u8, device: u8, function: u8 },
+    Pci {
+        segment: u16,
+        bus: u8,
+        device: u8,
+        function: u8,
+    },
     /// Class-based identifier for generic devices (e.g., Serial, Storage)
     Class(DeviceClass),
     /// Generic/raw identifier for platform-specific devices
@@ -117,12 +126,15 @@ impl fmt::Display for DeviceId {
         match self {
             DeviceId::Acpi(hid) => write!(f, "ACPI:{}", hid),
             DeviceId::Pci {
+                segment,
                 bus,
                 device,
                 function,
-            } => {
-                write!(f, "PCI:{:02x}:{:02x}.{:x}", bus, device, function)
-            }
+            } => write!(
+                f,
+                "PCI:{:04x}:{:02x}:{:02x}.{:x}",
+                segment, bus, device, function
+            ),
             DeviceId::Raw(name) => write!(f, "RAW:{}", name),
             DeviceId::Class(class) => write!(f, "CLASS:{:?}", class),
         }

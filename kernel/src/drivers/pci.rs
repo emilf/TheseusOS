@@ -6,6 +6,7 @@
 
 use crate::acpi::PciConfigRegion;
 use crate::{log_debug, log_trace};
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -110,12 +111,48 @@ impl fmt::Debug for PciDeviceInfo {
 /// Enumerate all PCI functions accessible via the provided ECAM regions.
 pub fn enumerate(regions: &[PciConfigRegion]) -> Vec<PciDeviceInfo> {
     let mut devices = Vec::new();
+    let mut visited_buses: BTreeSet<(u16, u8)> = BTreeSet::new();
 
     for region in regions {
-        for bus in region.bus_start..=region.bus_end {
-            // Always probe function 0; multi-function devices will be handled below.
-            if let Some(info) = read_function(region, bus, 0, 0) {
-                let multifunction = info.is_multi_function();
+        scan_bus(region, region.bus_start, &mut visited_buses, &mut devices);
+    }
+
+    log_debug!(
+        "PCI scan complete: {} function(s) discovered",
+        devices.len()
+    );
+    devices
+}
+
+fn scan_bus(
+    region: &PciConfigRegion,
+    bus: u8,
+    visited_buses: &mut BTreeSet<(u16, u8)>,
+    devices: &mut Vec<PciDeviceInfo>,
+) {
+    if bus < region.bus_start || bus > region.bus_end {
+        return;
+    }
+    if !visited_buses.insert((region.segment, bus)) {
+        return;
+    }
+
+    for device in 0..=MAX_DEVICE {
+        if let Some(info) = read_function(region, bus, device, 0) {
+            let is_bridge = info.header_type & 0x7F == 0x01;
+            if is_bridge {
+                log_trace!(
+                    "PCI bridge {:04x}:{:02x}:{:02x}.0 vendor={:04x} device={:04x} class={:02x}{:02x}{:02x}",
+                    info.segment,
+                    info.bus,
+                    info.device,
+                    info.vendor_id,
+                    info.device_id,
+                    info.class_code,
+                    info.subclass,
+                    info.prog_if
+                );
+            } else {
                 log_debug!(
                     "PCI {:04x}:{:02x}:{:02x}.0 vendor={:04x} device={:04x} class={:02x}{:02x}{:02x}",
                     info.segment,
@@ -127,11 +164,27 @@ pub fn enumerate(regions: &[PciConfigRegion]) -> Vec<PciDeviceInfo> {
                     info.subclass,
                     info.prog_if
                 );
-                devices.push(info);
+            }
+            devices.push(info);
 
-                if multifunction {
-                    for function in 1..=MAX_FUNCTION {
-                        if let Some(extra) = read_function(region, bus, info.device, function) {
+            if info.is_multi_function() {
+                for function in 1..=MAX_FUNCTION {
+                    if let Some(extra) = read_function(region, bus, device, function) {
+                        let is_bridge_fn = extra.header_type & 0x7F == 0x01;
+                        if is_bridge_fn {
+                            log_trace!(
+                                "PCI bridge {:04x}:{:02x}:{:02x}.{} vendor={:04x} device={:04x} class={:02x}{:02x}{:02x}",
+                                extra.segment,
+                                extra.bus,
+                                extra.device,
+                                extra.function,
+                                extra.vendor_id,
+                                extra.device_id,
+                                extra.class_code,
+                                extra.subclass,
+                                extra.prog_if
+                            );
+                        } else {
                             log_debug!(
                                 "PCI {:04x}:{:02x}:{:02x}.{} vendor={:04x} device={:04x} class={:02x}{:02x}{:02x}",
                                 extra.segment,
@@ -144,57 +197,36 @@ pub fn enumerate(regions: &[PciConfigRegion]) -> Vec<PciDeviceInfo> {
                                 extra.subclass,
                                 extra.prog_if
                             );
-                            devices.push(extra);
                         }
+                        devices.push(extra);
                     }
                 }
             }
 
-            for device in 1..=MAX_DEVICE {
-                if let Some(info) = read_function(region, bus, device, 0) {
-                    let multifunction = info.is_multi_function();
-                    log_debug!(
-                        "PCI {:04x}:{:02x}:{:02x}.0 vendor={:04x} device={:04x} class={:02x}{:02x}{:02x}",
-                        info.segment,
-                        info.bus,
-                        info.device,
-                        info.vendor_id,
-                        info.device_id,
-                        info.class_code,
-                        info.subclass,
-                        info.prog_if
-                    );
-                    devices.push(info);
-
-                    if multifunction {
-                        for function in 1..=MAX_FUNCTION {
-                            if let Some(extra) = read_function(region, bus, device, function) {
-                                log_debug!(
-                                    "PCI {:04x}:{:02x}:{:02x}.{} vendor={:04x} device={:04x} class={:02x}{:02x}{:02x}",
-                                    extra.segment,
-                                    extra.bus,
-                                    extra.device,
-                                    extra.function,
-                                    extra.vendor_id,
-                                    extra.device_id,
-                                    extra.class_code,
-                                    extra.subclass,
-                                    extra.prog_if
-                                );
-                                devices.push(extra);
+            if is_bridge {
+                if let Some(base) = function_base(region, bus, device, 0) {
+                    let secondary = config_read_u8(base, 0x19);
+                    let subordinate = config_read_u8(base, 0x1A);
+                    if secondary != 0 && secondary <= region.bus_end && subordinate >= secondary {
+                        let limit = subordinate.min(region.bus_end);
+                        let mut child = secondary;
+                        loop {
+                            if child > limit {
+                                break;
                             }
+                            if !visited_buses.contains(&(region.segment, child)) {
+                                scan_bus(region, child, visited_buses, devices);
+                            }
+                            if child == limit {
+                                break;
+                            }
+                            child = child.saturating_add(1);
                         }
                     }
                 }
             }
         }
     }
-
-    log_debug!(
-        "PCI scan complete: {} function(s) discovered",
-        devices.len()
-    );
-    devices
 }
 
 fn read_function(
