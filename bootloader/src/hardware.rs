@@ -5,12 +5,17 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::convert::TryFrom;
 use theseus_shared::constants::hardware;
 use theseus_shared::handoff::{
-    HardwareDevice, DEVICE_TYPE_ACPI, DEVICE_TYPE_SERIAL, DEVICE_TYPE_UNKNOWN,
+    HardwareDevice, DEVICE_TYPE_ACPI, DEVICE_TYPE_PCI, DEVICE_TYPE_SERIAL, DEVICE_TYPE_UNKNOWN,
+    DEVICE_TYPE_USB,
 };
 use uefi::proto::device_path::{
-    acpi, hardware::MemoryMapped, DevicePathNode, DeviceSubType, DeviceType,
+    acpi,
+    hardware::{MemoryMapped, Pci},
+    messaging::{Usb, UsbClass, UsbWwid},
+    DevicePathNode, DeviceSubType, DeviceType,
 };
 use uefi::proto::device_path::{
     text::{AllowShortcuts, DevicePathToText, DisplayOnly},
@@ -355,7 +360,13 @@ fn classify_device_path(path: &DevicePath) -> ClassifiedDevice {
 fn classify_device_node(node: &DevicePathNode) -> ClassifiedDevice {
     match node.full_type() {
         (DeviceType::ACPI, DeviceSubType::ACPI) => classify_acpi_node(node),
+        (DeviceType::HARDWARE, DeviceSubType::HARDWARE_PCI) => classify_pci_node(node),
         (DeviceType::MESSAGING, DeviceSubType::MESSAGING_UART) => classify_uart_node(),
+        (DeviceType::MESSAGING, DeviceSubType::MESSAGING_USB) => classify_usb_node(node),
+        (DeviceType::MESSAGING, DeviceSubType::MESSAGING_USB_WWID) => classify_usb_wwid_node(node),
+        (DeviceType::MESSAGING, DeviceSubType::MESSAGING_USB_CLASS) => {
+            classify_usb_class_node(node)
+        }
         (DeviceType::HARDWARE, DeviceSubType::HARDWARE_MEMORY_MAPPED) => {
             classify_memory_mapped_node(node)
         }
@@ -392,6 +403,90 @@ fn classify_acpi_node(node: &DevicePathNode) -> ClassifiedDevice {
     ClassifiedDevice {
         device: HardwareDevice {
             device_type,
+            address: None,
+            irq: None,
+        },
+        summary,
+    }
+}
+
+fn classify_pci_node(node: &DevicePathNode) -> ClassifiedDevice {
+    let summary = if let Ok(pci) = <&Pci>::try_from(node) {
+        format!(
+            "hardware/pci(device={}, function={})",
+            pci.device(),
+            pci.function()
+        )
+    } else {
+        String::from("hardware/pci")
+    };
+    ClassifiedDevice {
+        device: HardwareDevice {
+            device_type: DEVICE_TYPE_PCI,
+            address: None,
+            irq: None,
+        },
+        summary,
+    }
+}
+
+fn classify_usb_node(node: &DevicePathNode) -> ClassifiedDevice {
+    let summary = if let Ok(usb) = <&Usb>::try_from(node) {
+        format!(
+            "messaging/usb(port={}, interface={})",
+            usb.parent_port_number(),
+            usb.interface()
+        )
+    } else {
+        String::from("messaging/usb")
+    };
+    ClassifiedDevice {
+        device: HardwareDevice {
+            device_type: DEVICE_TYPE_USB,
+            address: None,
+            irq: None,
+        },
+        summary,
+    }
+}
+
+fn classify_usb_wwid_node(node: &DevicePathNode) -> ClassifiedDevice {
+    let summary = if let Ok(wwid) = <&UsbWwid>::try_from(node) {
+        format!(
+            "messaging/usb-wwid(vendor={:#06x}, product={:#06x}, interface={})",
+            wwid.device_vendor_id(),
+            wwid.device_product_id(),
+            wwid.interface_number()
+        )
+    } else {
+        String::from("messaging/usb-wwid")
+    };
+    ClassifiedDevice {
+        device: HardwareDevice {
+            device_type: DEVICE_TYPE_USB,
+            address: None,
+            irq: None,
+        },
+        summary,
+    }
+}
+
+fn classify_usb_class_node(node: &DevicePathNode) -> ClassifiedDevice {
+    let summary = if let Ok(class) = <&UsbClass>::try_from(node) {
+        format!(
+            "messaging/usb-class(class={:#04x}, subclass={:#04x}, protocol={:#04x}, vid={:#06x}, pid={:#06x})",
+            class.device_class(),
+            class.device_subclass(),
+            class.device_protocol(),
+            class.vendor_id(),
+            class.product_id()
+        )
+    } else {
+        String::from("messaging/usb-class")
+    };
+    ClassifiedDevice {
+        device: HardwareDevice {
+            device_type: DEVICE_TYPE_USB,
             address: None,
             irq: None,
         },

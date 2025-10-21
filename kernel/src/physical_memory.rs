@@ -297,6 +297,67 @@ impl PhysicalMemoryManager {
         }
     }
 
+    /// Returns true if the range `[start, start + len)` is entirely free.
+    fn range_is_free(&self, start: usize, len: usize) -> bool {
+        if start + len > self.total_frames as usize {
+            return false;
+        }
+        for idx in start..start + len {
+            if self.test_bit(idx) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn alloc_contiguous_frames(&mut self, frames: usize, align: usize) -> Option<Pfn> {
+        if frames == 0 {
+            return None;
+        }
+        let total = self.total_frames as usize;
+        let align = align.max(1);
+        let mut cursor: usize = 0;
+
+        while cursor + frames <= total {
+            let aligned = align_up(cursor, align);
+            if aligned + frames > total {
+                break;
+            }
+
+            if self.range_is_free(aligned, frames) {
+                for offset in 0..frames {
+                    let idx = aligned + offset;
+                    let already = self.set_bit(idx);
+                    debug_assert!(!already, "frame unexpectedly marked allocated");
+                }
+                self.free_frames = self.free_frames.saturating_sub(frames as u64);
+                return Some(Pfn(self.base_pfn.0 + aligned as u64));
+            }
+
+            cursor = aligned + 1;
+        }
+
+        None
+    }
+
+    fn free_contiguous_frames(&mut self, start_idx: usize, frames: usize) -> AllocResult<()> {
+        if frames == 0 {
+            return Ok(());
+        }
+        if start_idx + frames > self.total_frames as usize {
+            return Err(AllocError::UnknownFrame);
+        }
+
+        for offset in 0..frames {
+            let idx = start_idx + offset;
+            if !self.clear_bit(idx) {
+                return Err(AllocError::DoubleFree);
+            }
+        }
+        self.free_frames = self.free_frames.saturating_add(frames as u64);
+        Ok(())
+    }
+
     /// Marks a previously-allocated frame as free.
     ///
     /// # Parameters
@@ -691,6 +752,50 @@ pub fn alloc_frame() -> AllocResult<u64> {
     manager.pop_first_free().map(Pfn::start_address)
 }
 
+/// Allocate a contiguous, DMA-friendly physical memory region.
+///
+/// The allocation is rounded up to whole frames (4 KiB). The returned physical
+/// address is aligned to at least `align_bytes`.
+pub fn alloc_contiguous(size_bytes: u64, align_bytes: u64) -> AllocResult<u64> {
+    if size_bytes == 0 {
+        return Err(AllocError::OutOfMemory);
+    }
+
+    let frames = align_up_div(size_bytes, FRAME_SIZE);
+    let align_frames = if align_bytes <= FRAME_SIZE {
+        1
+    } else {
+        align_up_div(align_bytes, FRAME_SIZE)
+    } as usize;
+
+    let mut guard = PHYS_MANAGER.lock();
+    let manager = guard.as_mut().expect("physical allocator not initialised");
+    manager
+        .alloc_contiguous_frames(frames as usize, align_frames)
+        .map(Pfn::start_address)
+        .ok_or(AllocError::OutOfMemory)
+}
+
+/// Free a previously allocated contiguous region.
+pub fn free_contiguous(base_pa: u64, size_bytes: u64) -> AllocResult<()> {
+    if size_bytes == 0 {
+        return Ok(());
+    }
+    if base_pa % FRAME_SIZE != 0 {
+        return Err(AllocError::UnknownFrame);
+    }
+    let frames = align_up_div(size_bytes, FRAME_SIZE) as usize;
+
+    let mut guard = PHYS_MANAGER.lock();
+    let manager = guard.as_mut().expect("physical allocator not initialised");
+    let pfn = Pfn::containing(base_pa);
+    if pfn < manager.base_pfn {
+        return Err(AllocError::UnknownFrame);
+    }
+    let start_idx = (pfn.0 - manager.base_pfn.0) as usize;
+    manager.free_contiguous_frames(start_idx, frames)
+}
+
 /// Frees a previously-allocated physical frame.
 ///
 /// Returns the frame to the free pool, making it available for future allocations.
@@ -715,6 +820,20 @@ pub fn free_frame(pa: u64) -> AllocResult<()> {
     let manager = guard.as_mut().expect("physical allocator not initialised");
     let pfn = Pfn::containing(pa);
     manager.mark_free(pfn)
+}
+
+fn align_up(value: usize, align: usize) -> usize {
+    if align <= 1 {
+        return value;
+    }
+    ((value + align - 1) / align) * align
+}
+
+fn align_up_div(value: u64, divisor: u64) -> u64 {
+    if divisor == 0 {
+        return 0;
+    }
+    (value + divisor - 1) / divisor
 }
 
 /// Dumps the current state of the physical memory manager to the debug output.

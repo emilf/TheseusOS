@@ -4,12 +4,15 @@
 //! responsible for initializing ACPI, enumerating platform devices, and feeding
 //! them into the manager so that concrete drivers can bind.
 
+use alloc::vec::Vec;
+
 use crate::acpi::{self, PlatformInfo};
 use crate::config;
 use crate::handoff::handoff_phys_ptr;
 use crate::{log_debug, log_info, log_warn};
 
 use super::manager::driver_manager;
+use super::pci;
 use super::serial;
 use super::traits::{Device, DeviceClass, DeviceId};
 use crate::monitor;
@@ -42,45 +45,93 @@ pub fn init() -> DriverResult<PlatformInfo> {
 
     if handoff.hardware_device_count == 0 || handoff.hardware_inventory_ptr == 0 {
         log_warn!("Hardware inventory missing");
-        return Ok(platform_info);
+    } else {
+        log_debug!("Registering UEFI hardware inventory");
+
+        let count = handoff.hardware_device_count as usize;
+        let bytes = handoff.hardware_inventory_size as usize;
+        let slice = unsafe {
+            core::slice::from_raw_parts(handoff.hardware_inventory_ptr as *const u8, bytes)
+        };
+
+        for idx in 0..count {
+            let entry = theseus_shared::handoff::HardwareDevice::from_bytes(slice, idx)
+                .ok_or("invalid hardware inventory entry")?;
+
+            if crate::config::PRINT_HARDWARE_INVENTORY {
+                log_debug!(
+                    "Inventory entry {}: type={} address={:#x} irq={}",
+                    idx,
+                    entry.device_type_str(),
+                    entry.address.unwrap_or(0),
+                    entry.irq.unwrap_or(0)
+                );
+            }
+
+            let device_id = match entry.device_type {
+                theseus_shared::handoff::DEVICE_TYPE_SERIAL => DeviceId::Class(DeviceClass::Serial),
+                _ => DeviceId::Raw(entry.device_type_str()),
+            };
+            let mut device = Device::new(device_id);
+            if entry.device_type == theseus_shared::handoff::DEVICE_TYPE_SERIAL {
+                device.class = DeviceClass::Serial;
+                if let Some(addr) = entry.address {
+                    device.phys_addr = Some(addr);
+                }
+                if let Some(irq) = entry.irq {
+                    device.irq = Some(irq);
+                }
+            }
+            driver_manager().lock().add_device(device);
+        }
     }
 
-    log_debug!("Registering UEFI hardware inventory");
+    let pci_functions = pci::enumerate(&platform_info.pci_config_regions);
+    if pci_functions.is_empty() {
+        log_warn!("PCI scan: no devices discovered");
+    } else {
+        log_info!("PCI scan: discovered {} function(s)", pci_functions.len());
+    }
 
-    let count = handoff.hardware_device_count as usize;
-    let bytes = handoff.hardware_inventory_size as usize;
-    let slice =
-        unsafe { core::slice::from_raw_parts(handoff.hardware_inventory_ptr as *const u8, bytes) };
+    let mut pci_devices: Vec<Device> = Vec::new();
+    for info in pci_functions.iter() {
+        let mut device = Device::new(DeviceId::Pci {
+            bus: info.bus,
+            device: info.device,
+            function: info.function,
+        });
 
-    for idx in 0..count {
-        let entry = theseus_shared::handoff::HardwareDevice::from_bytes(slice, idx)
-            .ok_or("invalid hardware inventory entry")?;
-
-        if crate::config::PRINT_HARDWARE_INVENTORY {
-            log_debug!(
-                "Inventory entry {}: type={} address={:#x} irq={}",
-                idx,
-                entry.device_type_str(),
-                entry.address.unwrap_or(0),
-                entry.irq.unwrap_or(0)
-            );
-        }
-
-        let device_id = match entry.device_type {
-            theseus_shared::handoff::DEVICE_TYPE_SERIAL => DeviceId::Class(DeviceClass::Serial),
-            _ => DeviceId::Raw(entry.device_type_str()),
-        };
-        let mut device = Device::new(device_id);
-        if entry.device_type == theseus_shared::handoff::DEVICE_TYPE_SERIAL {
-            device.class = DeviceClass::Serial;
-            if let Some(addr) = entry.address {
-                device.phys_addr = Some(addr);
-            }
-            if let Some(irq) = entry.irq {
-                device.irq = Some(irq);
+        if let Some(bar) = info.first_memory_bar() {
+            if let Some(base) = bar.memory_base() {
+                device.phys_addr = Some(base);
             }
         }
-        driver_manager().lock().add_device(device);
+
+        if let Some(irq) = info.interrupt_line() {
+            device.irq = Some(irq as u32);
+        }
+
+        log_debug!(
+            "Registering PCI {:02x}:{:02x}.{} vendor={:04x} device={:04x} class={:02x}{:02x}{:02x} irq={:?}",
+            info.bus,
+            info.device,
+            info.function,
+            info.vendor_id,
+            info.device_id,
+            info.class_code,
+            info.subclass,
+            info.prog_if,
+            device.irq
+        );
+
+        pci_devices.push(device);
+    }
+
+    if !pci_devices.is_empty() {
+        let mut manager = driver_manager().lock();
+        for device in pci_devices {
+            manager.add_device(device);
+        }
     }
 
     monitor::init();

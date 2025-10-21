@@ -6,11 +6,12 @@
 use crate::handoff::handoff_phys_ptr;
 use crate::memory::{
     current_pml4_phys, map_range_with_policy, phys_to_virt_pa, PageTable, PTE_GLOBAL, PTE_NO_EXEC,
-    PTE_PRESENT, PTE_WRITABLE,
+    PTE_PCD, PTE_PRESENT, PTE_PWT, PTE_WRITABLE,
 };
 use crate::physical_memory;
 use crate::{log_debug, log_error, log_info, log_trace, log_warn};
 use acpi::{sdt::SdtHeader, AcpiHandler, AcpiTables, PhysicalMapping};
+use alloc::vec::Vec;
 use core::{
     ptr::NonNull,
     sync::atomic::{AtomicBool, Ordering},
@@ -59,6 +60,8 @@ impl AcpiHandler for KernelAcpiHandler {
     ///
     /// In the kernel, we don't need to unmap physical regions since the PHYS_OFFSET
     /// mapping is persistent and covers all physical memory.
+    /// TODO: PHYS_OFFSET mapping is not persistent in the kernel environment, so we
+    /// need to unmap the physical region when the mapping is no longer needed.
     fn unmap_physical_region<T>(_region: &PhysicalMapping<Self, T>) {
         // No-op in kernel environment - PHYS_OFFSET mapping is persistent
     }
@@ -129,6 +132,33 @@ fn ensure_acpi_virtual_mapping(phys_addr: u64, size: usize) -> u64 {
     virt_base + offset
 }
 
+fn map_mmconfig_region(phys_addr: u64, size: usize) -> u64 {
+    let page_size = crate::memory::PAGE_SIZE as u64;
+    let phys_base = phys_addr & !(page_size - 1);
+    let offset = phys_addr - phys_base;
+    let size_aligned = ((offset + size as u64 + page_size - 1) / page_size) * page_size;
+    let virt_base = ACPI_WINDOW_BASE + phys_base;
+
+    let _guard = ACPI_MAPPING_LOCK.lock();
+
+    unsafe {
+        let pml4_pa = current_pml4_phys();
+        let pml4_ptr = phys_to_virt_pa(pml4_pa) as *mut PageTable;
+        let pml4 = &mut *pml4_ptr;
+        let mut persistent = physical_memory::PersistentFrameAllocator;
+        map_range_with_policy(
+            pml4,
+            virt_base,
+            phys_base,
+            size_aligned,
+            PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_PCD | PTE_PWT,
+            &mut persistent,
+        );
+    }
+
+    virt_base + offset
+}
+
 fn map_sdt_bytes(phys_addr: u64) -> (*const u8, usize) {
     let header_ptr = ensure_acpi_virtual_mapping(phys_addr, core::mem::size_of::<SdtHeader>())
         as *const SdtHeader;
@@ -168,11 +198,13 @@ pub struct PlatformInfo {
     pub has_legacy_pic: bool,
     /// Detailed MADT-derived information, if available
     pub madt_info: Option<madt::MadtInfo>,
+    /// PCI Express Enhanced Configuration Access Mechanism regions
+    pub pci_config_regions: Vec<PciConfigRegion>,
 }
 
 impl PlatformInfo {
     /// Create a new PlatformInfo with default values
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             cpu_count: 1, // At least the BSP
             has_io_apic: false,
@@ -180,8 +212,24 @@ impl PlatformInfo {
             local_apic_address: 0xFEE00000, // Default Local APIC address
             has_legacy_pic: false,
             madt_info: None,
+            pci_config_regions: Vec::new(),
         }
     }
+}
+
+/// Description of a single ECAM mapping for PCI configuration space.
+#[derive(Debug, Clone)]
+pub struct PciConfigRegion {
+    /// Physical base address of the ECAM window.
+    pub phys_base: u64,
+    /// Virtual base address where the window has been mapped.
+    pub virt_base: u64,
+    /// PCI segment group number served by this region.
+    pub segment: u16,
+    /// First bus number handled by this region (inclusive).
+    pub bus_start: u8,
+    /// Last bus number handled by this region (inclusive).
+    pub bus_end: u8,
 }
 
 static PLATFORM_INFO_CACHE: Mutex<Option<PlatformInfo>> = Mutex::new(None);
@@ -344,6 +392,8 @@ fn extract_platform_info(
         }
     }
 
+    collect_pci_config_regions(tables, &mut platform_info);
+
     log_info!(
         "Total CPUs: {} IO APICs: {}",
         platform_info.cpu_count,
@@ -351,6 +401,90 @@ fn extract_platform_info(
     );
 
     Ok(platform_info)
+}
+
+#[repr(C, packed)]
+struct RawMcfg {
+    header: SdtHeader,
+    _reserved: u64,
+}
+
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+struct RawMcfgEntry {
+    base_address: u64,
+    segment: u16,
+    bus_start: u8,
+    bus_end: u8,
+    _reserved: u32,
+}
+
+fn collect_pci_config_regions(
+    tables: &AcpiTables<KernelAcpiHandler>,
+    platform_info: &mut PlatformInfo,
+) {
+    use acpi::sdt::Signature;
+    let sdt = match tables.sdts.get(&Signature::MCFG) {
+        Some(s) => s,
+        None => {
+            log_debug!("ACPI MCFG table not present");
+            return;
+        }
+    };
+
+    let table_len = sdt.length as usize;
+    if table_len < core::mem::size_of::<RawMcfg>() {
+        log_warn!("MCFG table too short ({})", table_len);
+        return;
+    }
+
+    let base_ptr = map_mmconfig_region(sdt.physical_address as u64, table_len) as *const u8;
+    let mut offset = core::mem::size_of::<RawMcfg>();
+    let entry_size = core::mem::size_of::<RawMcfgEntry>();
+
+    while offset + entry_size <= table_len {
+        let entry_ptr = unsafe { base_ptr.add(offset) as *const RawMcfgEntry };
+        let raw_entry = unsafe { core::ptr::read_unaligned(entry_ptr) };
+        let segment = raw_entry.segment;
+        let bus_start = raw_entry.bus_start;
+        let bus_end = raw_entry.bus_end;
+        let base_address = raw_entry.base_address;
+
+        if bus_end < bus_start {
+            log_warn!(
+                "Skipping malformed MCFG entry: segment={} bus_start={} bus_end={}",
+                segment,
+                bus_start,
+                bus_end
+            );
+            offset += entry_size;
+            continue;
+        }
+
+        let bus_count = (bus_end as u32 - bus_start as u32 + 1) as u64;
+        let window_size = bus_count * 0x10_0000; // 1 MiB per bus
+        let virt_base = map_mmconfig_region(base_address, window_size as usize);
+
+        log_info!(
+            "MCFG region: segment={} buses={}..={} phys=0x{:012x} virt=0x{:016x} size={:#x}",
+            segment,
+            bus_start,
+            bus_end,
+            base_address,
+            virt_base,
+            window_size
+        );
+
+        platform_info.pci_config_regions.push(PciConfigRegion {
+            phys_base: base_address,
+            virt_base,
+            segment,
+            bus_start,
+            bus_end,
+        });
+
+        offset += entry_size;
+    }
 }
 
 /// Parse RSDP (Root System Description Pointer) table
