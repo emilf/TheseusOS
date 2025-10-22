@@ -16,7 +16,6 @@ static ANIMATION_TICKS: AtomicU32 = AtomicU32::new(0);
 
 /// Heart pattern data (16x16 pixels) - 4x larger than before
 /// Each row is 16 bits, where 1 = pixel on, 0 = pixel off
-#[allow(dead_code)]
 const HEART_PATTERN: [u16; 16] = [
     0b0000110000110000,
     0b0011111001111100,
@@ -35,18 +34,6 @@ const HEART_PATTERN: [u16; 16] = [
     0b0000000000000000,
     0b0000000000000000,
 ];
-
-/// Colors for 4-byte BGRA framebuffer
-#[allow(dead_code)]
-const WHITE_COLOR: u8 = 0xFF; // Full intensity white
-
-/// Black color (background) - transparent/black
-#[allow(dead_code)]
-const BLACK_COLOR: u8 = 0x00; // No intensity
-
-/// Red color for heart (bright red in BGRA format)
-#[allow(dead_code)]
-const RED_COLOR: u8 = 0xFF; // Will be used to create bright red BGRA value
 
 /// Heart size in pixels
 const PIXEL_SIZE: usize = 16;
@@ -135,7 +122,6 @@ unsafe fn draw_pixel(x: usize, y: usize, width: usize, height: usize, stride: us
 }
 
 /// Clear a rectangular area
-#[allow(dead_code)]
 unsafe fn clear_area(
     x: usize,
     y: usize,
@@ -163,7 +149,6 @@ unsafe fn clear_area(
 }
 
 /// Draw the heart pattern at the specified position
-#[allow(dead_code)]
 unsafe fn draw_heart(x: usize, y: usize, width: usize, height: usize, stride: usize, color: u8) {
     log_trace!("Drawing heart at ({},{}) size 16x16", x, y);
 
@@ -268,8 +253,6 @@ pub unsafe fn draw_initial_screen(handoff: &Handoff) {
 }
 
 /// Draw the boot logo at the specified position
-
-#[allow(dead_code)]
 unsafe fn draw_bootlogo(x: usize, y: usize, width: usize, height: usize, stride: usize) {
     log_trace!("Drawing boot logo at ({},{}) size {}x{}", x, y, width, height);
     use crate::bootlogo::BOOT_LOGO_ARRAY;
