@@ -100,13 +100,14 @@ pub fn init() -> DriverResult<PlatformInfo> {
     platform_info.pci_bridges = pci_topology.bridges.clone();
     for bridge in platform_info.pci_bridges.iter() {
         log_debug!(
-            "PCI bridge {:04x}:{:02x}:{:02x}.{} secondary={:02x} subordinate={:02x}",
+            "PCI bridge {:04x}:{:02x}:{:02x}.{} secondary={:02x} subordinate={:02x} max_child={:02x}",
             bridge.segment,
             bridge.bus,
             bridge.device,
             bridge.function,
             bridge.secondary_bus,
-            bridge.subordinate_bus
+            bridge.subordinate_bus,
+            bridge.max_child_bus
         );
     }
 

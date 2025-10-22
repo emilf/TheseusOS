@@ -16,6 +16,45 @@ const MAX_FUNCTION: u8 = 7;
 const BUS_STRIDE: u64 = 0x1_0000; // 1 MiB per bus
 const DEVICE_STRIDE: u64 = 0x8000; // 32 KiB per device
 const FUNCTION_STRIDE: u64 = 0x1000; // 4 KiB per function
+const MEM_WINDOW_SIZE: u32 = 0x0100_0000; // 16 MiB
+const PREF_WINDOW_SIZE: u32 = 0x0100_0000; // 16 MiB
+
+struct ResourceAllocator {
+    next_mem: u64,
+    next_prefetch: u64,
+}
+
+impl ResourceAllocator {
+    fn new() -> Self {
+        Self {
+            next_mem: 0x8000_0000,
+            next_prefetch: 0x9000_0000,
+        }
+    }
+
+    fn alloc_mem_window(&mut self, size: u32) -> Option<u64> {
+        let size = size.max(0x0010_0000);
+        let base = align_up(self.next_mem, size as u64);
+        let end = base.checked_add(size as u64)?.checked_sub(1)?;
+        self.next_mem = end.checked_add(1)?;
+        Some(base)
+    }
+
+    fn alloc_prefetch_window(&mut self, size: u32) -> Option<u64> {
+        let size = size.max(0x0010_0000);
+        let base = align_up(self.next_prefetch, size as u64);
+        let end = base.checked_add(size as u64)?.checked_sub(1)?;
+        self.next_prefetch = end.checked_add(1)?;
+        Some(base)
+    }
+}
+
+fn align_up(value: u64, alignment: u64) -> u64 {
+    if alignment == 0 {
+        return value;
+    }
+    ((value + alignment - 1) / alignment) * alignment
+}
 
 /// Decoded Base Address Register (BAR) entry.
 #[derive(Clone, Copy, Debug)]
@@ -127,6 +166,7 @@ pub fn enumerate(regions: &[PciConfigRegion]) -> PciTopology {
     let mut devices = Vec::new();
     let mut bridges = Vec::new();
     let mut visited_buses: BTreeSet<(u16, u8)> = BTreeSet::new();
+    let mut allocator = ResourceAllocator::new();
 
     for region in regions {
         let mut next_bus = region.bus_start.saturating_add(1);
@@ -137,6 +177,7 @@ pub fn enumerate(regions: &[PciConfigRegion]) -> PciTopology {
             &mut devices,
             &mut bridges,
             &mut next_bus,
+            &mut allocator,
         );
     }
 
@@ -159,6 +200,7 @@ fn scan_bus(
     devices: &mut Vec<PciDeviceInfo>,
     bridges: &mut Vec<PciBridgeInfo>,
     next_bus: &mut u8,
+    alloc: &mut ResourceAllocator,
 ) -> u8 {
     if bus < region.bus_start || bus > region.bus_end {
         return bus;
@@ -241,7 +283,7 @@ fn scan_bus(
                         config_write_u8(base, 0x18, bus);
                     }
                     let mut secondary = config_read_u8(base, 0x19);
-                    let mut subordinate = config_read_u8(base, 0x1A);
+                    let subordinate_reg = config_read_u8(base, 0x1A);
                     let command = config_read_u16(base, 0x04);
 
                     let desired_command = command | 0x0007; // I/O, Memory, Bus Master
@@ -255,9 +297,8 @@ fn scan_bus(
                     {
                         if let Some(new_bus) = allocate_bus(region, next_bus, visited_buses) {
                             secondary = new_bus;
-                            subordinate = region.bus_end;
                             config_write_u8(base, 0x19, secondary);
-                            config_write_u8(base, 0x1A, subordinate);
+                            config_write_u8(base, 0x1A, region.bus_end);
                         } else {
                             log_warn!(
                                 "PCI bridge {:04x}:{:02x}:{:02x}.{}: unable to allocate secondary bus",
@@ -268,11 +309,8 @@ fn scan_bus(
                             );
                             continue;
                         }
-                    }
-
-                    if subordinate < secondary {
-                        subordinate = region.bus_end;
-                        config_write_u8(base, 0x1A, subordinate);
+                    } else if subordinate_reg < secondary {
+                        config_write_u8(base, 0x1A, region.bus_end);
                     }
 
                     // Pulse Secondary Bus Reset so devices behind the bridge re-enumerate.
@@ -280,11 +318,53 @@ fn scan_bus(
                     config_write_u16(base, 0x3E, bridge_control | 0x0400);
                     config_write_u16(base, 0x3E, bridge_control & !0x0400);
 
-                    let child_max =
-                        scan_bus(region, secondary, visited_buses, devices, bridges, next_bus);
-                    if child_max > subordinate {
-                        subordinate = child_max;
-                        config_write_u8(base, 0x1A, subordinate);
+                    let child_max = scan_bus(
+                        region,
+                        secondary,
+                        visited_buses,
+                        devices,
+                        bridges,
+                        next_bus,
+                        alloc,
+                    );
+
+                    let new_subordinate = child_max.max(secondary);
+                    if subordinate_reg != new_subordinate {
+                        config_write_u8(base, 0x1A, new_subordinate);
+                    }
+
+                    if child_max >= secondary {
+                        if let Some(mem_base) = alloc.alloc_mem_window(MEM_WINDOW_SIZE) {
+                            if !program_memory_window(base, mem_base, MEM_WINDOW_SIZE) {
+                                log_warn!(
+                                    "PCI bridge {:04x}:{:02x}:{:02x}.{}: failed to program memory window",
+                                    info.segment,
+                                    info.bus,
+                                    info.device,
+                                    info.function
+                                );
+                            }
+                        } else {
+                            log_warn!(
+                                "PCI bridge {:04x}:{:02x}:{:02x}.{}: out of memory window space",
+                                info.segment,
+                                info.bus,
+                                info.device,
+                                info.function
+                            );
+                        }
+
+                        if let Some(pref_base) = alloc.alloc_prefetch_window(PREF_WINDOW_SIZE) {
+                            program_prefetch_window(base, pref_base, PREF_WINDOW_SIZE);
+                        } else {
+                            log_warn!(
+                                "PCI bridge {:04x}:{:02x}:{:02x}.{}: out of prefetch window space",
+                                info.segment,
+                                info.bus,
+                                info.device,
+                                info.function
+                            );
+                        }
                     }
 
                     bridges.push(PciBridgeInfo {
@@ -293,9 +373,10 @@ fn scan_bus(
                         device: info.device,
                         function: info.function,
                         secondary_bus: secondary,
-                        subordinate_bus: subordinate,
+                        subordinate_bus: new_subordinate,
                         vendor_id: info.vendor_id,
                         device_id: info.device_id,
+                        max_child_bus: child_max,
                     });
 
                     if child_max > max_bus {
@@ -336,6 +417,38 @@ fn allocate_bus(
         candidate = *next_bus;
     }
     None
+}
+
+fn program_memory_window(base: u64, window_base: u64, size: u32) -> bool {
+    let limit = match window_base
+        .checked_add(size as u64)
+        .and_then(|v| v.checked_sub(1))
+    {
+        Some(lim) => lim,
+        None => return false,
+    };
+    let base_reg = ((window_base >> 16) & 0xFFF0) as u16;
+    let limit_reg = ((limit >> 16) & 0xFFF0) as u16;
+    config_write_u16(base, 0x20, base_reg);
+    config_write_u16(base, 0x22, limit_reg);
+    true
+}
+
+fn program_prefetch_window(base: u64, window_base: u64, size: u32) {
+    let limit = window_base
+        .checked_add(size as u64)
+        .and_then(|v| v.checked_sub(1))
+        .unwrap_or(window_base);
+    let base_reg = ((window_base >> 16) & 0xFFF0) as u16;
+    let limit_reg = ((limit >> 16) & 0xFFF0) as u16;
+    config_write_u16(base, 0x24, base_reg);
+    config_write_u16(base, 0x26, limit_reg);
+    // Clear upper 32-bit registers for 64-bit windows for now.
+    config_write_u32(base, 0x28, 0);
+    config_write_u32(base, 0x2C, 0);
+    // Disable I/O window until we have an allocator for it.
+    config_write_u16(base, 0x1C, 0xF0);
+    config_write_u16(base, 0x1E, 0x00);
 }
 
 fn read_function(
@@ -528,6 +641,11 @@ fn config_read_u8(function_base: u64, offset: u8) -> u8 {
     let value = config_read_u32(function_base, aligned);
     let shift = (offset & 0x3) * 8;
     ((value >> shift) & 0xFF) as u8
+}
+
+fn config_write_u32(function_base: u64, offset: u8, value: u32) {
+    let addr = function_base + offset as u64;
+    unsafe { core::ptr::write_volatile(addr as *mut u32, value) };
 }
 
 fn config_write_u16(function_base: u64, offset: u8, value: u16) {

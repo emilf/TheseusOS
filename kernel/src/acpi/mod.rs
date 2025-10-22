@@ -246,6 +246,7 @@ pub struct PciBridgeInfo {
     pub subordinate_bus: u8,
     pub vendor_id: u16,
     pub device_id: u16,
+    pub max_child_bus: u8,
 }
 
 static PLATFORM_INFO_CACHE: Mutex<Option<PlatformInfo>> = Mutex::new(None);

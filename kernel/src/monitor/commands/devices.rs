@@ -67,13 +67,14 @@ impl Monitor {
                 self.writeln("\nPCI bridges:");
                 for bridge in info.pci_bridges.iter() {
                     self.writeln(&format!(
-                        "  {:04x}:{:02x}:{:02x}.{} -> secondary {:02x}, subordinate {:02x}",
+                        "  {:04x}:{:02x}:{:02x}.{} -> secondary {:02x}, subordinate {:02x}, max_child {:02x}",
                         bridge.segment,
                         bridge.bus,
                         bridge.device,
                         bridge.function,
                         bridge.secondary_bus,
-                        bridge.subordinate_bus
+                        bridge.subordinate_bus,
+                        bridge.max_child_bus
                     ));
                 }
             }
