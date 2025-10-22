@@ -49,7 +49,7 @@ const BLACK_COLOR: u8 = 0x00; // No intensity
 const RED_COLOR: u8 = 0xFF; // Will be used to create bright red BGRA value
 
 /// Heart size in pixels
-const HEART_SIZE: usize = 16;
+const PIXEL_SIZE: usize = 16;
 
 /// Animation timing constants
 const ANIMATION_TICK_INTERVAL: u32 = 1000; // Toggle every 1000 ticks for ~1 second intervals
@@ -167,9 +167,9 @@ unsafe fn clear_area(
 unsafe fn draw_heart(x: usize, y: usize, width: usize, height: usize, stride: usize, color: u8) {
     log_trace!("Drawing heart at ({},{}) size 16x16", x, y);
 
-    for row in 0..HEART_SIZE {
+    for row in 0..PIXEL_SIZE {
         let pattern_row = HEART_PATTERN[row];
-        for col in 0..HEART_SIZE {
+        for col in 0..PIXEL_SIZE {
             if (pattern_row & (1 << (15 - col))) != 0 {
                 draw_pixel(x + col, y + row, width, height, stride, color);
             }
@@ -189,7 +189,7 @@ pub unsafe fn update_heart_animation(handoff: &Handoff) {
     let stride = handoff.gop_stride as usize;
 
     // Position heart in upper right corner using constants
-    let heart_x = width - HEART_SIZE - HEART_MARGIN_RIGHT;
+    let heart_x = width - PIXEL_SIZE - HEART_MARGIN_RIGHT;
     let heart_y = HEART_MARGIN_TOP;
 
     // Increment animation tick
@@ -204,8 +204,8 @@ pub unsafe fn update_heart_animation(handoff: &Handoff) {
         clear_area(
             heart_x,
             heart_y,
-            HEART_SIZE,
-            HEART_SIZE,
+            PIXEL_SIZE,
+            PIXEL_SIZE,
             width,
             height,
             stride,
@@ -226,7 +226,7 @@ pub fn init_framebuffer_drawing() {
 }
 
 /// Draw an initial heart pattern (call this once during kernel init)
-pub unsafe fn draw_initial_heart(handoff: &Handoff) {
+pub unsafe fn draw_initial_screen(handoff: &Handoff) {
     if handoff.gop_fb_base == 0 || handoff.gop_width == 0 || handoff.gop_height == 0 {
         log_debug!("No framebuffer available");
         return;
@@ -255,11 +255,28 @@ pub unsafe fn draw_initial_heart(handoff: &Handoff) {
     log_debug!("Bytes per pixel: {}", bytes_per_pixel);
 
     // Position heart in upper right corner using constants
-    let heart_x = width - HEART_SIZE - HEART_MARGIN_RIGHT;
+    let heart_x = width - PIXEL_SIZE - HEART_MARGIN_RIGHT;
     let heart_y = HEART_MARGIN_TOP;
 
     log_debug!("Heart at ({},{}) size 16x16", heart_x, heart_y);
 
     // Draw the initial heart in the upper right corner
     draw_heart(heart_x, heart_y, width, height, stride, COLOR_RED);
+
+    // Draw the boot logo
+    draw_bootlogo(width - 190, 0, width, height, stride);
+}
+
+/// Draw the boot logo at the specified position
+
+#[allow(dead_code)]
+unsafe fn draw_bootlogo(x: usize, y: usize, width: usize, height: usize, stride: usize) {
+    log_trace!("Drawing boot logo at ({},{}) size {}x{}", x, y, width, height);
+    use crate::bootlogo::BOOT_LOGO_ARRAY;
+
+    for row in 0..255 {
+        for col in 0..255 {
+            draw_pixel_bgra(x + col, y + row, width, height, stride, BOOT_LOGO_ARRAY[row][col]);
+        }
+    }
 }

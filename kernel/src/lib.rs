@@ -28,6 +28,7 @@ pub mod panic;
 pub mod physical_memory;
 pub mod serial_debug;
 pub mod stack;
+pub mod bootlogo;
 
 // Config must come after logging since it references logging types
 pub mod config;
