@@ -366,7 +366,7 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
         // Get handoff from the global static that was set in main
         // TODO: Make it not use handoff for this.
         if let Some(handoff) = crate::interrupts::get_handoff_for_timer() {
-            crate::framebuffer::draw_initial_heart(handoff);
+            crate::framebuffer::draw_initial_screen(handoff);
         }
     }
 
