@@ -200,6 +200,8 @@ pub struct PlatformInfo {
     pub madt_info: Option<madt::MadtInfo>,
     /// PCI Express Enhanced Configuration Access Mechanism regions
     pub pci_config_regions: Vec<PciConfigRegion>,
+    /// Enumerated PCI bridges discovered during ECAM walk
+    pub pci_bridges: Vec<PciBridgeInfo>,
 }
 
 impl PlatformInfo {
@@ -213,6 +215,7 @@ impl PlatformInfo {
             has_legacy_pic: false,
             madt_info: None,
             pci_config_regions: Vec::new(),
+            pci_bridges: Vec::new(),
         }
     }
 }
@@ -230,6 +233,19 @@ pub struct PciConfigRegion {
     pub bus_start: u8,
     /// Last bus number handled by this region (inclusive).
     pub bus_end: u8,
+}
+
+/// Summary about a discovered PCI bridge.
+#[derive(Debug, Clone)]
+pub struct PciBridgeInfo {
+    pub segment: u16,
+    pub bus: u8,
+    pub device: u8,
+    pub function: u8,
+    pub secondary_bus: u8,
+    pub subordinate_bus: u8,
+    pub vendor_id: u16,
+    pub device_id: u16,
 }
 
 static PLATFORM_INFO_CACHE: Mutex<Option<PlatformInfo>> = Mutex::new(None);

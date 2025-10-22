@@ -4,8 +4,8 @@
 //! by the ACPI MCFG table. It assumes the boot environment has exposed those
 //! regions via `PlatformInfo::pci_config_regions`.
 
-use crate::acpi::PciConfigRegion;
-use crate::{log_debug, log_trace};
+use crate::acpi::{PciBridgeInfo, PciConfigRegion};
+use crate::{log_debug, log_trace, log_warn};
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::fmt;
@@ -36,6 +36,13 @@ impl PciBar {
     }
 }
 
+/// Capabilities advertised by a PCI function.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PciCapabilities {
+    pub msi: bool,
+    pub msix: bool,
+}
+
 /// Summary of a discovered PCI function.
 #[derive(Clone, Copy)]
 pub struct PciDeviceInfo {
@@ -55,6 +62,7 @@ pub struct PciDeviceInfo {
     pub bars: [PciBar; 6],
     pub interrupt_line: u8,
     pub interrupt_pin: u8,
+    pub capabilities: PciCapabilities,
 }
 
 impl PciDeviceInfo {
@@ -104,24 +112,44 @@ impl fmt::Debug for PciDeviceInfo {
             .field("bars", &self.bars)
             .field("interrupt_line", &self.interrupt_line)
             .field("interrupt_pin", &self.interrupt_pin)
+            .field("capabilities", &self.capabilities)
             .finish()
     }
 }
 
+pub struct PciTopology {
+    pub functions: Vec<PciDeviceInfo>,
+    pub bridges: Vec<PciBridgeInfo>,
+}
+
 /// Enumerate all PCI functions accessible via the provided ECAM regions.
-pub fn enumerate(regions: &[PciConfigRegion]) -> Vec<PciDeviceInfo> {
+pub fn enumerate(regions: &[PciConfigRegion]) -> PciTopology {
     let mut devices = Vec::new();
+    let mut bridges = Vec::new();
     let mut visited_buses: BTreeSet<(u16, u8)> = BTreeSet::new();
 
     for region in regions {
-        scan_bus(region, region.bus_start, &mut visited_buses, &mut devices);
+        let mut next_bus = region.bus_start.saturating_add(1);
+        scan_bus(
+            region,
+            region.bus_start,
+            &mut visited_buses,
+            &mut devices,
+            &mut bridges,
+            &mut next_bus,
+        );
     }
 
     log_debug!(
-        "PCI scan complete: {} function(s) discovered",
-        devices.len()
+        "PCI scan complete: {} function(s) discovered ({} bridges)",
+        devices.len(),
+        bridges.len()
     );
-    devices
+
+    PciTopology {
+        functions: devices,
+        bridges,
+    }
 }
 
 fn scan_bus(
@@ -129,13 +157,17 @@ fn scan_bus(
     bus: u8,
     visited_buses: &mut BTreeSet<(u16, u8)>,
     devices: &mut Vec<PciDeviceInfo>,
-) {
+    bridges: &mut Vec<PciBridgeInfo>,
+    next_bus: &mut u8,
+) -> u8 {
     if bus < region.bus_start || bus > region.bus_end {
-        return;
+        return bus;
     }
     if !visited_buses.insert((region.segment, bus)) {
-        return;
+        return bus;
     }
+
+    let mut max_bus = bus;
 
     for device in 0..=MAX_DEVICE {
         if let Some(info) = read_function(region, bus, device, 0) {
@@ -205,28 +237,105 @@ fn scan_bus(
 
             if is_bridge {
                 if let Some(base) = function_base(region, bus, device, 0) {
-                    let secondary = config_read_u8(base, 0x19);
-                    let subordinate = config_read_u8(base, 0x1A);
-                    if secondary != 0 && secondary <= region.bus_end && subordinate >= secondary {
-                        let limit = subordinate.min(region.bus_end);
-                        let mut child = secondary;
-                        loop {
-                            if child > limit {
-                                break;
-                            }
-                            if !visited_buses.contains(&(region.segment, child)) {
-                                scan_bus(region, child, visited_buses, devices);
-                            }
-                            if child == limit {
-                                break;
-                            }
-                            child = child.saturating_add(1);
+                    if config_read_u8(base, 0x18) != bus {
+                        config_write_u8(base, 0x18, bus);
+                    }
+                    let mut secondary = config_read_u8(base, 0x19);
+                    let mut subordinate = config_read_u8(base, 0x1A);
+                    let command = config_read_u16(base, 0x04);
+
+                    let desired_command = command | 0x0007; // I/O, Memory, Bus Master
+                    if desired_command != command {
+                        config_write_u16(base, 0x04, desired_command);
+                    }
+
+                    if secondary == 0
+                        || secondary <= bus
+                        || visited_buses.contains(&(region.segment, secondary))
+                    {
+                        if let Some(new_bus) = allocate_bus(region, next_bus, visited_buses) {
+                            secondary = new_bus;
+                            subordinate = region.bus_end;
+                            config_write_u8(base, 0x19, secondary);
+                            config_write_u8(base, 0x1A, subordinate);
+                        } else {
+                            log_warn!(
+                                "PCI bridge {:04x}:{:02x}:{:02x}.{}: unable to allocate secondary bus",
+                                info.segment,
+                                info.bus,
+                                info.device,
+                                info.function
+                            );
+                            continue;
                         }
                     }
+
+                    if subordinate < secondary {
+                        subordinate = region.bus_end;
+                        config_write_u8(base, 0x1A, subordinate);
+                    }
+
+                    // Pulse Secondary Bus Reset so devices behind the bridge re-enumerate.
+                    let bridge_control = config_read_u16(base, 0x3E);
+                    config_write_u16(base, 0x3E, bridge_control | 0x0400);
+                    config_write_u16(base, 0x3E, bridge_control & !0x0400);
+
+                    let child_max =
+                        scan_bus(region, secondary, visited_buses, devices, bridges, next_bus);
+                    if child_max > subordinate {
+                        subordinate = child_max;
+                        config_write_u8(base, 0x1A, subordinate);
+                    }
+
+                    bridges.push(PciBridgeInfo {
+                        segment: info.segment,
+                        bus: info.bus,
+                        device: info.device,
+                        function: info.function,
+                        secondary_bus: secondary,
+                        subordinate_bus: subordinate,
+                        vendor_id: info.vendor_id,
+                        device_id: info.device_id,
+                    });
+
+                    if child_max > max_bus {
+                        max_bus = child_max;
+                    }
+                } else {
+                    log_warn!(
+                        "PCI bridge {:04x}:{:02x}:{:02x}.{} missing function base",
+                        info.segment,
+                        info.bus,
+                        info.device,
+                        info.function
+                    );
                 }
+            } else if info.bus > max_bus {
+                max_bus = info.bus;
             }
         }
     }
+
+    max_bus
+}
+
+fn allocate_bus(
+    region: &PciConfigRegion,
+    next_bus: &mut u8,
+    visited: &BTreeSet<(u16, u8)>,
+) -> Option<u8> {
+    let mut candidate = *next_bus;
+    while candidate <= region.bus_end {
+        *next_bus = candidate.saturating_add(1);
+        if candidate != 0 && !visited.contains(&(region.segment, candidate)) {
+            return Some(candidate);
+        }
+        if candidate == u8::MAX {
+            break;
+        }
+        candidate = *next_bus;
+    }
+    None
 }
 
 fn read_function(
@@ -273,6 +382,7 @@ fn read_function(
 
     let interrupt_line = config_read_u8(base, 0x3C);
     let interrupt_pin = config_read_u8(base, 0x3D);
+    let capabilities = parse_capabilities(base, header_type, status);
 
     Some(PciDeviceInfo {
         segment: region.segment,
@@ -291,6 +401,7 @@ fn read_function(
         bars,
         interrupt_line,
         interrupt_pin,
+        capabilities,
     })
 }
 
@@ -363,6 +474,43 @@ fn read_type0_bars(function_base: u64) -> [PciBar; 6] {
     bars
 }
 
+fn parse_capabilities(function_base: u64, header_type: u8, status: u16) -> PciCapabilities {
+    if (status & (1 << 4)) == 0 {
+        return PciCapabilities::default();
+    }
+
+    let cap_ptr = match header_type & 0x7F {
+        0x00 | 0x01 => config_read_u8(function_base, 0x34),
+        _ => 0,
+    };
+
+    if cap_ptr < 0x40 {
+        return PciCapabilities::default();
+    }
+
+    let mut pointer = cap_ptr;
+    let mut guard = 0;
+    let mut caps = PciCapabilities::default();
+
+    while pointer >= 0x40 && guard < 64 {
+        let addr = function_base + pointer as u64;
+        let cap_id = unsafe { core::ptr::read_volatile(addr as *const u8) };
+        let next = unsafe { core::ptr::read_volatile((addr + 1) as *const u8) };
+        match cap_id {
+            0x05 => caps.msi = true,
+            0x11 => caps.msix = true,
+            _ => {}
+        }
+        if next == 0 || next == pointer {
+            break;
+        }
+        pointer = next;
+        guard += 1;
+    }
+
+    caps
+}
+
 fn config_read_u32(function_base: u64, offset: u8) -> u32 {
     let addr = function_base + offset as u64;
     unsafe { core::ptr::read_volatile(addr as *const u32) }
@@ -380,4 +528,14 @@ fn config_read_u8(function_base: u64, offset: u8) -> u8 {
     let value = config_read_u32(function_base, aligned);
     let shift = (offset & 0x3) * 8;
     ((value >> shift) & 0xFF) as u8
+}
+
+fn config_write_u16(function_base: u64, offset: u8, value: u16) {
+    let addr = function_base + offset as u64;
+    unsafe { core::ptr::write_volatile(addr as *mut u16, value) };
+}
+
+fn config_write_u8(function_base: u64, offset: u8, value: u8) {
+    let addr = function_base + offset as u64;
+    unsafe { core::ptr::write_volatile(addr as *mut u8, value) };
 }

@@ -2,6 +2,7 @@
 //!
 //! This module implements the `devices` command for listing registered hardware devices.
 
+use crate::acpi;
 use crate::drivers::manager::driver_manager;
 use crate::monitor::Monitor;
 use alloc::format;
@@ -58,6 +59,23 @@ impl Monitor {
             ));
             if let Some(state) = dev.driver_data {
                 self.writeln(&format!("      driver_state=0x{:016X}", state as u64));
+            }
+        }
+
+        if let Some(info) = acpi::cached_platform_info() {
+            if !info.pci_bridges.is_empty() {
+                self.writeln("\nPCI bridges:");
+                for bridge in info.pci_bridges.iter() {
+                    self.writeln(&format!(
+                        "  {:04x}:{:02x}:{:02x}.{} -> secondary {:02x}, subordinate {:02x}",
+                        bridge.segment,
+                        bridge.bus,
+                        bridge.device,
+                        bridge.function,
+                        bridge.secondary_bus,
+                        bridge.subordinate_bus
+                    ));
+                }
             }
         }
     }

@@ -4,6 +4,7 @@
 //! responsible for initializing ACPI, enumerating platform devices, and feeding
 //! them into the manager so that concrete drivers can bind.
 
+use alloc::format;
 use alloc::vec::Vec;
 
 use crate::acpi::{self, PlatformInfo};
@@ -26,7 +27,7 @@ pub fn init() -> DriverResult<PlatformInfo> {
 
     let handoff = unsafe { &*(handoff_phys_ptr() as *const theseus_shared::handoff::Handoff) };
 
-    let platform_info = acpi::initialize_acpi(handoff.acpi_rsdp)?;
+    let mut platform_info = acpi::initialize_acpi(handoff.acpi_rsdp)?;
     log_info!("ACPI initialization complete");
 
     if let Some(madt) = &platform_info.madt_info {
@@ -86,15 +87,31 @@ pub fn init() -> DriverResult<PlatformInfo> {
         }
     }
 
-    let pci_functions = pci::enumerate(&platform_info.pci_config_regions);
-    if pci_functions.is_empty() {
+    let pci_topology = pci::enumerate(&platform_info.pci_config_regions);
+    if pci_topology.functions.is_empty() {
         log_warn!("PCI scan: no devices discovered");
     } else {
-        log_info!("PCI scan: discovered {} function(s)", pci_functions.len());
+        log_info!(
+            "PCI scan: discovered {} function(s)",
+            pci_topology.functions.len()
+        );
+    }
+
+    platform_info.pci_bridges = pci_topology.bridges.clone();
+    for bridge in platform_info.pci_bridges.iter() {
+        log_debug!(
+            "PCI bridge {:04x}:{:02x}:{:02x}.{} secondary={:02x} subordinate={:02x}",
+            bridge.segment,
+            bridge.bus,
+            bridge.device,
+            bridge.function,
+            bridge.secondary_bus,
+            bridge.subordinate_bus
+        );
     }
 
     let mut pci_devices: Vec<Device> = Vec::new();
-    for info in pci_functions.iter() {
+    for info in pci_topology.functions.iter() {
         let class = classify_pci_device(info);
         if class == DeviceClass::Bridge {
             log_trace!(
@@ -125,8 +142,8 @@ pub fn init() -> DriverResult<PlatformInfo> {
             device.irq = Some(irq as u32);
         }
 
-        log_debug!(
-            "Registering PCI {:04x}:{:02x}:{:02x}.{} vendor={:04x} device={:04x} class={:02x}{:02x}{:02x} -> {:?} irq={:?}",
+        let log_msg = format!(
+            "PCI {:04x}:{:02x}:{:02x}.{} vendor={:04x} device={:04x} class={:02x}{:02x}{:02x} -> {:?} irq={:?} msi={} msix={}",
             info.segment,
             info.bus,
             info.device,
@@ -137,8 +154,15 @@ pub fn init() -> DriverResult<PlatformInfo> {
             info.subclass,
             info.prog_if,
             device.class,
-            device.irq
+            device.irq,
+            info.capabilities.msi,
+            info.capabilities.msix
         );
+        if matches!(device.class, DeviceClass::UsbController) {
+            log_info!("Registering USB controller: {}", log_msg);
+        } else {
+            log_debug!("Registering PCI function: {}", log_msg);
+        }
 
         pci_devices.push(device);
     }
