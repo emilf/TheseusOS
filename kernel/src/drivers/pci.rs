@@ -648,6 +648,16 @@ fn configure_bridge(
     }
 
     program_bridge_windows(function_base, &child_scan.resources);
+    log_debug!(
+        "PCI bridge {:04x}:{:02x}:{:02x}.{} windows: io={:?} mem={:?} pref_mem={:?}",
+        info.segment,
+        info.bus,
+        info.device,
+        info.function,
+        child_scan.resources.io.map(|r| (r.start, r.end)),
+        child_scan.resources.mem.map(|r| (r.start, r.end)),
+        child_scan.resources.pref_mem.map(|r| (r.start, r.end))
+    );
 
     bridges.push(PciBridgeInfo {
         segment: info.segment,
@@ -708,14 +718,24 @@ fn program_prefetch_window(function_base: u64, range: Option<ResourceRange>) {
 }
 
 fn program_io_window(function_base: u64, range: Option<ResourceRange>) {
-    if let Some(_range) = range {
-        // TODO: Implement 32-bit I/O window programming when needed.
-        // For now disable the window to avoid stale settings.
+    if let Some(range) = range {
+        let base = range.start;
+        let limit = range.end;
+        let base_low = ((base >> 12) as u8 & 0xF0) | 0x01; // 32-bit decode
+        let limit_low = ((limit >> 12) as u8 & 0xF0) | 0x01;
+        let base_high = ((base >> 16) & 0xFFFF) as u16;
+        let limit_high = ((limit >> 16) & 0xFFFF) as u16;
+
+        config_write_u8(function_base, 0x1C, base_low);
+        config_write_u8(function_base, 0x1D, limit_low);
+        config_write_u16(function_base, 0x30, base_high);
+        config_write_u16(function_base, 0x32, limit_high);
+    } else {
+        config_write_u8(function_base, 0x1C, 0xF0);
+        config_write_u8(function_base, 0x1D, 0x00);
+        config_write_u16(function_base, 0x30, 0x0000);
+        config_write_u16(function_base, 0x32, 0x0000);
     }
-    config_write_u8(function_base, 0x1C, 0xF0);
-    config_write_u8(function_base, 0x1D, 0x00);
-    config_write_u16(function_base, 0x30, 0x0000);
-    config_write_u16(function_base, 0x32, 0x0000);
 }
 
 fn allocate_bus(
