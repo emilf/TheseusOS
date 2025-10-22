@@ -20,5 +20,5 @@ Milestone 0 was about auditing prerequisites before writing any USB code. This n
 
 ## Next Steps Toward Milestone 1
 - Add MSI/MSI-X enablement helpers (and IO-APIC fallback policy) so future USB drivers can opt into edge-triggered interrupts cleanly.
-- Extend the new DMA helper with cache hints and lifetime management, then start migrating upcoming drivers to it.
-- Program PCIe bridges during enumeration so we can assign bus numbers ourselves when firmware leaves them at defaults.
+- Extend the new DMA helper with cache hints and pooled lifetimes, then start migrating upcoming drivers to it.
+- Refine PCI bridge resource windows based on BAR sizing (I/O + MEM) so downstream devices decode correctly without wasting aperture space.

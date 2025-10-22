@@ -13,6 +13,7 @@ extern crate alloc;
 // Re-export all the kernel modules
 pub mod acpi;
 pub mod boot;
+pub mod bootlogo;
 pub mod cpu;
 pub mod display;
 pub mod drivers;
@@ -28,7 +29,6 @@ pub mod panic;
 pub mod physical_memory;
 pub mod serial_debug;
 pub mod stack;
-pub mod bootlogo;
 
 // Config must come after logging since it references logging types
 pub mod config;

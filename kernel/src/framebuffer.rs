@@ -254,12 +254,25 @@ pub unsafe fn draw_initial_screen(handoff: &Handoff) {
 
 /// Draw the boot logo at the specified position
 unsafe fn draw_bootlogo(x: usize, y: usize, width: usize, height: usize, stride: usize) {
-    log_trace!("Drawing boot logo at ({},{}) size {}x{}", x, y, width, height);
+    log_trace!(
+        "Drawing boot logo at ({},{}) size {}x{}",
+        x,
+        y,
+        width,
+        height
+    );
     use crate::bootlogo::BOOT_LOGO_ARRAY;
 
     for row in 0..255 {
         for col in 0..255 {
-            draw_pixel_bgra(x + col, y + row, width, height, stride, BOOT_LOGO_ARRAY[row][col]);
+            draw_pixel_bgra(
+                x + col,
+                y + row,
+                width,
+                height,
+                stride,
+                BOOT_LOGO_ARRAY[row][col],
+            );
         }
     }
 }
