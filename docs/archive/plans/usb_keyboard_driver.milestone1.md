@@ -8,10 +8,11 @@ Milestone 1 establishes a clean PCI discovery layer that future USB work can bui
 - **Bridge bring-up**: `kernel/src/drivers/pci.rs:264` now enables I/O/MEM/bus-mastering on each bridge, assigns fresh secondary bus numbers, pulses secondary reset, and maps temporary 16 MiB memory/prefetch windows so downstream BARs decode during enumeration.
 - **Driver-manager integration**: `kernel/src/drivers/system.rs:96` consumes the enumerator, classifies functions (USB/storage/network), skips bridges, and registers actionable devices with the driver manager so upcoming USB code can bind cleanly.
 - **BAR/IRQ metadata + capabilities**: BAR decoding captures the first MMIO BAR and any assigned interrupt line, and `PciDeviceInfo` now records MSI/MSI-X capability bits for future interrupt routing work.
+- **BAR sizing audit**: The enumerator now temporarily disables decode and probes each BAR to record both base and size, allowing subsequent passes to allocate bridge windows that match the exact footprint required.
 - **DMA buffer helper**: `kernel/src/memory/dma.rs:1` wraps the contiguous allocator to provide aligned, zeroed, kernel-mapped buffers suitable for xHCI command/event rings or other DMA-heavy peripherals.
 
 ## Outstanding Tasks
-1. **Resource refinement**: Replace the fixed 16 MiB bridge windows with per-device spans (including I/O apertures) derived from BAR sizing so we only map what each downstream function actually needs.
+1. **Resource refinement**: With BAR sizing now captured during enumeration, replace the fixed 16 MiB bridge windows with per-device spans (including I/O apertures) derived from those measurements so we only map what each downstream function actually needs.
 2. **Class-to-driver mapping**: Extend the classifier to cover more subclasses (AHCI, NVMe, USB companion controllers) and wire those classes into future drivers.
 3. **Interrupt model upgrade**: Add MSI/MSI-X capability enablement; the current IO-APIC routing works but is not ideal for a high-throughput xHCI driver.
 4. **Diagnostics tooling**: Expand the new `devices` monitor output (already shows bridges) into a full PCI topology dump, including BAR sizes and capability lists.
