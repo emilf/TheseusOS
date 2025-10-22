@@ -91,6 +91,7 @@
 //! driver_manager().lock().register_driver(&MyDriver);
 //! ```
 
+use alloc::vec::Vec;
 use core::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -152,6 +153,8 @@ pub struct Device {
     pub phys_addr: Option<u64>,
     /// IRQ vector/global system interrupt (if assigned)
     pub irq: Option<u32>,
+    /// Hardware resources associated with the device (BARs, I/O ports, etc.)
+    pub resources: Vec<DeviceResource>,
     /// Opaque driver-defined binding state stored as usize
     pub driver_data: Option<usize>,
 }
@@ -168,6 +171,7 @@ impl Device {
             class,
             phys_addr: None,
             irq: None,
+            resources: Vec::new(),
             driver_data: None,
         }
     }
@@ -183,6 +187,20 @@ impl Device {
     pub fn driver_state_mut<T>(&mut self) -> Option<&mut T> {
         self.driver_data.map(|ptr| unsafe { &mut *(ptr as *mut T) })
     }
+}
+
+/// Hardware resource descriptor provided to drivers.
+#[derive(Debug, Clone, Copy)]
+pub enum DeviceResource {
+    Memory {
+        base: u64,
+        size: u64,
+        prefetchable: bool,
+    },
+    Io {
+        base: u64,
+        size: u64,
+    },
 }
 
 /// Core driver trait used by the kernel driver manager

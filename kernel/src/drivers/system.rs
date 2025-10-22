@@ -15,7 +15,7 @@ use crate::{log_debug, log_info, log_trace, log_warn};
 use super::manager::driver_manager;
 use super::pci;
 use super::serial;
-use super::traits::{Device, DeviceClass, DeviceId};
+use super::traits::{Device, DeviceClass, DeviceId, DeviceResource};
 use crate::monitor;
 
 /// Result type for driver system operations
@@ -132,6 +132,38 @@ pub fn init() -> DriverResult<PlatformInfo> {
         });
         device.class = class;
 
+        for bar in info.bars.iter() {
+            match bar {
+                pci::PciBar::Memory32 {
+                    base,
+                    size,
+                    prefetchable,
+                }
+                | pci::PciBar::Memory64 {
+                    base,
+                    size,
+                    prefetchable,
+                } => {
+                    if *size > 0 {
+                        device.resources.push(DeviceResource::Memory {
+                            base: *base,
+                            size: *size,
+                            prefetchable: *prefetchable,
+                        });
+                    }
+                }
+                pci::PciBar::Io { base, size } => {
+                    if *size > 0 {
+                        device.resources.push(DeviceResource::Io {
+                            base: *base,
+                            size: *size,
+                        });
+                    }
+                }
+                pci::PciBar::None => {}
+            }
+        }
+
         if let Some(bar) = info.first_memory_bar() {
             if let Some(base) = bar.memory_base() {
                 device.phys_addr = Some(base);
@@ -143,7 +175,7 @@ pub fn init() -> DriverResult<PlatformInfo> {
         }
 
         let log_msg = format!(
-            "PCI {:04x}:{:02x}:{:02x}.{} vendor={:04x} device={:04x} class={:02x}{:02x}{:02x} -> {:?} irq={:?} phys={:?} msi={} msix={}",
+            "PCI {:04x}:{:02x}:{:02x}.{} vendor={:04x} device={:04x} class={:02x}{:02x}{:02x} -> {:?} irq={:?} msi={} msix={}",
             info.segment,
             info.bus,
             info.device,
@@ -155,7 +187,6 @@ pub fn init() -> DriverResult<PlatformInfo> {
             info.prog_if,
             device.class,
             device.irq,
-            device.phys_addr,
             info.capabilities.msi,
             info.capabilities.msix
         );
