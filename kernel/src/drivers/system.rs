@@ -144,7 +144,7 @@ pub fn init() -> DriverResult<PlatformInfo> {
         }
 
         let log_msg = format!(
-            "PCI {:04x}:{:02x}:{:02x}.{} vendor={:04x} device={:04x} class={:02x}{:02x}{:02x} -> {:?} irq={:?} msi={} msix={}",
+            "PCI {:04x}:{:02x}:{:02x}.{} vendor={:04x} device={:04x} class={:02x}{:02x}{:02x} -> {:?} irq={:?} phys={:?} msi={} msix={}",
             info.segment,
             info.bus,
             info.device,
@@ -156,6 +156,7 @@ pub fn init() -> DriverResult<PlatformInfo> {
             info.prog_if,
             device.class,
             device.irq,
+            device.phys_addr,
             info.capabilities.msi,
             info.capabilities.msix
         );
