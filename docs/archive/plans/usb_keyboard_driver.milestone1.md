@@ -5,14 +5,14 @@ Milestone 1 establishes a clean PCI discovery layer that future USB work can bui
 ## Completed Deliverables
 - **Pure ECAM access**: `kernel/src/acpi/mod.rs:314` parses the MCFG table, maps each ECAM window uncached, and exposes the regions through `PlatformInfo::pci_config_regions`, eliminating the legacy 0xCF8/0xCFC path.
 - **Bridge-aware enumeration**: `kernel/src/drivers/pci.rs:110` performs a depth-first walk of the PCI hierarchy via secondary/subordinate bus numbers, logging bridges at trace level and emitting every reachable function exactly once. Bridge metadata is cached on `PlatformInfo::pci_bridges` for later diagnostics.
-- **Bridge bring-up**: `kernel/src/drivers/pci.rs:270` enables I/O/MEM/bus-mastering on each bridge, assigns fresh secondary bus numbers, pulses secondary reset, and now programs memory/prefetch windows to match the exact range consumed by the downstream devices.
+- **Bridge bring-up**: `kernel/src/drivers/pci.rs:270` enables I/O/MEM/bus-mastering on each bridge, assigns fresh secondary bus numbers, pulses secondary reset, and now programs I/O/memory/prefetch windows to match the exact range consumed by the downstream devices.
 - **Driver-manager integration**: `kernel/src/drivers/system.rs:96` consumes the enumerator, classifies functions (USB/storage/network), skips bridges, and registers actionable devices with the driver manager so upcoming USB code can bind cleanly.
 - **BAR/IRQ metadata + capabilities**: BAR decoding captures the first MMIO BAR and any assigned interrupt line, and `PciDeviceInfo` now records MSI/MSI-X capability bits for future interrupt routing work.
 - **BAR relocation + bridge windows**: During enumeration every non-bridge function now receives a freshly allocated BAR aperture (IO, MEM, prefetchable MEM) with decode temporarily disabled to avoid device side effects. Bridge windows (I/O, MEM, prefetch) are then programmed to cover the exact span of their children, so we no longer rely on fixed 16 MiB placeholders.
 - **DMA buffer helper**: `kernel/src/memory/dma.rs:1` wraps the contiguous allocator to provide aligned, zeroed, kernel-mapped buffers suitable for xHCI command/event rings or other DMA-heavy peripherals.
 
 ## Outstanding Tasks
-1. **Bridge diagnostics**: Surface the new bridge window assignments (IO/MEM/prefetch) through the monitor tooling so we can audit allocations without digging into raw logs.
+1. **Expose resource handles to drivers**: Thread the computed bridge/device apertures into a queryable API so future drivers (xHCI, AHCI, NVMe) can request their assigned window without re-decoding BARs.
 2. **Class-to-driver mapping**: Extend the classifier to cover more subclasses (AHCI, NVMe, USB companion controllers) and wire those classes into future drivers.
 3. **Interrupt model upgrade**: Add MSI/MSI-X capability enablement; the current IO-APIC routing works but is not ideal for a high-throughput xHCI driver.
 4. **Diagnostics tooling**: Expand the new `devices` monitor output (already shows bridges) into a full PCI topology dump, including BAR sizes and capability lists.

@@ -4,7 +4,7 @@
 //! by the ACPI MCFG table. It assumes the boot environment has exposed those
 //! regions via `PlatformInfo::pci_config_regions`.
 
-use crate::acpi::{PciBridgeInfo, PciConfigRegion};
+use crate::acpi::{BridgeWindow, PciBridgeInfo, PciConfigRegion};
 use crate::{log_debug, log_trace, log_warn};
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
@@ -133,6 +133,13 @@ impl ResourceSummary {
             self.include_mem(range.start, range.size(), true);
         }
     }
+}
+
+fn bridge_window(range: Option<ResourceRange>) -> Option<BridgeWindow> {
+    range.map(|r| BridgeWindow {
+        base: r.start,
+        limit: r.end,
+    })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -648,6 +655,9 @@ fn configure_bridge(
     }
 
     program_bridge_windows(function_base, &child_scan.resources);
+    let io_window = bridge_window(child_scan.resources.io);
+    let mem_window = bridge_window(child_scan.resources.mem);
+    let pref_window = bridge_window(child_scan.resources.pref_mem);
     log_debug!(
         "PCI bridge {:04x}:{:02x}:{:02x}.{} windows: io={:?} mem={:?} pref_mem={:?}",
         info.segment,
@@ -669,6 +679,9 @@ fn configure_bridge(
         vendor_id: info.vendor_id,
         device_id: info.device_id,
         max_child_bus: child_scan.max_bus,
+        io_window,
+        mem_window,
+        pref_mem_window: pref_window,
     });
 
     FunctionScan {

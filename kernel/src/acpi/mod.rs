@@ -235,6 +235,13 @@ pub struct PciConfigRegion {
     pub bus_end: u8,
 }
 
+/// Range assigned to a PCI bridge window.
+#[derive(Debug, Clone, Copy)]
+pub struct BridgeWindow {
+    pub base: u64,
+    pub limit: u64,
+}
+
 /// Summary about a discovered PCI bridge.
 #[derive(Debug, Clone)]
 pub struct PciBridgeInfo {
@@ -247,6 +254,9 @@ pub struct PciBridgeInfo {
     pub vendor_id: u16,
     pub device_id: u16,
     pub max_child_bus: u8,
+    pub io_window: Option<BridgeWindow>,
+    pub mem_window: Option<BridgeWindow>,
+    pub pref_mem_window: Option<BridgeWindow>,
 }
 
 static PLATFORM_INFO_CACHE: Mutex<Option<PlatformInfo>> = Mutex::new(None);

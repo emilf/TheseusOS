@@ -5,7 +5,7 @@
 use crate::acpi;
 use crate::drivers::manager::driver_manager;
 use crate::monitor::Monitor;
-use alloc::format;
+use alloc::{format, string::String};
 
 impl Monitor {
     /// List all registered devices
@@ -66,18 +66,31 @@ impl Monitor {
             if !info.pci_bridges.is_empty() {
                 self.writeln("\nPCI bridges:");
                 for bridge in info.pci_bridges.iter() {
+                    let io = format_bridge_window(&bridge.io_window);
+                    let mem = format_bridge_window(&bridge.mem_window);
+                    let pref = format_bridge_window(&bridge.pref_mem_window);
                     self.writeln(&format!(
-                        "  {:04x}:{:02x}:{:02x}.{} -> secondary {:02x}, subordinate {:02x}, max_child {:02x}",
+                        "  {:04x}:{:02x}:{:02x}.{} -> secondary {:02x}, subordinate {:02x}, max_child {:02x} | io:{} mem:{} pref:{}",
                         bridge.segment,
                         bridge.bus,
                         bridge.device,
                         bridge.function,
                         bridge.secondary_bus,
                         bridge.subordinate_bus,
-                        bridge.max_child_bus
+                        bridge.max_child_bus,
+                        io,
+                        mem,
+                        pref
                     ));
                 }
             }
         }
+    }
+}
+
+fn format_bridge_window(window: &Option<acpi::BridgeWindow>) -> String {
+    match window {
+        Some(w) => format!("0x{:016x}-0x{:016x}", w.base, w.limit),
+        None => "none".into(),
     }
 }
