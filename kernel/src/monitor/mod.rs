@@ -50,15 +50,18 @@
 mod commands;
 mod parsing;
 
+use alloc::collections::VecDeque;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
+use spin::Mutex;
+use x86_64::instructions::interrupts;
+
 use crate::config;
 use crate::drivers::manager::driver_manager;
 use crate::drivers::serial;
 use crate::drivers::traits::DeviceClass;
-use alloc::format;
-use alloc::string::String;
-use alloc::vec::Vec;
-use spin::Mutex;
-use x86_64::instructions::interrupts;
 
 use crate::log_debug;
 
@@ -70,6 +73,8 @@ const MAX_LINE: usize = 128;
 
 /// Shared monitor instance guarded by a spin mutex.
 static MONITOR: Mutex<Option<Monitor>> = Mutex::new(None);
+static SERIAL_INPUT_QUEUE: Mutex<VecDeque<u8>> = Mutex::new(VecDeque::new());
+static SERIAL_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Prepare the monitor subsystem
 ///
@@ -122,18 +127,57 @@ pub fn push_serial_byte(byte: u8) {
         return;
     }
 
+    {
+        let mut queue = SERIAL_INPUT_QUEUE.lock();
+        queue.push_back(byte);
+    }
+    SERIAL_PENDING.store(true, Ordering::Release);
+}
+
+pub fn process_pending_serial() {
+    if !config::ENABLE_KERNEL_MONITOR {
+        return;
+    }
+    if !SERIAL_PENDING.swap(false, Ordering::AcqRel) {
+        return;
+    }
+
+    let drained = {
+        let mut queue = SERIAL_INPUT_QUEUE.lock();
+        let mut items = Vec::with_capacity(queue.len());
+        while let Some(byte) = queue.pop_front() {
+            items.push(byte);
+        }
+        items
+    };
+
+    if drained.is_empty() {
+        return;
+    }
+
+    with_monitor(move |monitor| {
+        for byte in drained {
+            monitor.handle_char(byte);
+        }
+    });
+}
+
+fn with_monitor<F>(f: F)
+where
+    F: FnOnce(&mut Monitor),
+{
     let _guard = InterruptGuard::new();
 
-    let mut guard = MONITOR.lock();
-    if guard.is_none() {
+    let mut monitor_guard = MONITOR.lock();
+    if monitor_guard.is_none() {
         let mut monitor = Monitor::new();
         monitor.activate();
-        *guard = Some(monitor);
+        *monitor_guard = Some(monitor);
         log_debug!("Monitor interactive console ready");
     }
 
-    if let Some(monitor) = guard.as_mut() {
-        monitor.handle_char(byte);
+    if let Some(monitor) = monitor_guard.as_mut() {
+        f(monitor);
     }
 }
 
@@ -173,6 +217,7 @@ impl Drop for InterruptGuard {
 pub fn start_monitor() -> ! {
     init();
     loop {
+        process_pending_serial();
         x86_64::instructions::hlt();
     }
 }

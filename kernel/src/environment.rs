@@ -405,6 +405,7 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
 
         // Idle loop - the timer interrupt will handle the heart animation
         loop {
+            crate::monitor::process_pending_serial();
             // Use halt instruction to reduce CPU usage while waiting for interrupts
             x86_64::instructions::hlt();
         }
