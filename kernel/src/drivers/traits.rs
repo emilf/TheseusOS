@@ -196,6 +196,50 @@ impl Device {
         }
     }
 
+    /// Immutable access to the device resource list.
+    pub fn resources(&self) -> &[DeviceResource] {
+        &self.resources
+    }
+
+    /// Mutable access to the device resource list.
+    pub fn resources_mut(&mut self) -> &mut Vec<DeviceResource> {
+        &mut self.resources
+    }
+
+    /// Iterator over all memory resources, optionally filtering by the prefetchable flag.
+    pub fn memory_resources(
+        &self,
+        prefetchable: Option<bool>,
+    ) -> impl Iterator<Item = &DeviceResource> {
+        self.resources
+            .iter()
+            .filter(move |res| match (res, prefetchable) {
+                (
+                    DeviceResource::Memory {
+                        prefetchable: flag, ..
+                    },
+                    Some(expected),
+                ) => *flag == expected,
+                (DeviceResource::Memory { .. }, None) => true,
+                _ => false,
+            })
+    }
+
+    /// Iterator over all port-based I/O resources.
+    pub fn io_resources(&self) -> impl Iterator<Item = &DeviceResource> {
+        self.resources.iter().filter(|res| res.is_io())
+    }
+
+    /// Convenience helper for the first memory resource matching the `prefetchable` flag (or any if `None`).
+    pub fn first_memory_resource(&self, prefetchable: Option<bool>) -> Option<&DeviceResource> {
+        self.memory_resources(prefetchable).next()
+    }
+
+    /// Convenience helper for the first I/O resource, if present.
+    pub fn first_io_resource(&self) -> Option<&DeviceResource> {
+        self.io_resources().next()
+    }
+
     pub fn set_driver_state<T>(&mut self, state: &T) {
         self.driver_data = Some(state as *const T as usize);
     }
@@ -221,6 +265,35 @@ pub enum DeviceResource {
         base: u64,
         size: u64,
     },
+}
+
+impl DeviceResource {
+    pub const fn base(&self) -> u64 {
+        match self {
+            DeviceResource::Memory { base, .. } | DeviceResource::Io { base, .. } => *base,
+        }
+    }
+
+    pub const fn size(&self) -> u64 {
+        match self {
+            DeviceResource::Memory { size, .. } | DeviceResource::Io { size, .. } => *size,
+        }
+    }
+
+    pub const fn prefetchable(&self) -> Option<bool> {
+        match self {
+            DeviceResource::Memory { prefetchable, .. } => Some(*prefetchable),
+            DeviceResource::Io { .. } => None,
+        }
+    }
+
+    pub const fn is_memory(&self) -> bool {
+        matches!(self, DeviceResource::Memory { .. })
+    }
+
+    pub const fn is_io(&self) -> bool {
+        matches!(self, DeviceResource::Io { .. })
+    }
 }
 
 /// Core driver trait used by the kernel driver manager

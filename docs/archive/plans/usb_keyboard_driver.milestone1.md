@@ -11,13 +11,13 @@ Milestone 1 establishes a clean PCI discovery layer that future USB work can bui
 - **BAR relocation + bridge windows**: During enumeration every non-bridge function now receives a freshly allocated BAR aperture (IO, MEM, prefetchable MEM) with decode temporarily disabled to avoid device side effects. Bridge windows (I/O, MEM, prefetch) are then programmed to cover the exact span of their children, so we no longer rely on fixed 16 MiB placeholders.
 - **Driver resource handles**: Each registered PCI device now carries a list of I/O and memory apertures (base + size + prefetch flag) so future drivers can directly map the hardware resources they need without re-decoding BARs.
 - **Monitor visibility**: The `devices` monitor command prints out these resource windows per device, along with the programmed bridge windows, making it easy to audit allocations at runtime.
+- **Driver resource helpers**: `Device` now exposes convenience helpers for querying memory and I/O apertures so upcoming drivers can claim the regions they need without re-decoding BARs.
 - **DMA buffer helper**: `kernel/src/memory/dma.rs:1` wraps the contiguous allocator to provide aligned, zeroed, kernel-mapped buffers suitable for xHCI command/event rings or other DMA-heavy peripherals.
 
 ## Outstanding Tasks
-1. **Expose resource handles to drivers**: Thread the computed bridge/device apertures into a queryable API so future drivers (xHCI, AHCI, NVMe) can request their assigned window without re-decoding BARs.
-2. **Class-to-driver mapping**: Extend the classifier to cover more subclasses (AHCI, NVMe, USB companion controllers) and wire those classes into future drivers.
-3. **Interrupt model upgrade**: Add MSI/MSI-X capability enablement; the current IO-APIC routing works but is not ideal for a high-throughput xHCI driver.
-4. **Diagnostics tooling**: Expand the new `devices` monitor output (already shows bridges) into a full PCI topology dump, including BAR sizes and capability lists.
+1. **Class-to-driver mapping**: Extend the classifier to cover more subclasses (AHCI, NVMe, USB companion controllers) and wire those classes into future drivers.
+2. **Interrupt model upgrade**: Add MSI/MSI-X capability enablement; the current IO-APIC routing works but is not ideal for a high-throughput xHCI driver.
+3. **Diagnostics tooling**: Expand the new `devices` monitor output (already shows bridges) into a full PCI topology dump, including BAR sizes and capability lists.
 
 ## Testing & Verification
 - Sandbox runs reach the `=== Kernel environment setup complete ===` marker; serial/monitor pipes are intentionally disabled, so the harness exits immediately afterwards.
