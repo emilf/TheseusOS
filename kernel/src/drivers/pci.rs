@@ -1,8 +1,52 @@
 //! PCI Express enhanced configuration access (ECAM) support.
 //!
-//! This module reads PCIe configuration space using the MMIO windows described
-//! by the ACPI MCFG table. It assumes the boot environment has exposed those
-//! regions via `PlatformInfo::pci_config_regions`.
+//! This module provides comprehensive PCI/PCIe device enumeration and configuration
+//! using the Enhanced Configuration Access Mechanism (ECAM). It reads PCIe configuration
+//! space using the MMIO windows described by the ACPI MCFG table.
+//!
+//! ## Key Features
+//!
+//! - **Device Enumeration**: Scans all PCI buses and discovers all functions
+//! - **Bridge Handling**: Automatically configures PCI bridges and discovers downstream devices
+//! - **BAR Parsing**: Reads and decodes Base Address Registers (BARs) for memory/I/O resources
+//! - **Capability Discovery**: Parses PCI capabilities like MSI/MSI-X
+//! - **MSI Support**: Configures Message Signaled Interrupts for devices
+//!
+//! ## Architecture Overview
+//!
+//! The PCI subsystem follows this flow:
+//! 1. **ACPI Discovery**: MCFG table provides ECAM regions
+//! 2. **Bus Scanning**: Recursively scan buses starting from bus 0
+//! 3. **Device Discovery**: Read configuration space for each function
+//! 4. **Bridge Configuration**: Set up secondary/subordinate buses for bridges
+//! 5. **Resource Parsing**: Decode BARs and capabilities
+//! 6. **Device Registration**: Create device descriptors for the driver framework
+//!
+//! ## ECAM Addressing
+//!
+//! PCIe uses a flat address space where each function has a 4KB configuration space:
+//! - Bus stride: 1MB (0x1_0000)
+//! - Device stride: 32KB (0x8000)  
+//! - Function stride: 4KB (0x1000)
+//!
+//! Address = ECAM_base + (bus * 1MB) + (device * 32KB) + (function * 4KB)
+//!
+//! ## Example Usage
+//!
+//! ```rust,no_run
+//! // Enumerate all PCI devices
+//! let topology = pci::enumerate(&platform_info.pci_config_regions);
+//! 
+//! // Find a specific device
+//! for device in topology.functions.iter() {
+//!     if device.vendor_id == 0x8086 && device.device_id == 0x1234 {
+//!         // Found our device
+//!     }
+//! }
+//! 
+//! // Enable MSI for a device
+//! pci::enable_msi(&device, &regions, apic_id, vector)?;
+//! ```
 
 use crate::acpi::{PciBridgeInfo, PciConfigRegion};
 use crate::{log_debug, log_trace, log_warn};
@@ -10,35 +54,73 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::fmt;
 
-const MAX_DEVICE: u8 = 31;
-const MAX_FUNCTION: u8 = 7;
+// PCI configuration space constants
+const MAX_DEVICE: u8 = 31;    // Maximum device number (0-31)
+const MAX_FUNCTION: u8 = 7;   // Maximum function number (0-7)
 
-const BUS_STRIDE: u64 = 0x1_0000; // 1 MiB per bus
-const DEVICE_STRIDE: u64 = 0x8000; // 32 KiB per device
+// ECAM addressing constants (PCIe specification)
+const BUS_STRIDE: u64 = 0x1_0000;     // 1 MiB per bus
+const DEVICE_STRIDE: u64 = 0x8000;    // 32 KiB per device  
 const FUNCTION_STRIDE: u64 = 0x1000; // 4 KiB per function
-const MSI_ADDR_BASE: u32 = 0xFEE0_0000;
+
+// MSI configuration constants
+const MSI_ADDR_BASE: u32 = 0xFEE0_0000; // MSI message address base
 
 /// Decoded Base Address Register (BAR) entry.
+///
+/// PCI devices use BARs to declare their memory and I/O resource requirements.
+/// This enum represents the different types of BARs that can be found in a
+/// PCI device's configuration space.
+///
+/// # BAR Types
+///
+/// - **Memory32**: 32-bit memory space BAR (up to 4GB)
+/// - **Memory64**: 64-bit memory space BAR (up to 16EB) 
+/// - **Io**: I/O space BAR (up to 64KB)
+/// - **None**: Unused or invalid BAR
+///
+/// # Prefetchable Memory
+///
+/// Memory BARs can be marked as prefetchable, which means the device can
+/// safely prefetch data from the memory region. This allows for optimizations
+/// like write-combining and read-ahead.
 #[derive(Clone, Copy, Debug)]
 pub enum PciBar {
+    /// Unused or invalid BAR
     None,
+    /// 32-bit memory space BAR
     Memory32 {
+        /// Base address of the memory region
         base: u64,
+        /// Size of the memory region in bytes
         size: u64,
+        /// Whether this memory region is prefetchable
         prefetchable: bool,
     },
+    /// 64-bit memory space BAR (uses two consecutive BAR slots)
     Memory64 {
+        /// Base address of the memory region
         base: u64,
+        /// Size of the memory region in bytes
         size: u64,
+        /// Whether this memory region is prefetchable
         prefetchable: bool,
     },
+    /// I/O space BAR
     Io {
+        /// Base I/O port address
         base: u64,
+        /// Size of the I/O region in bytes
         size: u64,
     },
 }
 
 impl PciBar {
+    /// Get the base address if this is a memory BAR.
+    ///
+    /// # Returns
+    /// * `Some(u64)` - Base address for memory BARs
+    /// * `None` - For I/O BARs or unused BARs
     pub fn memory_base(&self) -> Option<u64> {
         match self {
             PciBar::Memory32 { base, .. } | PciBar::Memory64 { base, .. } => Some(*base),
@@ -46,6 +128,11 @@ impl PciBar {
         }
     }
 
+    /// Get the size of the BAR region.
+    ///
+    /// # Returns
+    /// * `Some(u64)` - Size in bytes for valid BARs
+    /// * `None` - For unused BARs
     pub fn size(&self) -> Option<u64> {
         match self {
             PciBar::Memory32 { size, .. }
@@ -57,45 +144,114 @@ impl PciBar {
 }
 
 /// Capabilities advertised by a PCI function.
+///
+/// PCI devices can advertise various capabilities through a linked list
+/// structure in their configuration space. This struct tracks the most
+/// commonly used capabilities for interrupt handling.
+///
+/// # Capabilities Tracked
+///
+/// - **MSI**: Message Signaled Interrupts (legacy)
+/// - **MSI-X**: Extended Message Signaled Interrupts (preferred)
+/// - **Pointers**: Offset into configuration space where capability is located
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PciCapabilities {
+    /// Whether the device supports MSI
     pub msi: bool,
+    /// Whether the device supports MSI-X
     pub msix: bool,
+    /// Offset to MSI capability structure (if present)
     pub msi_pointer: Option<u8>,
+    /// Offset to MSI-X capability structure (if present)
     pub msix_pointer: Option<u8>,
 }
 
 /// Summary of a discovered PCI function.
+///
+/// This structure contains all the essential information about a PCI device
+/// function that was discovered during enumeration. It includes identification
+/// information, resource requirements, and capabilities.
+///
+/// # Device Identification
+///
+/// Each PCI function is uniquely identified by its segment, bus, device, and
+/// function numbers. The vendor ID and device ID provide hardware identification.
+///
+/// # Resource Information
+///
+/// The BARs array contains up to 6 Base Address Registers that describe the
+/// device's memory and I/O resource requirements. The interrupt line and pin
+/// provide legacy interrupt routing information.
+///
+/// # Capabilities
+///
+/// The capabilities field indicates which advanced features the device supports,
+/// particularly for interrupt handling (MSI/MSI-X).
 #[derive(Clone, Copy)]
 pub struct PciDeviceInfo {
+    /// PCI segment number (for multi-segment systems)
     pub segment: u16,
+    /// PCI bus number
     pub bus: u8,
+    /// PCI device number (0-31)
     pub device: u8,
+    /// PCI function number (0-7)
     pub function: u8,
+    /// Vendor ID (assigned by PCI SIG)
     pub vendor_id: u16,
+    /// Device ID (assigned by vendor)
     pub device_id: u16,
+    /// Device class code (high byte)
     pub class_code: u8,
+    /// Device subclass code (middle byte)
     pub subclass: u8,
+    /// Programming interface (low byte)
     pub prog_if: u8,
+    /// Device revision ID
     pub revision_id: u8,
+    /// Header type (0=standard, 1=bridge, 2=cardbus)
     pub header_type: u8,
+    /// Command register value
     pub command: u16,
+    /// Status register value
     pub status: u16,
+    /// Base Address Registers (up to 6)
     pub bars: [PciBar; 6],
+    /// Legacy interrupt line assignment
     pub interrupt_line: u8,
+    /// Legacy interrupt pin assignment
     pub interrupt_pin: u8,
+    /// Device capabilities
     pub capabilities: PciCapabilities,
 }
 
 impl PciDeviceInfo {
+    /// Check if this device has multiple functions.
+    ///
+    /// PCI devices can have multiple functions (0-7). If bit 7 of the header
+    /// type is set, the device has multiple functions and we need to scan
+    /// all function numbers.
+    ///
+    /// # Returns
+    /// * `true` - Device has multiple functions
+    /// * `false` - Device has only function 0
     pub fn is_multi_function(&self) -> bool {
         self.header_type & 0x80 != 0
     }
 
+    /// Get the device class as a tuple.
+    ///
+    /// # Returns
+    /// A tuple of (class_code, subclass, prog_if) for easy matching
     pub fn class_triplet(&self) -> (u8, u8, u8) {
         (self.class_code, self.subclass, self.prog_if)
     }
 
+    /// Get the interrupt line if valid.
+    ///
+    /// # Returns
+    /// * `Some(u8)` - Valid interrupt line (0-15)
+    /// * `None` - No interrupt line assigned (0xFF)
     pub fn interrupt_line(&self) -> Option<u8> {
         match self.interrupt_line {
             0xFF => None,
@@ -103,6 +259,14 @@ impl PciDeviceInfo {
         }
     }
 
+    /// Get the first memory BAR from the device.
+    ///
+    /// This is a convenience method to find the first memory-mapped BAR,
+    /// which is often the primary MMIO region for the device.
+    ///
+    /// # Returns
+    /// * `Some(PciBar)` - First memory BAR found
+    /// * `None` - No memory BARs present
     pub fn first_memory_bar(&self) -> Option<PciBar> {
         self.bars
             .iter()
@@ -110,6 +274,11 @@ impl PciDeviceInfo {
             .find(|bar| matches!(bar, PciBar::Memory32 { .. } | PciBar::Memory64 { .. }))
     }
 
+    /// Get the MSI capability pointer if present.
+    ///
+    /// # Returns
+    /// * `Some(u8)` - Offset to MSI capability structure
+    /// * `None` - MSI not supported
     pub fn msi_capability(&self) -> Option<u8> {
         self.capabilities.msi_pointer
     }
@@ -143,17 +312,48 @@ impl fmt::Debug for PciDeviceInfo {
     }
 }
 
+/// PCI topology information discovered during enumeration.
+///
+/// This structure contains the complete PCI topology discovered during
+/// enumeration, including all functions and bridges found in the system.
 pub struct PciTopology {
+    /// All discovered PCI functions
     pub functions: Vec<PciDeviceInfo>,
+    /// All discovered PCI bridges
     pub bridges: Vec<PciBridgeInfo>,
 }
 
 /// Enumerate all PCI functions accessible via the provided ECAM regions.
+///
+/// This is the main entry point for PCI device discovery. It scans all
+/// ECAM regions provided by the ACPI MCFG table and discovers all PCI
+/// devices, bridges, and functions in the system.
+///
+/// # Arguments
+/// * `regions` - Array of ECAM regions from ACPI MCFG table
+///
+/// # Returns
+/// * `PciTopology` - Complete topology including all devices and bridges
+///
+/// # Algorithm
+/// 1. For each ECAM region, start scanning from the base bus
+/// 2. Recursively scan buses, handling PCI bridges
+/// 3. For each device, read configuration space and decode BARs
+/// 4. Parse capabilities and build device information
+/// 5. Return complete topology
+///
+/// # Bridge Handling
+/// The function automatically configures PCI bridges by:
+/// - Setting up secondary and subordinate bus numbers
+/// - Enabling I/O, memory, and bus master capabilities
+/// - Performing secondary bus reset to re-enumerate devices
+/// - Recursively scanning downstream buses
 pub fn enumerate(regions: &[PciConfigRegion]) -> PciTopology {
     let mut devices = Vec::new();
     let mut bridges = Vec::new();
     let mut visited_buses: BTreeSet<(u16, u8)> = BTreeSet::new();
 
+    // Scan each ECAM region
     for region in regions {
         let mut next_bus = region.bus_start.saturating_add(1);
         scan_bus(
@@ -609,19 +809,53 @@ fn parse_capabilities(function_base: u64, header_type: u8, status: u16) -> PciCa
 
 /// Enable MSI for the given device using the supplied APIC destination ID and vector.
 ///
-/// The caller must ensure an interrupt vector is reserved and that any legacy
-/// interrupt routing (IOAPIC) is masked prior to calling this function.
+/// This function configures a PCI device to use Message Signaled Interrupts (MSI)
+/// instead of legacy interrupt routing. MSI provides better performance and
+/// scalability compared to legacy interrupts.
+///
+/// # Arguments
+/// * `device` - PCI device information (must have MSI capability)
+/// * `regions` - ECAM regions for accessing device configuration space
+/// * `apic_id` - Destination APIC ID for the interrupt
+/// * `vector` - Interrupt vector number (0-255)
+///
+/// # Returns
+/// * `Ok(())` - MSI successfully enabled
+/// * `Err(&'static str)` - Error message if MSI setup failed
+///
+/// # Prerequisites
+/// The caller must ensure:
+/// - An interrupt vector is reserved in the system
+/// - Any legacy interrupt routing (IOAPIC) is masked
+/// - The device supports MSI (check `device.capabilities.msi`)
+///
+/// # MSI Configuration
+/// This function programs the MSI capability structure with:
+/// - Message address: APIC base + (apic_id << 12)
+/// - Message data: Interrupt vector
+/// - Control register: MSI enabled, single vector
+///
+/// # Example
+/// ```rust,no_run
+/// // Check if device supports MSI
+/// if device.capabilities.msi {
+///     // Enable MSI with vector 32 for APIC 0
+///     pci::enable_msi(&device, &regions, 0, 32)?;
+/// }
+/// ```
 pub fn enable_msi(
     device: &PciDeviceInfo,
     regions: &[PciConfigRegion],
     apic_id: u8,
     vector: u8,
 ) -> Result<(), &'static str> {
+    // Find the MSI capability pointer
     let cap_ptr = device
         .capabilities
         .msi_pointer
         .ok_or("MSI capability not present")?;
 
+    // Find the ECAM region for this device
     let mut config_base = None;
     for region in regions {
         if region.segment != device.segment {
@@ -638,42 +872,72 @@ pub fn enable_msi(
 
     let base = config_base.ok_or("PCI function configuration space not accessible")?;
 
+    // Read MSI control register to determine capabilities
     let control_offset = cap_ptr + 2;
     let mut control = config_read_u16(base, control_offset);
     let is_64bit = (control & (1 << 7)) != 0;
     let per_vector_mask = (control & (1 << 8)) != 0;
 
-    // Program the message address/data for a single vector.
-    control &= !0x000E; // clear multi-message bits
+    // Program MSI for a single vector
+    control &= !0x000E; // Clear multi-message bits (single vector)
     let msg_addr = MSI_ADDR_BASE | ((apic_id as u32) << 12);
     let msg_data = vector as u16;
 
+    // Write message address
     config_write_u32(base, cap_ptr + 4, msg_addr);
     let mut data_offset = cap_ptr + 8;
+    
+    // Handle 64-bit address capability
     if is_64bit {
-        config_write_u32(base, cap_ptr + 8, 0);
+        config_write_u32(base, cap_ptr + 8, 0); // Upper address bits
         data_offset = cap_ptr + 12;
     }
+    
+    // Write message data (interrupt vector)
     config_write_u16(base, data_offset, msg_data);
     let mut next_offset = data_offset + 2;
 
+    // Handle per-vector masking if supported
     if per_vector_mask {
         config_write_u32(base, next_offset, 0); // mask bits
         next_offset += 4;
         config_write_u32(base, next_offset, 0); // pending bits
     }
 
-    control |= 0x0001; // MSI enable
+    // Enable MSI
+    control |= 0x0001; // MSI enable bit
     config_write_u16(base, control_offset, control);
 
     Ok(())
 }
 
+// Configuration space access functions
+// These functions provide safe access to PCI configuration space through ECAM
+
+/// Read a 32-bit value from PCI configuration space.
+///
+/// # Arguments
+/// * `function_base` - Base address of the function's configuration space
+/// * `offset` - Byte offset within the configuration space
+///
+/// # Returns
+/// The 32-bit value read from configuration space
 fn config_read_u32(function_base: u64, offset: u8) -> u32 {
     let addr = function_base + offset as u64;
     unsafe { core::ptr::read_volatile(addr as *const u32) }
 }
 
+/// Read a 16-bit value from PCI configuration space.
+///
+/// This function handles unaligned 16-bit reads by reading the containing
+/// 32-bit value and extracting the appropriate 16-bit field.
+///
+/// # Arguments
+/// * `function_base` - Base address of the function's configuration space
+/// * `offset` - Byte offset within the configuration space
+///
+/// # Returns
+/// The 16-bit value read from configuration space
 fn config_read_u16(function_base: u64, offset: u8) -> u16 {
     let aligned = offset & !0x3;
     let value = config_read_u32(function_base, aligned);
@@ -681,6 +945,17 @@ fn config_read_u16(function_base: u64, offset: u8) -> u16 {
     ((value >> shift) & 0xFFFF) as u16
 }
 
+/// Read an 8-bit value from PCI configuration space.
+///
+/// This function handles unaligned 8-bit reads by reading the containing
+/// 32-bit value and extracting the appropriate 8-bit field.
+///
+/// # Arguments
+/// * `function_base` - Base address of the function's configuration space
+/// * `offset` - Byte offset within the configuration space
+///
+/// # Returns
+/// The 8-bit value read from configuration space
 fn config_read_u8(function_base: u64, offset: u8) -> u8 {
     let aligned = offset & !0x3;
     let value = config_read_u32(function_base, aligned);
@@ -688,16 +963,34 @@ fn config_read_u8(function_base: u64, offset: u8) -> u8 {
     ((value >> shift) & 0xFF) as u8
 }
 
+/// Write a 32-bit value to PCI configuration space.
+///
+/// # Arguments
+/// * `function_base` - Base address of the function's configuration space
+/// * `offset` - Byte offset within the configuration space
+/// * `value` - 32-bit value to write
 fn config_write_u32(function_base: u64, offset: u8, value: u32) {
     let addr = function_base + offset as u64;
     unsafe { core::ptr::write_volatile(addr as *mut u32, value) };
 }
 
+/// Write a 16-bit value to PCI configuration space.
+///
+/// # Arguments
+/// * `function_base` - Base address of the function's configuration space
+/// * `offset` - Byte offset within the configuration space
+/// * `value` - 16-bit value to write
 fn config_write_u16(function_base: u64, offset: u8, value: u16) {
     let addr = function_base + offset as u64;
     unsafe { core::ptr::write_volatile(addr as *mut u16, value) };
 }
 
+/// Write an 8-bit value to PCI configuration space.
+///
+/// # Arguments
+/// * `function_base` - Base address of the function's configuration space
+/// * `offset` - Byte offset within the configuration space
+/// * `value` - 8-bit value to write
 fn config_write_u8(function_base: u64, offset: u8, value: u8) {
     let addr = function_base + offset as u64;
     unsafe { core::ptr::write_volatile(addr as *mut u8, value) };

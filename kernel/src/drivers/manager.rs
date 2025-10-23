@@ -111,18 +111,34 @@ impl DriverManager {
         }
     }
 
-    /// Register a driver with the system. If `on_register` returns true, probe
-    /// the driver immediately against existing devices.
+    /// Register a driver with the system.
+    ///
+    /// This method adds a driver to the driver registry and optionally
+    /// triggers immediate probing against existing devices. The driver's
+    /// `on_register()` method is called to determine the registration behavior.
+    ///
+    /// # Arguments
+    /// * `drv` - Driver to register (must have static lifetime)
+    ///
+    /// # Behavior
+    /// - If `on_register()` returns `Ok(true)`: Driver is added and probed immediately
+    /// - If `on_register()` returns `Ok(false)`: Driver is added but not probed yet
+    /// - If `on_register()` returns `Err()`: Driver registration fails
+    ///
+    /// # Thread Safety
+    /// This method must be called while holding the driver manager lock.
     pub fn register_driver(&mut self, drv: &'static dyn Driver) {
         match drv.on_register() {
             Ok(true) => {
                 log_debug!("Registering driver");
                 self.drivers.push(drv);
+                // Probe immediately against existing devices
                 self.probe_pending_devices();
             }
             Ok(false) => {
                 log_debug!("Driver registered (deferred)");
                 self.drivers.push(drv);
+                // Driver will be probed when new devices are added
             }
             Err(e) => {
                 log_error!("Driver registration failed: {}", e);
@@ -130,34 +146,85 @@ impl DriverManager {
         }
     }
 
-    /// Add a discovered device and run probe logic
+    /// Add a discovered device and run probe logic.
+    ///
+    /// This method adds a new device to the device registry and attempts
+    /// to bind it to a compatible driver. If a device with the same ID
+    /// already exists, the new device's information is merged into the
+    /// existing device descriptor.
+    ///
+    /// # Arguments
+    /// * `device` - Device descriptor to add
+    ///
+    /// # Behavior
+    /// 1. Check if device already exists (by ID)
+    /// 2. If exists: merge new information into existing device
+    /// 3. If new: add to device list
+    /// 4. Run probe logic to find compatible driver
+    ///
+    /// # Thread Safety
+    /// This method must be called while holding the driver manager lock.
     pub fn add_device(&mut self, device: Device) {
         log_trace!("Discovered device");
+        
+        // Check if device already exists
         if let Some(existing) = self.devices.iter_mut().find(|d| d.id == device.id) {
+            // Merge new device information into existing device
             existing.merge_from(&device);
             return;
         }
+        
+        // Add new device to the registry
         self.devices.push(device);
+        
+        // Attempt to bind the device to a driver
         self.probe_pending_devices();
     }
 
+    /// Probe all unbound devices against available drivers.
+    ///
+    /// This method implements the core driver binding algorithm. It iterates
+    /// through all devices that don't have a driver bound and attempts to
+    /// find a compatible driver for each one.
+    ///
+    /// # Algorithm
+    /// 1. For each unbound device:
+    /// 2.   For each registered driver:
+    /// 3.     If driver supports device class:
+    /// 4.       Call driver.probe(device)
+    /// 5.       If probe succeeds:
+    /// 6.         Call driver.init(device)
+    /// 7.         Mark device as bound
+    /// 8.         Stop trying other drivers (first-match wins)
+    ///
+    /// # Thread Safety
+    /// This method must be called while holding the driver manager lock.
     fn probe_pending_devices(&mut self) {
+        // Iterate through all devices
         for dev in self.devices.iter_mut() {
+            // Skip devices that already have a driver bound
             if dev.driver_data.is_some() {
                 continue;
             }
+            
+            // Try each registered driver
             for drv in self.drivers.iter() {
+                // Check if driver supports this device class
                 if !drv.supports_class(dev.class) {
                     continue;
                 }
+                
+                // Attempt to probe the device
                 match drv.probe(dev) {
                     Ok(()) => {
+                        // Probe succeeded, initialize the device
                         if let Err(e) = drv.init(dev) {
                             log_error!("Device init failed: {}", e);
                             continue;
                         }
+                        
                         log_debug!("Device bound successfully");
-                        break;
+                        break; // Stop trying other drivers (first-match wins)
                     }
                     Err(_) => {
                         // Try next driver
@@ -167,20 +234,42 @@ impl DriverManager {
         }
     }
 
-    /// Simple IRQ dispatch helper. Returns true if handled.
+    /// Handle an interrupt request by dispatching it to the appropriate driver.
+    ///
+    /// This method implements interrupt dispatch by finding the device(s) that
+    /// are assigned the given IRQ and calling their driver's interrupt handler.
+    /// The first driver that claims to handle the interrupt stops the search.
+    ///
+    /// # Arguments
+    /// * `irq` - Interrupt request number to handle
+    ///
+    /// # Returns
+    /// * `true` - Interrupt was handled by a driver
+    /// * `false` - No driver claimed the interrupt
+    ///
+    /// # Algorithm
+    /// 1. Find all devices assigned to this IRQ
+    /// 2. For each device, try all registered drivers
+    /// 3. Call driver.irq_handler(device, irq)
+    /// 4. If handler returns true, stop searching
+    ///
+    /// # Thread Safety
+    /// This method must be called while holding the driver manager lock.
     pub fn handle_irq(&mut self, irq: u32) -> bool {
+        // Find devices assigned to this IRQ
         for dev in self.devices.iter_mut() {
             if let Some(dev_irq) = dev.irq {
                 if dev_irq == irq {
+                    // Try all registered drivers for this device
                     for drv in self.drivers.iter() {
                         if drv.irq_handler(dev, irq) {
-                            return true;
+                            return true; // Interrupt handled
                         }
                     }
                 }
             }
         }
-        false
+        false // No driver handled the interrupt
     }
 
     /// Iterate devices (debug/testing)

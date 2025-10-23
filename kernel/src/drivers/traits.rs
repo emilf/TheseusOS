@@ -296,47 +296,204 @@ impl DeviceResource {
     }
 }
 
-/// Core driver trait used by the kernel driver manager
+/// Core driver trait used by the kernel driver manager.
+///
+/// This trait defines the interface that all device drivers must implement
+/// to integrate with the kernel's driver framework. It provides a unified
+/// way to handle device discovery, initialization, and operation.
+///
+/// # Driver Lifecycle
+///
+/// 1. **Registration**: Driver registers with `on_register()`
+/// 2. **Probing**: Driver's `probe()` method is called for each compatible device
+/// 3. **Initialization**: Driver's `init()` method is called for bound devices
+/// 4. **Operation**: Driver handles I/O and interrupts via `read()`, `write()`, `irq_handler()`
+/// 5. **Removal**: Driver's `remove()` method is called when device is removed
+///
+/// # Thread Safety
+///
+/// All methods are marked as `Sync + Send` to ensure thread safety.
+/// Drivers must be prepared to handle concurrent access to their methods.
+///
+/// # Error Handling
+///
+/// Most methods return `Result<(), &'static str>` where the error string
+/// provides a human-readable description of what went wrong.
 pub trait Driver: Sync + Send {
+    /// Get the list of device classes this driver supports.
+    ///
+    /// This method is used by the driver manager to determine which devices
+    /// to probe with this driver. Only devices whose class is in this list
+    /// will be passed to the `probe()` method.
+    ///
+    /// # Returns
+    /// A static slice of device classes this driver can handle
     fn supported_classes(&self) -> &'static [DeviceClass];
 
+    /// Check if this driver supports a specific device class.
+    ///
+    /// This is a convenience method that checks if the given class is
+    /// in the driver's supported classes list.
+    ///
+    /// # Arguments
+    /// * `class` - Device class to check
+    ///
+    /// # Returns
+    /// * `true` - Driver supports this class
+    /// * `false` - Driver does not support this class
     fn supports_class(&self, class: DeviceClass) -> bool {
         self.supported_classes().contains(&class)
     }
 
-    /// Called at registration. Returning `Ok(true)` indicates the driver should
-    /// be probed immediately.
+    /// Called when the driver is registered with the driver manager.
+    ///
+    /// This method allows drivers to perform initialization tasks that
+    /// don't require a specific device. It's called once when the driver
+    /// is registered with the system.
+    ///
+    /// # Returns
+    /// * `Ok(true)` - Driver should be probed immediately against existing devices
+    /// * `Ok(false)` - Driver should be probed only when new devices are added
+    /// * `Err(&'static str)` - Driver registration failed
+    ///
+    /// # Default Implementation
+    /// Returns `Ok(true)` to enable immediate probing.
     fn on_register(&'static self) -> Result<bool, &'static str> {
         Ok(true)
     }
 
+    /// Initialize a device that has been bound to this driver.
+    ///
+    /// This method is called after a successful `probe()` to perform
+    /// device-specific initialization. The driver should:
+    /// - Set up hardware registers
+    /// - Configure interrupts
+    /// - Initialize any internal state
+    /// - Store device-specific data in `dev.driver_data`
+    ///
+    /// # Arguments
+    /// * `dev` - Device descriptor (mutable for storing driver state)
+    ///
+    /// # Returns
+    /// * `Ok(())` - Device initialized successfully
+    /// * `Err(&'static str)` - Initialization failed
+    ///
+    /// # Default Implementation
+    /// Does nothing and returns `Ok(())`.
     fn init(&'static self, _dev: &mut Device) -> Result<(), &'static str> {
         Ok(())
     }
 
-    /// Attempt to bind to a device. Returning `Ok(())` means the device is now
-    /// handled by this driver. The driver can stash state via
-    /// `dev.driver_data`.
+    /// Attempt to bind to a device.
+    ///
+    /// This method is called by the driver manager to determine if this
+    /// driver can handle a specific device. The driver should examine
+    /// the device's properties (ID, class, resources) and decide whether
+    /// it can provide support.
+    ///
+    /// If the driver accepts the device, it should store any necessary
+    /// state in `dev.driver_data` and return `Ok(())`. The device will
+    /// then be bound to this driver and `init()` will be called.
+    ///
+    /// # Arguments
+    /// * `dev` - Device descriptor to examine and potentially bind to
+    ///
+    /// # Returns
+    /// * `Ok(())` - Driver accepts this device (binding successful)
+    /// * `Err(&'static str)` - Driver cannot handle this device
+    ///
+    /// # Note
+    /// This method should be fast and not perform heavy initialization.
+    /// Use `init()` for device-specific setup.
     fn probe(&'static self, dev: &mut Device) -> Result<(), &'static str>;
 
-    /// Called when the device is removed or the driver is unloading.
+    /// Called when a device is removed or the driver is unloading.
+    ///
+    /// This method allows drivers to clean up device-specific resources
+    /// when a device is removed from the system or when the driver is
+    /// being unloaded.
+    ///
+    /// # Arguments
+    /// * `dev` - Device descriptor being removed
+    ///
+    /// # Default Implementation
+    /// Does nothing.
     fn remove(&'static self, _dev: &mut Device) {}
 
-    /// Optional IRQ handler. Return `true` when the IRQ was handled.
+    /// Handle an interrupt for a device.
+    ///
+    /// This method is called when an interrupt occurs for a device bound
+    /// to this driver. The driver should examine the device's interrupt
+    /// status and handle the interrupt appropriately.
+    ///
+    /// # Arguments
+    /// * `dev` - Device descriptor for the interrupting device
+    /// * `irq` - Interrupt request number
+    ///
+    /// # Returns
+    /// * `true` - Interrupt was handled by this driver
+    /// * `false` - Interrupt was not handled (try other drivers)
+    ///
+    /// # Default Implementation
+    /// Returns `false` (interrupt not handled).
     fn irq_handler(&'static self, _dev: &mut Device, _irq: u32) -> bool {
         false
     }
 
-    /// Optional character-device-like write path.
+    /// Write data to a device.
+    ///
+    /// This method provides a character-device-like write interface for
+    /// devices that support it (e.g., serial ports, network interfaces).
+    /// The implementation should write the data to the device and return
+    /// the number of bytes actually written.
+    ///
+    /// # Arguments
+    /// * `dev` - Device descriptor
+    /// * `buf` - Buffer containing data to write
+    ///
+    /// # Returns
+    /// * `Ok(usize)` - Number of bytes written
+    /// * `Err(&'static str)` - Write operation failed
+    ///
+    /// # Default Implementation
+    /// Returns an error indicating write is not supported.
     fn write(&'static self, _dev: &mut Device, _buf: &[u8]) -> Result<usize, &'static str> {
         Err("write not supported")
     }
 
+    /// Write a string to a device.
+    ///
+    /// This is a convenience method that converts a string to bytes
+    /// and calls the `write()` method.
+    ///
+    /// # Arguments
+    /// * `dev` - Device descriptor
+    /// * `s` - String to write
+    ///
+    /// # Returns
+    /// * `Ok(usize)` - Number of bytes written
+    /// * `Err(&'static str)` - Write operation failed
     fn write_str(&'static self, dev: &mut Device, s: &str) -> Result<usize, &'static str> {
         self.write(dev, s.as_bytes())
     }
 
-    /// Optional character-device-like read path.
+    /// Read data from a device.
+    ///
+    /// This method provides a character-device-like read interface for
+    /// devices that support it (e.g., serial ports, network interfaces).
+    /// The implementation should read data from the device into the
+    /// provided buffer and return the number of bytes actually read.
+    ///
+    /// # Arguments
+    /// * `dev` - Device descriptor
+    /// * `buf` - Buffer to read data into
+    ///
+    /// # Returns
+    /// * `Ok(usize)` - Number of bytes read
+    /// * `Err(&'static str)` - Read operation failed
+    ///
+    /// # Default Implementation
+    /// Returns an error indicating read is not supported.
     fn read(&'static self, _dev: &mut Device, _buf: &mut [u8]) -> Result<usize, &'static str> {
         Err("read not supported")
     }
