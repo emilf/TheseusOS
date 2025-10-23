@@ -219,10 +219,14 @@ pub fn init() -> DriverResult<PlatformInfo> {
 fn classify_pci_device(info: &pci::PciDeviceInfo) -> DeviceClass {
     match info.class_code {
         0x0C => match info.subclass {
-            0x03 => DeviceClass::UsbController,
+            0x03 => DeviceClass::UsbController, // USB
             _ => DeviceClass::Unknown,
         },
-        0x01 => DeviceClass::Storage,
+        0x01 => match info.subclass {
+            0x06 => DeviceClass::Storage, // SATA AHCI
+            0x08 => DeviceClass::Storage, // NVM Express
+            _ => DeviceClass::Storage,
+        },
         0x02 => DeviceClass::Network,
         0x06 => match info.subclass {
             0x00 | 0x04 => DeviceClass::Bridge,
