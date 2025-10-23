@@ -16,6 +16,7 @@ const MAX_FUNCTION: u8 = 7;
 const BUS_STRIDE: u64 = 0x1_0000; // 1 MiB per bus
 const DEVICE_STRIDE: u64 = 0x8000; // 32 KiB per device
 const FUNCTION_STRIDE: u64 = 0x1000; // 4 KiB per function
+const MSI_ADDR_BASE: u32 = 0xFEE0_0000;
 
 /// Decoded Base Address Register (BAR) entry.
 #[derive(Clone, Copy, Debug)]
@@ -60,6 +61,8 @@ impl PciBar {
 pub struct PciCapabilities {
     pub msi: bool,
     pub msix: bool,
+    pub msi_pointer: Option<u8>,
+    pub msix_pointer: Option<u8>,
 }
 
 /// Summary of a discovered PCI function.
@@ -105,6 +108,10 @@ impl PciDeviceInfo {
             .iter()
             .copied()
             .find(|bar| matches!(bar, PciBar::Memory32 { .. } | PciBar::Memory64 { .. }))
+    }
+
+    pub fn msi_capability(&self) -> Option<u8> {
+        self.capabilities.msi_pointer
     }
 }
 
@@ -575,12 +582,19 @@ fn parse_capabilities(function_base: u64, header_type: u8, status: u16) -> PciCa
     let mut caps = PciCapabilities::default();
 
     while pointer >= 0x40 && guard < 64 {
-        let addr = function_base + pointer as u64;
+        let current = pointer;
+        let addr = function_base + current as u64;
         let cap_id = unsafe { core::ptr::read_volatile(addr as *const u8) };
         let next = unsafe { core::ptr::read_volatile((addr + 1) as *const u8) };
         match cap_id {
-            0x05 => caps.msi = true,
-            0x11 => caps.msix = true,
+            0x05 => {
+                caps.msi = true;
+                caps.msi_pointer = Some(current);
+            }
+            0x11 => {
+                caps.msix = true;
+                caps.msix_pointer = Some(current);
+            }
             _ => {}
         }
         if next == 0 || next == pointer {
@@ -591,6 +605,68 @@ fn parse_capabilities(function_base: u64, header_type: u8, status: u16) -> PciCa
     }
 
     caps
+}
+
+/// Enable MSI for the given device using the supplied APIC destination ID and vector.
+///
+/// The caller must ensure an interrupt vector is reserved and that any legacy
+/// interrupt routing (IOAPIC) is masked prior to calling this function.
+pub fn enable_msi(
+    device: &PciDeviceInfo,
+    regions: &[PciConfigRegion],
+    apic_id: u8,
+    vector: u8,
+) -> Result<(), &'static str> {
+    let cap_ptr = device
+        .capabilities
+        .msi_pointer
+        .ok_or("MSI capability not present")?;
+
+    let mut config_base = None;
+    for region in regions {
+        if region.segment != device.segment {
+            continue;
+        }
+        if device.bus < region.bus_start || device.bus > region.bus_end {
+            continue;
+        }
+        config_base = function_base(region, device.bus, device.device, device.function);
+        if config_base.is_some() {
+            break;
+        }
+    }
+
+    let base = config_base.ok_or("PCI function configuration space not accessible")?;
+
+    let control_offset = cap_ptr + 2;
+    let mut control = config_read_u16(base, control_offset);
+    let is_64bit = (control & (1 << 7)) != 0;
+    let per_vector_mask = (control & (1 << 8)) != 0;
+
+    // Program the message address/data for a single vector.
+    control &= !0x000E; // clear multi-message bits
+    let msg_addr = MSI_ADDR_BASE | ((apic_id as u32) << 12);
+    let msg_data = vector as u16;
+
+    config_write_u32(base, cap_ptr + 4, msg_addr);
+    let mut data_offset = cap_ptr + 8;
+    if is_64bit {
+        config_write_u32(base, cap_ptr + 8, 0);
+        data_offset = cap_ptr + 12;
+    }
+    config_write_u16(base, data_offset, msg_data);
+    let mut next_offset = data_offset + 2;
+
+    if per_vector_mask {
+        config_write_u32(base, next_offset, 0); // mask bits
+        next_offset += 4;
+        config_write_u32(base, next_offset, 0); // pending bits
+    }
+
+    control |= 0x0001; // MSI enable
+    config_write_u16(base, control_offset, control);
+
+    Ok(())
 }
 
 fn config_read_u32(function_base: u64, offset: u8) -> u32 {

@@ -13,6 +13,7 @@ Milestone 1 establishes a clean PCI discovery layer that future USB work can bui
 - **Monitor visibility**: The `devices` monitor command prints out these resource windows per device, along with the programmed bridge windows, making it easy to audit allocations at runtime.
 - **Driver resource helpers**: `Device` now exposes convenience helpers for querying memory and I/O apertures so upcoming drivers can claim the regions they need without re-decoding BARs.
 - **PCI monitor command**: Added a `pci` monitor command that re-enumerates functions/bridges on demand and prints BAR resources for quick topology inspection.
+- **MSI helper**: Introduced `pci::enable_msi` so future drivers can flip devices over to message-signalled interrupts without duplicating capability plumbing.
 - **DMA buffer helper**: `kernel/src/memory/dma.rs:1` wraps the contiguous allocator to provide aligned, zeroed, kernel-mapped buffers suitable for xHCI command/event rings or other DMA-heavy peripherals.
 
 ## Outstanding Tasks
