@@ -133,6 +133,10 @@ impl DriverManager {
     /// Add a discovered device and run probe logic
     pub fn add_device(&mut self, device: Device) {
         log_trace!("Discovered device");
+        if let Some(existing) = self.devices.iter_mut().find(|d| d.id == device.id) {
+            existing.merge_from(&device);
+            return;
+        }
         self.devices.push(device);
         self.probe_pending_devices();
     }

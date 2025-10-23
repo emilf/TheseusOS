@@ -176,6 +176,26 @@ impl Device {
         }
     }
 
+    pub fn merge_from(&mut self, other: &Device) {
+        if self.class == DeviceClass::Unknown && other.class != DeviceClass::Unknown {
+            self.class = other.class;
+        }
+        if self.phys_addr.is_none() {
+            self.phys_addr = other.phys_addr;
+        }
+        if self.irq.is_none() {
+            self.irq = other.irq;
+        }
+        if self.driver_data.is_none() {
+            self.driver_data = other.driver_data;
+        }
+        for res in other.resources.iter() {
+            if !self.resources.iter().any(|existing| existing == res) {
+                self.resources.push(*res);
+            }
+        }
+    }
+
     pub fn set_driver_state<T>(&mut self, state: &T) {
         self.driver_data = Some(state as *const T as usize);
     }
@@ -190,7 +210,7 @@ impl Device {
 }
 
 /// Hardware resource descriptor provided to drivers.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DeviceResource {
     Memory {
         base: u64,
