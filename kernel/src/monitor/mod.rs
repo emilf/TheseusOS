@@ -58,6 +58,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
+use x86_64::instructions::interrupts;
 
 use crate::log_debug;
 
@@ -121,6 +122,8 @@ pub fn push_serial_byte(byte: u8) {
         return;
     }
 
+    let _guard = InterruptGuard::new();
+
     let mut guard = MONITOR.lock();
     if guard.is_none() {
         let mut monitor = Monitor::new();
@@ -131,6 +134,30 @@ pub fn push_serial_byte(byte: u8) {
 
     if let Some(monitor) = guard.as_mut() {
         monitor.handle_char(byte);
+    }
+}
+
+struct InterruptGuard {
+    restore: bool,
+}
+
+impl InterruptGuard {
+    fn new() -> Self {
+        let was_enabled = interrupts::are_enabled();
+        if !was_enabled {
+            interrupts::enable();
+        }
+        Self {
+            restore: !was_enabled,
+        }
+    }
+}
+
+impl Drop for InterruptGuard {
+    fn drop(&mut self) {
+        if self.restore {
+            interrupts::disable();
+        }
     }
 }
 
@@ -192,9 +219,9 @@ impl Monitor {
 
     pub(crate) fn write_bytes(&self, bytes: &[u8]) {
         if serial::write_bytes_direct(bytes).is_err() {
-            let _ = driver_manager()
-                .lock()
-                .write_class(self.serial_class, bytes);
+            if let Some(mut mgr) = driver_manager().try_lock() {
+                let _ = mgr.write_class(self.serial_class, bytes);
+            }
         }
     }
 

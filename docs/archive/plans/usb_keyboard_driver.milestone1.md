@@ -10,6 +10,7 @@ Milestone 1 establishes a clean PCI discovery layer that future USB work can bui
 - **BAR/IRQ metadata + capabilities**: BAR decoding captures the first MMIO BAR and any assigned interrupt line, and `PciDeviceInfo` now records MSI/MSI-X capability bits for future interrupt routing work.
 - **BAR relocation + bridge windows**: During enumeration every non-bridge function now receives a freshly allocated BAR aperture (IO, MEM, prefetchable MEM) with decode temporarily disabled to avoid device side effects. Bridge windows (I/O, MEM, prefetch) are then programmed to cover the exact span of their children, so we no longer rely on fixed 16 MiB placeholders.
 - **Driver resource handles**: Each registered PCI device now carries a list of I/O and memory apertures (base + size + prefetch flag) so future drivers can directly map the hardware resources they need without re-decoding BARs.
+- **Monitor visibility**: The `devices` monitor command prints out these resource windows per device, along with the programmed bridge windows, making it easy to audit allocations at runtime.
 - **DMA buffer helper**: `kernel/src/memory/dma.rs:1` wraps the contiguous allocator to provide aligned, zeroed, kernel-mapped buffers suitable for xHCI command/event rings or other DMA-heavy peripherals.
 
 ## Outstanding Tasks

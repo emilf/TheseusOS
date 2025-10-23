@@ -4,8 +4,9 @@
 
 use crate::acpi;
 use crate::drivers::manager::driver_manager;
+use crate::drivers::traits::DeviceResource;
 use crate::monitor::Monitor;
-use alloc::{format, string::String};
+use alloc::{format, string::String, vec::Vec};
 
 impl Monitor {
     /// List all registered devices
@@ -29,8 +30,10 @@ impl Monitor {
     /// - IRQ number (if any)
     /// - Driver state pointer (if bound)
     pub(in crate::monitor) fn cmd_devices(&self) {
-        let mgr = driver_manager().lock();
-        let devices = mgr.devices();
+        let devices: Vec<_> = {
+            let mgr = driver_manager().lock();
+            mgr.devices().to_vec()
+        };
 
         self.writeln(&format!("Registered devices ({}):", devices.len()));
 
@@ -59,6 +62,37 @@ impl Monitor {
             ));
             if let Some(state) = dev.driver_data {
                 self.writeln(&format!("      driver_state=0x{:016X}", state as u64));
+            }
+            if !dev.resources.is_empty() {
+                self.writeln("      resources:");
+                for res in dev.resources.iter() {
+                    match res {
+                        DeviceResource::Memory {
+                            base,
+                            size,
+                            prefetchable,
+                        } => {
+                            let attr = if *prefetchable {
+                                "prefetch"
+                            } else {
+                                "non-prefetch"
+                            };
+                            self.writeln(&format!(
+                                "        MEM {:#016x}-{:#016x} ({})",
+                                base,
+                                base.saturating_add(size.saturating_sub(1)),
+                                attr
+                            ));
+                        }
+                        DeviceResource::Io { base, size } => {
+                            self.writeln(&format!(
+                                "        IO  {:#06x}-{:#06x}",
+                                base,
+                                base.saturating_add(size.saturating_sub(1))
+                            ));
+                        }
+                    }
+                }
             }
         }
 
