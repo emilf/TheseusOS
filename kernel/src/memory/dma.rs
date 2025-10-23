@@ -17,6 +17,7 @@ pub struct DmaBuffer {
     virt_addr: u64,
     size: usize,
     mapped_size: usize,
+    cache_policy: CachePolicy,
 }
 
 impl DmaBuffer {
@@ -25,13 +26,22 @@ impl DmaBuffer {
     /// `align` is specified in bytes and must be a power of two. The buffer is
     /// zeroed on allocation.
     pub fn allocate(size: usize, align: usize) -> Result<Self, AllocError> {
+        Self::allocate_with_policy(size, align, CachePolicy::WriteBack)
+    }
+
+    /// Allocate a buffer with an explicit cache policy.
+    pub fn allocate_with_policy(
+        size: usize,
+        align: usize,
+        cache_policy: CachePolicy,
+    ) -> Result<Self, AllocError> {
         if size == 0 {
             return Err(AllocError::OutOfMemory);
         }
 
         let alignment = align.max(1);
         let phys = physical_memory::alloc_contiguous(size as u64, alignment as u64)?;
-        let (virt, mapped) = map_dma_region(phys, size);
+        let (virt, mapped) = map_dma_region(phys, size, cache_policy);
 
         unsafe {
             core::ptr::write_bytes(virt as *mut u8, 0, size);
@@ -42,6 +52,7 @@ impl DmaBuffer {
             virt_addr: virt,
             size,
             mapped_size: mapped,
+            cache_policy,
         })
     }
 
@@ -64,6 +75,11 @@ impl DmaBuffer {
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         unsafe { core::slice::from_raw_parts_mut(self.virt_addr as *mut u8, self.size) }
     }
+
+    /// Cache policy used when mapping this buffer.
+    pub fn cache_policy(&self) -> CachePolicy {
+        self.cache_policy
+    }
 }
 
 impl Drop for DmaBuffer {
@@ -77,7 +93,7 @@ impl Drop for DmaBuffer {
     }
 }
 
-fn map_dma_region(phys_addr: u64, size: usize) -> (u64, usize) {
+fn map_dma_region(phys_addr: u64, size: usize, policy: CachePolicy) -> (u64, usize) {
     let page_size = crate::memory::PAGE_SIZE as u64;
     let phys_base = phys_addr & !(page_size - 1);
     let offset = phys_addr - phys_base;
@@ -89,15 +105,34 @@ fn map_dma_region(phys_addr: u64, size: usize) -> (u64, usize) {
         let pml4_ptr = phys_to_virt_pa(pml4_pa) as *mut PageTable;
         let pml4 = &mut *pml4_ptr;
         let mut allocator = PersistentFrameAllocator;
+        let flags = policy.page_flags(PTE_PRESENT | PTE_WRITABLE);
         map_range_with_policy(
             pml4,
             virt_base,
             phys_base,
             size_aligned,
-            PTE_PRESENT | PTE_WRITABLE,
+            flags,
             &mut allocator,
         );
     }
 
     (virt_base + offset, size_aligned as usize)
+}
+
+/// Cache attribute for DMA mapping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CachePolicy {
+    WriteBack,
+    WriteCombining,
+    Uncached,
+}
+
+impl CachePolicy {
+    pub fn page_flags(self, base: u64) -> u64 {
+        match self {
+            CachePolicy::WriteBack => base,
+            CachePolicy::WriteCombining => base | crate::memory::PTE_PWT,
+            CachePolicy::Uncached => base | crate::memory::PTE_PCD | crate::memory::PTE_PWT,
+        }
+    }
 }

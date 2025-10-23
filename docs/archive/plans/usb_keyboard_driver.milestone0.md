@@ -10,7 +10,7 @@ Milestone 0 was about auditing prerequisites before writing any USB code. This n
 
 ## DMA-Capable Memory Inventory
 - The persistent allocator now exposes contiguous allocation/free helpers for DMA workloads (`kernel/src/physical_memory.rs:755`), and `kernel/src/memory/dma.rs:1` wraps them in a zeroed, kernel-mapped `DmaBuffer`.
-- Follow-up work: surface cache policy flags (write-back vs write-combining) and add pooled buffer lifetimes so drivers can recycle DMA memory rather than dropping to the global allocator.
+- Buffer helpers now expose cache-policy flags (write-back, write-combining, uncached) so drivers can request write-combining descriptors or uncached bounce buffers explicitly.
 - MMIO regions already use PCD/PWT flags when mapped (`kernel/src/memory/mapping.rs:258`), which is good for controllers, but we still need explicit APIs to map DMA buffers with the write-back policy xHCI expects.
 
 ## Hardware Inventory Logging Improvements
