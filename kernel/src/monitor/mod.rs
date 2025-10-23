@@ -359,6 +359,7 @@ impl Monitor {
             "ptwalk" | "pt" => self.cmd_ptwalk(&parts[1..]),
             "ptdump" => self.cmd_ptdump(&parts[1..]),
             "devices" | "dev" => self.cmd_devices(),
+            "pci" => self.cmd_pci(&parts[1..]),
             "acpi" => self.cmd_acpi(),
             "phys" | "physmem" => self.cmd_phys(),
             "stack" | "bt" => self.cmd_stack_trace(),
@@ -398,6 +399,7 @@ impl Monitor {
         self.writeln("  acpi                - Display ACPI information");
         self.writeln("  phys|physmem        - Display physical memory statistics");
         self.writeln("  devices|dev         - List registered devices");
+        self.writeln("  pci                 - Enumerate PCI functions and BARs");
         self.writeln("");
         self.writeln("Tables & Maps:");
         self.writeln("  idt [VECTOR]        - Display IDT information");

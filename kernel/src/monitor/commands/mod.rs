@@ -8,5 +8,6 @@ pub mod cpu;
 pub mod devices;
 pub mod io;
 pub mod memory;
+pub mod pci;
 pub mod system;
 pub mod tables;
