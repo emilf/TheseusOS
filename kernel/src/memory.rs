@@ -136,6 +136,7 @@ mod page_tables;
 pub use page_tables::{get_or_create_page_table_alloc, PageTable, PageTableEntry};
 
 pub mod dma;
+pub mod dma_pool;
 
 /// Memory manager
 pub struct MemoryManager {
