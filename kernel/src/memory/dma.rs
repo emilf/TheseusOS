@@ -30,6 +30,11 @@ impl DmaBuffer {
     }
 
     /// Allocate a buffer with an explicit cache policy.
+    ///
+    /// Drivers can choose the cache behaviour that matches their device: most
+    /// descriptors want normal write-back memory, but frame buffers or MMIO
+    /// bounce buffers often require write-combining or fully uncached access.
+    /// The helper takes care of applying the correct page-table flags.
     pub fn allocate_with_policy(
         size: usize,
         align: usize,
@@ -120,6 +125,10 @@ fn map_dma_region(phys_addr: u64, size: usize, policy: CachePolicy) -> (u64, usi
 }
 
 /// Cache attribute for DMA mapping.
+///
+/// The variants map directly onto the cache-control bits in the page tables.
+/// Having a dedicated enum keeps call-sites explicit about the trade-offs and
+/// makes it clear why we twiddle PWT/PCD along the way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CachePolicy {
     WriteBack,
