@@ -1,9 +1,12 @@
-//! xHCI host controller driver scaffold.
+//! xHCI host controller driver scaffold for the teaching kernel.
 //!
-//! This module sets up the groundwork for a fully featured xHCI driver by
-//! mapping controller MMIO, inspecting capabilities, and wiring the controller
-//! into the driver manager. The focus is on the modern PCIe/MSI path; legacy
-//! emulation stays disabled once firmware handoff completes.
+//! The goal of this module is educational: it walks through the steps required
+//! to take ownership of a modern USB 3 controller on x86-64 while exercising
+//! Rust's safety features. The code demonstrates how to map MMIO regions,
+//! interpret capability structures, set up command/event rings, transition the
+//! controller to `RUN`, and submit a minimal NOOP command to verify the data
+//! path. Later lessons will extend this scaffolding to cover slot contexts and
+//! full USB enumeration.
 
 use alloc::{format, string::String, vec::Vec};
 use core::convert::TryFrom;
@@ -55,6 +58,7 @@ static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
 
 #[allow(dead_code)]
+/// Aggregated state for a discovered controller.
 struct XhciController {
     phys_base: u64,
     virt_base: u64,
@@ -90,6 +94,7 @@ struct EventRing {
 }
 
 impl CommandRing {
+    /// Construct a new command ring wrapper around the provided DMA buffer.
     fn new(buffer: DmaBuffer) -> Self {
         Self {
             buffer,
@@ -98,14 +103,17 @@ impl CommandRing {
         }
     }
 
+    /// Physical base address advertised to hardware via CRCR.
     fn phys_addr(&self) -> u64 {
         self.buffer.phys_addr()
     }
 
+    /// Pointer to the next TRB slot to be written by software.
     fn current_trb(&self) -> *mut u32 {
         (self.buffer.virt_addr() + (self.index * TRB_SIZE) as u64) as *mut u32
     }
 
+    /// Cycle bit value to encode in the TRB control dword.
     fn cycle_bit_u32(&self) -> u32 {
         if self.cycle {
             TRB_CYCLE_BIT
@@ -114,6 +122,7 @@ impl CommandRing {
         }
     }
 
+    /// Cycle bit value as u64 for CRCR programming.
     fn cycle_bit_u64(&self) -> u64 {
         if self.cycle {
             TRB_CYCLE_BIT as u64
@@ -122,6 +131,7 @@ impl CommandRing {
         }
     }
 
+    /// Advance to the next TRB, flipping the cycle bit when wrapping.
     fn advance(&mut self) {
         self.index += 1;
         if self.index == COMMAND_RING_TRBS {
@@ -132,6 +142,7 @@ impl CommandRing {
 }
 
 impl EventRing {
+    /// Construct a new event ring wrapper with its associated ERST entry.
     fn new(buffer: DmaBuffer, table: DmaBuffer) -> Self {
         Self {
             buffer,
@@ -141,18 +152,22 @@ impl EventRing {
         }
     }
 
+    /// Physical base address of the event ring buffer.
     fn phys_addr(&self) -> u64 {
         self.buffer.phys_addr()
     }
 
+    /// Physical address of the ERST entry.
     fn table_phys_addr(&self) -> u64 {
         self.table.phys_addr()
     }
 
+    /// Pointer to the next TRB that software should inspect.
     fn current_trb(&self) -> *mut u32 {
         (self.buffer.virt_addr() + (self.index * TRB_SIZE) as u64) as *mut u32
     }
 
+    /// Advance the consumer pointer, toggling the expected cycle on wrap.
     fn advance(&mut self) {
         self.index += 1;
         if self.index == EVENT_RING_TRBS {
@@ -162,6 +177,11 @@ impl EventRing {
     }
 }
 
+/// Register the xHCI scaffold driver with the global driver manager.
+///
+/// # Returns
+/// Nothing. The driver is inserted into the global registry and will be probed
+/// during device enumeration.
 pub fn register_xhci_driver() {
     driver_manager().lock().register_driver(&XHCI_DRIVER);
 }
@@ -169,6 +189,13 @@ pub fn register_xhci_driver() {
 struct XhciDriver;
 
 impl XhciDriver {
+    /// Extract the PCI segment/bus/device/function tuple from a device entry.
+    ///
+    /// # Parameters
+    /// * `dev` - Device descriptor obtained from the driver manager.
+    ///
+    /// # Returns
+    /// `(segment, bus, device, function)` values identifying the controller.
     fn pci_ident(dev: &Device) -> (u16, u8, u8, u8) {
         match dev.id {
             DeviceId::Pci {
@@ -181,11 +208,25 @@ impl XhciDriver {
         }
     }
 
+    /// Human readable PCI identifier used in log messages.
+    ///
+    /// # Parameters
+    /// * `dev` - Device descriptor obtained from the driver manager.
+    ///
+    /// # Returns
+    /// String in the form `ssss:bb:dd.f` (segment, bus, device, function).
     fn pci_display(dev: &Device) -> String {
         let (segment, bus, device, function) = Self::pci_ident(dev);
         format!("{:04x}:{:02x}:{:02x}.{}", segment, bus, device, function)
     }
 
+    /// Determine the controller's MMIO base and size from the reported BARs.
+    ///
+    /// # Parameters
+    /// * `dev` - Device descriptor containing resource information.
+    ///
+    /// # Returns
+    /// On success, the physical base address and length of the MMIO window.
     fn locate_mmio(&self, dev: &Device) -> Result<(u64, usize), &'static str> {
         for res in dev.resources.iter() {
             if let DeviceResource::Memory { base, size, .. } = res {
@@ -198,10 +239,23 @@ impl XhciDriver {
             .ok_or("xHCI controller lacks memory resource")
     }
 
+    /// Map the xHCI MMIO aperture into the kernel address space with uncached
+    /// attributes.
+    ///
+    /// # Parameters
+    /// * `phys_addr` - Physical base of the MMIO window.
+    /// * `size` - Size of the requested mapping.
+    ///
+    /// # Returns
+    /// Virtual address where the registers are accessible.
     fn map_mmio(&self, phys_addr: u64, size: usize) -> u64 {
         let page_size = crate::memory::PAGE_SIZE as u64;
+        // Bring the physical base down to a page boundary so we can map with
+        // standard paging helpers.
         let phys_base = phys_addr & !(page_size - 1);
         let offset = phys_addr - phys_base;
+        // Expand the mapping to cover the entire window plus any leading
+        // offset introduced by alignment.
         let size_aligned = ((offset + size as u64 + page_size - 1) / page_size) * page_size;
         let virt_base = XHCI_MMIO_WINDOW_BASE + phys_base;
 
@@ -226,6 +280,16 @@ impl XhciDriver {
         virt_base + offset
     }
 
+    /// Map, reset, and cache metadata about a controller.
+    ///
+    /// # Parameters
+    /// * `dev` - Device descriptor representing the controller.
+    /// * `phys_base` - Physical base address of the MMIO window.
+    /// * `mmio_length` - Length of the MMIO window.
+    ///
+    /// # Returns
+    /// `Ok(true)` if a new controller instance was created, `Ok(false)` if an
+    /// existing controller was reused, or an error string on failure.
     fn initialise_controller(
         &'static self,
         dev: &mut Device,
@@ -322,6 +386,11 @@ impl XhciDriver {
         Ok(true)
     }
 
+    /// If advertised, prime the MSI capability so future lessons can route
+    /// interrupts without touching the legacy IOAPIC path.
+    ///
+    /// # Parameters
+    /// * `dev` - Device descriptor representing the controller.
     fn try_enable_msi(&self, dev: &Device) {
         let ident = Self::pci_display(dev);
         let DeviceId::Pci {
@@ -375,6 +444,15 @@ impl XhciDriver {
         );
     }
 
+    /// Reset the controller after ensuring it is halted.
+    ///
+    /// # Parameters
+    /// * `virt_base` - Virtual base address of the controller MMIO window.
+    /// * `operational_offset` - Offset to the operational register block.
+    /// * `ident` - Identifier used in log messages.
+    ///
+    /// # Returns
+    /// `Ok(())` on success or an error string on timeout.
     fn reset_controller(
         &self,
         virt_base: u64,
@@ -422,6 +500,12 @@ impl XhciDriver {
         Ok(())
     }
 
+    /// Helper: repeatedly evaluate `predicate` until it returns true or the
+    /// supplied spin limit is reached.
+    ///
+    /// # Parameters
+    /// * `predicate` - Closure evaluated each iteration.
+    /// * `limit` - Maximum number of iterations before timing out.
     fn poll_with_timeout<F>(&self, mut predicate: F, limit: usize) -> bool
     where
         F: FnMut() -> bool,
@@ -435,6 +519,14 @@ impl XhciDriver {
         false
     }
 
+    /// Allocate the command ring, event ring, and ERST buffers.
+    ///
+    /// # Parameters
+    /// * `controller` - Mutable controller state that will own the buffers.
+    /// * `ident` - Identifier used in log messages.
+    ///
+    /// # Returns
+    /// `Ok(())` on success or an error string if allocation fails.
     fn initialise_memory(
         &self,
         controller: &mut XhciController,
@@ -545,6 +637,14 @@ impl XhciDriver {
         Ok(())
     }
 
+    /// Allocate and publish the Device Context Base Address Array pointer.
+    ///
+    /// # Parameters
+    /// * `controller` - Mutable controller state that will own the array.
+    /// * `ident` - Identifier used in log messages.
+    ///
+    /// # Returns
+    /// `Ok(())` on success or an allocation error string.
     fn configure_dcbaa(
         &self,
         controller: &mut XhciController,
@@ -575,6 +675,15 @@ impl XhciDriver {
         Ok(())
     }
 
+    /// Program CONFIG with the discovered slot count and enable slot
+    /// operations via USBCMD.
+    ///
+    /// # Parameters
+    /// * `controller` - Mutable controller state.
+    /// * `ident` - Identifier used in log messages.
+    ///
+    /// # Returns
+    /// `Ok(())` on success or an error string if the controller is incomplete.
     fn enable_slots(
         &self,
         controller: &mut XhciController,
@@ -605,6 +714,15 @@ impl XhciDriver {
         Ok(())
     }
 
+    /// Bring the controller out of HALT by setting RUN/STOP and waiting for
+    /// USBSTS.HCH to clear.
+    ///
+    /// # Parameters
+    /// * `controller` - Mutable controller state.
+    /// * `ident` - Identifier used in log messages.
+    ///
+    /// # Returns
+    /// `Ok(())` when the controller indicates it left the halted state.
     fn start_controller(
         &self,
         controller: &mut XhciController,
@@ -650,6 +768,16 @@ impl XhciDriver {
         Ok(())
     }
 
+    /// Write a NOOP TRB into the command ring, ring the host doorbell, and wait
+    /// for the completion event. This demonstrates the full command/doorbell
+    /// path for students.
+    ///
+    /// # Parameters
+    /// * `controller` - Mutable controller state.
+    /// * `ident` - Identifier used in log messages.
+    ///
+    /// # Returns
+    /// `Ok(())` when completion is observed, otherwise an error string.
     fn submit_noop(
         &self,
         controller: &mut XhciController,
@@ -667,6 +795,8 @@ impl XhciDriver {
         let trb_addr = ring.current_trb();
         let cycle_bit = ring.cycle_bit_u32();
         unsafe {
+            // Emit a NOOP TRB; the zeroed parameter fields keep side effects at
+            // bay while still exercising the doorbell path.
             core::ptr::write_volatile(trb_addr, 0);
             core::ptr::write_volatile(trb_addr.add(1), 0);
             core::ptr::write_volatile(trb_addr.add(2), 0);
@@ -677,6 +807,8 @@ impl XhciDriver {
         ring.advance();
 
         unsafe {
+            // Doorbells are 32-bit registers indexed by slot/endpoint; 0 hits
+            // the host command doorbell.
             let doorbell_base =
                 (controller.virt_base + controller.doorbell_offset as u64) as *mut u32;
             core::ptr::write_volatile(doorbell_base.add(DOORBELL_HOST as usize), 0);
@@ -688,6 +820,16 @@ impl XhciDriver {
         Ok(())
     }
 
+    /// Consume the next entry from the event ring waiting for a command
+    /// completion TRB.
+    ///
+    /// # Parameters
+    /// * `controller` - Mutable controller state.
+    /// * `ident` - Identifier used in log messages.
+    ///
+    /// # Returns
+    /// The completion code extracted from the event or an error string upon
+    /// timeout/desynchronisation.
     fn poll_command_completion(
         &self,
         controller: &mut XhciController,
