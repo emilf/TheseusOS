@@ -42,6 +42,7 @@ const MAX_SLOTS_REGISTER_OFFSET: u32 = 0x2C;
 const USBCMD_ENABLE_SLOT: u32 = 1 << 8;
 const DCBAA_ENTRY_SIZE: usize = 8;
 const RUN_STOP_TIMEOUT: usize = 1_000_000;
+const TRB_TYPE_NOOP_COMMAND: u32 = 0x17;
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
@@ -66,6 +67,7 @@ struct XhciController {
     slots_enabled: bool,
     dcbaa: Option<DmaBuffer>,
     controller_running: bool,
+    command_ring_index: usize,
 }
 
 pub fn register_xhci_driver() {
@@ -195,6 +197,7 @@ impl XhciDriver {
                 slots_enabled: false,
                 dcbaa: None,
                 controller_running: false,
+                command_ring_index: 0,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -217,6 +220,9 @@ impl XhciDriver {
             }
             if let Err(err) = self.start_controller(controller_ref, &ident) {
                 log_warn!("xHCI {}: run-state transition failed: {}", ident, err);
+            }
+            if let Err(err) = self.submit_noop(controller_ref, &ident) {
+                log_warn!("xHCI {}: noop command submission failed: {}", ident, err);
             }
             let stored = controller_ref as *const XhciController;
             dev.driver_data = Some(stored as usize);
@@ -561,6 +567,50 @@ impl XhciDriver {
 
         controller.controller_running = true;
         log_info!("xHCI {} controller running", ident);
+        Ok(())
+    }
+
+    fn submit_noop(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<(), &'static str> {
+        if !controller.controller_running {
+            return Err("controller not running");
+        }
+
+        let Some(ring) = controller.command_ring.as_ref() else {
+            return Err("command ring not allocated");
+        };
+
+        let index = controller.command_ring_index % COMMAND_RING_TRBS;
+        let trb_addr = (ring.virt_addr() + (index * TRB_SIZE) as u64) as *mut u32;
+        let cycle_bit = if controller.command_ring_cycle_state {
+            1u32
+        } else {
+            0
+        };
+        unsafe {
+            core::ptr::write_volatile(trb_addr, 0);
+            core::ptr::write_volatile(trb_addr.add(1), 0);
+            core::ptr::write_volatile(trb_addr.add(2), 0);
+            let control = cycle_bit | (TRB_TYPE_NOOP_COMMAND << 10);
+            core::ptr::write_volatile(trb_addr.add(3), control);
+        }
+
+        controller.command_ring_index = controller.command_ring_index.wrapping_add(1);
+        if controller.command_ring_index == COMMAND_RING_TRBS {
+            controller.command_ring_index = 0;
+            controller.command_ring_cycle_state = !controller.command_ring_cycle_state;
+        }
+
+        unsafe {
+            let doorbell_base =
+                (controller.virt_base + controller.doorbell_offset as u64) as *mut u32;
+            core::ptr::write_volatile(doorbell_base, 0);
+        }
+
+        log_info!("xHCI {} submitted NOOP command (index={})", ident, index);
         Ok(())
     }
 
