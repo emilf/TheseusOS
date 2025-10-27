@@ -7,6 +7,7 @@
 
 use alloc::{format, string::String, vec::Vec};
 use core::convert::TryFrom;
+use core::hint::spin_loop;
 use core::sync::atomic::AtomicBool;
 use spin::Mutex;
 
@@ -22,11 +23,14 @@ use crate::{log_debug, log_info, log_warn};
 
 const XHCI_MMIO_WINDOW_BASE: u64 = 0xFFFF_FFB0_0000_0000;
 const XHCI_MIN_MMIO: usize = 0x2000;
+const USBCMD_RUN_STOP: u32 = 1 << 0;
+const USBCMD_HCRST: u32 = 1 << 1;
+const USBSTS_HCHALTED: u32 = 1 << 0;
+const RESET_SPIN_LIMIT: usize = 1_000_000;
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
 
-#[allow(dead_code)]
 #[allow(dead_code)]
 struct XhciController {
     phys_base: u64,
@@ -122,16 +126,20 @@ impl XhciDriver {
             let runtime_offset = core::ptr::read_volatile(base.add(0x18) as *const u32) & !0b11;
             let doorbell_offset = core::ptr::read_volatile(base.add(0x14) as *const u32) & !0b11;
 
-            let mut list = CONTROLLERS.lock();
-            if let Some(existing) = list.iter().find(|ctrl| ctrl.phys_base == phys_base) {
-                log_debug!(
-                    "xHCI {} shares phys base {:#x}; reusing existing mapping",
-                    ident,
-                    phys_base
-                );
-                dev.driver_data = Some(existing as *const XhciController as usize);
-                return Ok(false);
+            {
+                let list = CONTROLLERS.lock();
+                if let Some(existing) = list.iter().find(|ctrl| ctrl.phys_base == phys_base) {
+                    log_debug!(
+                        "xHCI {} shares phys base {:#x}; reusing existing mapping",
+                        ident,
+                        phys_base
+                    );
+                    dev.driver_data = Some(existing as *const XhciController as usize);
+                    return Ok(false);
+                }
             }
+
+            self.reset_controller(virt, operational_offset, &ident)?;
 
             log_info!(
                 "xHCI {} HCI v{}.{} slots={} ports={} context_size={}",
@@ -155,6 +163,7 @@ impl XhciDriver {
                 msi_enabled: AtomicBool::new(false),
             };
 
+            let mut list = CONTROLLERS.lock();
             list.push(controller);
             let stored = list.last().unwrap() as *const XhciController;
             dev.driver_data = Some(stored as usize);
@@ -214,6 +223,60 @@ impl XhciDriver {
             pci_info.capabilities.msi,
             pci_info.capabilities.msix
         );
+    }
+
+    fn reset_controller(
+        &self,
+        virt_base: u64,
+        operational_offset: u32,
+        ident: &str,
+    ) -> Result<(), &'static str> {
+        let op_base = (virt_base + operational_offset as u64) as *mut u32;
+        unsafe {
+            let cmd_ptr = op_base.add((0x00 / 4) as usize);
+            let sts_ptr = op_base.add((0x04 / 4) as usize);
+
+            if core::ptr::read_volatile(sts_ptr) & USBSTS_HCHALTED == 0 {
+                let mut cmd = core::ptr::read_volatile(cmd_ptr);
+                cmd &= !USBCMD_RUN_STOP;
+                core::ptr::write_volatile(cmd_ptr, cmd);
+                if !self
+                    .poll_with_timeout(|| core::ptr::read_volatile(sts_ptr) & USBSTS_HCHALTED != 0)
+                {
+                    log_warn!("xHCI {}: halt before reset timed out", ident);
+                    return Err("xhci halt timeout");
+                }
+            }
+
+            let mut cmd = core::ptr::read_volatile(cmd_ptr);
+            cmd |= USBCMD_HCRST;
+            core::ptr::write_volatile(cmd_ptr, cmd);
+            if !self.poll_with_timeout(|| core::ptr::read_volatile(cmd_ptr) & USBCMD_HCRST == 0) {
+                log_warn!("xHCI {}: controller reset timed out", ident);
+                return Err("xhci reset timeout");
+            }
+
+            if !self.poll_with_timeout(|| core::ptr::read_volatile(sts_ptr) & USBSTS_HCHALTED != 0)
+            {
+                log_warn!("xHCI {}: controller not halted after reset", ident);
+            }
+        }
+
+        log_info!("xHCI {} controller reset complete", ident);
+        Ok(())
+    }
+
+    fn poll_with_timeout<F>(&self, mut predicate: F) -> bool
+    where
+        F: FnMut() -> bool,
+    {
+        for _ in 0..RESET_SPIN_LIMIT {
+            if predicate() {
+                return true;
+            }
+            spin_loop();
+        }
+        false
     }
 }
 

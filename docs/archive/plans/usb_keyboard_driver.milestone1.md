@@ -15,6 +15,7 @@ Milestone 1 establishes a clean PCI discovery layer that future USB work can bui
 - **PCI monitor command**: Added a `pci` monitor command that re-enumerates functions/bridges on demand and prints BAR resources for quick topology inspection.
 - **Legacy ownership diagnostics**: The `pci` monitor command now reports FADT legacy handoff details and any ACPI `XHCI` descriptors so firmware state is visible in the console (`kernel/src/monitor/commands/pci.rs:12`).
 - **QEMU topology**: `startQemu.sh` now binds `qemu-xhci` on the root bus so the virtual controller shows up during development and lighting tests (`startQemu.sh:92`).
+- **xHCI reset coverage**: The driver performs the recommended halt/reset sequence and logs `controller reset complete`, confirming the modern initialization path is active during boot (`kernel/src/drivers/usb/xhci/mod.rs:250`).
 - **MSI helper**: Introduced `pci::enable_msi` so future drivers can flip devices over to message-signalled interrupts without duplicating capability plumbing.
 - **DMA buffer helper**: `kernel/src/memory/dma.rs:1` wraps the contiguous allocator to provide aligned, zeroed, kernel-mapped buffers suitable for xHCI command/event rings or other DMA-heavy peripherals.
 - **Firmware handoff hooks**: `kernel/src/acpi/mod.rs:205` now captures FADT legacy ownership knobs and any ACPI `XHCI` descriptors, while `kernel/src/drivers/system.rs:155` invokes `usb::ensure_legacy_usb_handoff` so BIOS-owned controllers are released before drivers bind.
