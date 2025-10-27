@@ -55,6 +55,19 @@ const DOORBELL_HOST: u32 = 0;
 const IMAN_IP: u32 = 1 << 0;
 const DEVICE_CONTEXT_ALIGN: usize = 64;
 const DEVICE_CONTEXT_SIZE: usize = 2048;
+const PORTSC_REGISTER_OFFSET: usize = 0x400;
+const PORT_REGISTER_STRIDE: usize = 0x10;
+const PORTSC_CCS: u32 = 1 << 0;
+const PORTSC_PED: u32 = 1 << 1;
+const PORTSC_OCA: u32 = 1 << 3;
+const PORTSC_PR: u32 = 1 << 4;
+const PORTSC_LINK_STATE_MASK: u32 = 0xF << 5;
+const PORTSC_LINK_STATE_SHIFT: u32 = 5;
+const PORTSC_POWER: u32 = 1 << 9;
+const PORTSC_SPEED_MASK: u32 = 0xF << 10;
+const PORTSC_SPEED_SHIFT: u32 = 10;
+const SCRATCHPAD_ENTRY_SIZE: usize = 8;
+const SCRATCHPAD_POINTER_ALIGN: usize = 64;
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
@@ -72,6 +85,8 @@ struct XhciController {
     doorbell_offset: u32,
     max_ports: u8,
     max_slots: u8,
+    hcsparams2: u32,
+    scratchpad_count: u16,
     msi_enabled: AtomicBool,
     command_ring: Option<CommandRing>,
     event_ring: Option<EventRing>,
@@ -81,6 +96,8 @@ struct XhciController {
     last_command_status: Option<CommandCompletion>,
     pending_commands: usize,
     slot_contexts: Vec<DmaBuffer>,
+    scratchpad_table: Option<DmaBuffer>,
+    scratchpad_buffers: Vec<DmaBuffer>,
 }
 
 struct CommandRing {
@@ -250,6 +267,17 @@ impl XhciDriver {
         format!("{:04x}:{:02x}:{:02x}.{}", segment, bus, device, function)
     }
 
+    /// Decode the Max Scratchpad Buffers field from `HCSParams2`.
+    ///
+    /// The field spans `MaxScratchpadBuffersHi` (bits 27:31) and
+    /// `MaxScratchpadBuffersLo` (bits 21:25). The combined value indicates the
+    /// number of 4 KiB scratchpad buffers the controller expects.
+    fn scratchpad_count_from_params(hcsparams2: u32) -> u16 {
+        let low = (hcsparams2 >> 21) & 0x1F;
+        let high = (hcsparams2 >> 27) & 0x1F;
+        ((high << 5) | low) as u16
+    }
+
     /// Determine the controller's MMIO base and size from the reported BARs.
     ///
     /// # Parameters
@@ -333,10 +361,12 @@ impl XhciDriver {
             let cap_length = core::ptr::read_volatile(base);
             let hci_version = core::ptr::read_volatile(base.add(2) as *const u16);
             let hcsparams1 = core::ptr::read_volatile(base.add(0x04) as *const u32);
+            let hcsparams2 = core::ptr::read_volatile(base.add(0x08) as *const u32);
             let hccparams1 = core::ptr::read_volatile(base.add(0x10) as *const u32);
             let operational_offset = cap_length as u32;
             let runtime_offset = core::ptr::read_volatile(base.add(0x18) as *const u32) & !0b11;
             let doorbell_offset = core::ptr::read_volatile(base.add(0x14) as *const u32) & !0b11;
+            let scratchpad_count = Self::scratchpad_count_from_params(hcsparams2);
 
             {
                 let list = CONTROLLERS.lock();
@@ -356,6 +386,7 @@ impl XhciDriver {
                 &ident,
                 hci_version,
                 hcsparams1,
+                hcsparams2,
                 hccparams1,
                 cap_length,
                 runtime_offset,
@@ -375,6 +406,8 @@ impl XhciDriver {
                 doorbell_offset,
                 max_ports: ((hcsparams1 >> 24) & 0xFF) as u8,
                 max_slots: ((hcsparams1 & 0xFF) + 1) as u8,
+                hcsparams2,
+                scratchpad_count,
                 msi_enabled: AtomicBool::new(false),
                 command_ring: None,
                 event_ring: None,
@@ -384,6 +417,8 @@ impl XhciDriver {
                 last_command_status: None,
                 pending_commands: 0,
                 slot_contexts: Vec::new(),
+                scratchpad_table: None,
+                scratchpad_buffers: Vec::new(),
             };
 
             let mut list = CONTROLLERS.lock();
@@ -404,8 +439,9 @@ impl XhciDriver {
             if let Err(err) = self.enable_slots(controller_ref, &ident) {
                 log_warn!("xHCI {}: slot configuration failed: {}", ident, err);
             }
-            if let Err(err) = self.start_controller(controller_ref, &ident) {
-                log_warn!("xHCI {}: run-state transition failed: {}", ident, err);
+            match self.start_controller(controller_ref, &ident) {
+                Ok(()) => self.log_ports(&*controller_ref, &ident),
+                Err(err) => log_warn!("xHCI {}: run-state transition failed: {}", ident, err),
             }
             if let Err(err) = self.submit_noop(controller_ref, &ident) {
                 log_warn!("xHCI {}: noop command submission failed: {}", ident, err);
@@ -586,6 +622,7 @@ impl XhciDriver {
         Ok(())
     }
 
+    /// Allocate a DMA ring buffer with the requested TRB capacity.
     fn allocate_ring(&self, trbs: usize, tag: &str) -> Result<DmaBuffer, &'static str> {
         let size = trbs * TRB_SIZE;
         DmaBuffer::allocate(size, RING_ALIGNMENT).map_err(|_| match tag {
@@ -595,6 +632,7 @@ impl XhciDriver {
         })
     }
 
+    /// Program CRCR with the command ring base and initial cycle state.
     fn configure_command_ring(
         &self,
         controller: &mut XhciController,
@@ -621,6 +659,7 @@ impl XhciDriver {
         Ok(())
     }
 
+    /// Configure ERST, ERDP, and IMAN so interrupter 0 services the event ring.
     fn configure_event_ring(
         &self,
         controller: &mut XhciController,
@@ -700,6 +739,7 @@ impl XhciDriver {
         };
 
         self.initialise_slot_contexts(controller)?;
+        self.configure_scratchpad_buffers(controller, ident)?;
 
         log_info!(
             "xHCI {} DCBAA configured: ptr={:#012x} entries={}",
@@ -724,8 +764,8 @@ impl XhciDriver {
         let base = dcbaa.virt_addr() as *mut u64;
 
         unsafe {
-            // Entry 0 is reserved for scratchpad pointers. Leave it zeroed for
-            // now; later lessons will populate it as needed.
+            // Entry 0 is reserved for scratchpad pointers and will be populated
+            // by `configure_scratchpad_buffers`.
             core::ptr::write_volatile(base, 0);
         }
 
@@ -740,6 +780,74 @@ impl XhciDriver {
 
             controller.slot_contexts.push(ctx);
         }
+
+        Ok(())
+    }
+
+    /// Populate the scratchpad pointer array and allocate per-buffer storage.
+    ///
+    /// # Parameters
+    /// * `controller` - Mutable controller descriptor with an allocated DCBAA.
+    /// * `ident` - Identifier string used for log messages.
+    ///
+    /// # Returns
+    /// `Ok(())` when the controller state reflects the advertised scratchpad
+    /// count or an error string when allocations fail.
+    fn configure_scratchpad_buffers(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<(), &'static str> {
+        let count = controller.scratchpad_count as usize;
+        if count == 0 {
+            return Ok(());
+        }
+
+        let table_bytes = count * SCRATCHPAD_ENTRY_SIZE;
+        let needs_table = controller
+            .scratchpad_table
+            .as_ref()
+            .map_or(true, |table| table.len() != table_bytes);
+        if needs_table {
+            controller.scratchpad_table = Some(
+                DmaBuffer::allocate(table_bytes, SCRATCHPAD_POINTER_ALIGN)
+                    .map_err(|_| "failed to allocate scratchpad pointer table")?,
+            );
+        }
+
+        if controller.scratchpad_buffers.len() != count {
+            controller.scratchpad_buffers.clear();
+            for _ in 0..count {
+                let buffer = DmaBuffer::allocate(
+                    crate::memory::PAGE_SIZE as usize,
+                    crate::memory::PAGE_SIZE as usize,
+                )
+                .map_err(|_| "failed to allocate scratchpad buffer")?;
+                controller.scratchpad_buffers.push(buffer);
+            }
+        }
+
+        let table = controller.scratchpad_table.as_mut().unwrap();
+        unsafe {
+            let mut entry_ptr = table.virt_addr() as *mut u64;
+            for scratchpad in controller.scratchpad_buffers.iter() {
+                core::ptr::write_volatile(entry_ptr, scratchpad.phys_addr());
+                entry_ptr = entry_ptr.add(1);
+            }
+        }
+
+        let dcbaa = controller.dcbaa.as_mut().unwrap();
+        unsafe {
+            let dcbaa_entries = dcbaa.virt_addr() as *mut u64;
+            core::ptr::write_volatile(dcbaa_entries, table.phys_addr());
+        }
+
+        log_info!(
+            "xHCI {} scratchpad buffers: count={} table={:#012x}",
+            ident,
+            count,
+            table.phys_addr()
+        );
 
         Ok(())
     }
@@ -998,6 +1106,96 @@ impl XhciDriver {
         }
     }
 
+    /// Emit a human-readable summary of every root hub port.
+    fn log_ports(&self, controller: &XhciController, ident: &str) {
+        if controller.max_ports == 0 {
+            log_info!("xHCI {} reports zero root ports", ident);
+            return;
+        }
+
+        unsafe {
+            let op_base =
+                (controller.virt_base + controller.operational_offset as u64) as *const u8;
+            for port_index in 0..controller.max_ports as usize {
+                let portsc_ptr = op_base
+                    .add(PORTSC_REGISTER_OFFSET + (port_index * PORT_REGISTER_STRIDE))
+                    as *const u32;
+                let portsc = core::ptr::read_volatile(portsc_ptr);
+                let summary = self.describe_portsc(portsc);
+                log_info!("xHCI {} port{:02} {}", ident, port_index + 1, summary);
+            }
+        }
+    }
+
+    /// Build a descriptive string for a `PORTSC` register snapshot.
+    fn describe_portsc(&self, portsc: u32) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if (portsc & PORTSC_CCS) != 0 {
+            parts.push("connected".into());
+        } else {
+            parts.push("disconnected".into());
+        }
+        if (portsc & PORTSC_PED) != 0 {
+            parts.push("enabled".into());
+        }
+        if (portsc & PORTSC_POWER) != 0 {
+            parts.push("powered".into());
+        }
+        if (portsc & PORTSC_PR) != 0 {
+            parts.push("reset".into());
+        }
+        if (portsc & PORTSC_OCA) != 0 {
+            parts.push("overcurrent".into());
+        }
+
+        let link_state = (portsc & PORTSC_LINK_STATE_MASK) >> PORTSC_LINK_STATE_SHIFT;
+        parts.push(format!("link={}", self.describe_link_state(link_state)));
+
+        let speed = (portsc & PORTSC_SPEED_MASK) >> PORTSC_SPEED_SHIFT;
+        if speed != 0 {
+            parts.push(format!("speed={}", self.describe_port_speed(speed)));
+        }
+
+        parts.push(format!("raw={:#010x}", portsc));
+        parts.join(" ")
+    }
+
+    /// Translate the link state field from PORTSC into a short label.
+    fn describe_link_state(&self, state: u32) -> &'static str {
+        match state {
+            0 => "U0",
+            1 => "U1",
+            2 => "U2",
+            3 => "U3",
+            4 => "Disabled",
+            5 => "RxDetect",
+            6 => "Inactive",
+            7 => "Polling",
+            8 => "Compliance",
+            9 => "Recovery",
+            10 => "HotReset",
+            11 => "Resume",
+            12 => "Reserved",
+            13 => "Test",
+            14 => "ResumePending",
+            _ => "Unknown",
+        }
+    }
+
+    /// Translate the port speed field from PORTSC into a human-readable term.
+    fn describe_port_speed(&self, speed: u32) -> &'static str {
+        match speed {
+            0 => "invalid",
+            1 => "full",
+            2 => "low",
+            3 => "high",
+            4 => "super",
+            5 => "super+",
+            _ => "reserved",
+        }
+    }
+
+    /// Decode USBSTS into a pipe-separated list of active flags.
     fn describe_status(&self, sts: u32) -> String {
         let mut parts = Vec::new();
         if sts & USBSTS_HCHALTED != 0 {
@@ -1019,11 +1217,13 @@ impl XhciDriver {
         }
     }
 
+    /// Emit a structured summary of the controller's capability registers.
     fn log_capabilities(
         &self,
         ident: &str,
         hci_version: u16,
         hcsparams1: u32,
+        hcsparams2: u32,
         hccparams1: u32,
         cap_length: u8,
         runtime_offset: u32,
@@ -1032,14 +1232,16 @@ impl XhciDriver {
         let context_size = if (hccparams1 & (1 << 2)) != 0 { 64 } else { 32 };
         let port_count = (hcsparams1 >> 24) & 0xFF;
         let max_slots = (hcsparams1 & 0xFF) + 1;
+        let scratchpads = Self::scratchpad_count_from_params(hcsparams2);
         log_info!(
-            "xHCI {} HCI v{}.{} slots={} ports={} context_size={}",
+            "xHCI {} HCI v{}.{} slots={} ports={} context_size={} scratchpads={}",
             ident,
             hci_version >> 8,
             hci_version & 0xFF,
             max_slots,
             port_count,
-            context_size
+            context_size,
+            scratchpads
         );
         log_debug!(
             "xHCI {} capability offsets: caplen={:#x} operational={:#x} runtime={:#x} doorbell={:#x}",
@@ -1051,6 +1253,7 @@ impl XhciDriver {
         );
     }
 
+    /// Capture the current controller state from the operational register block.
     fn log_operational_state(&self, virt_base: u64, operational_offset: u32, ident: &str) {
         unsafe {
             let op_base = (virt_base + operational_offset as u64) as *const u32;

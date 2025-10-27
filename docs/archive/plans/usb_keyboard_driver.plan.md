@@ -31,7 +31,8 @@
 - ☐ Create an xHCI driver module that maps the controller MMIO region, parses capability/operational registers, and performs controller reset to a known state.
   - Stub driver now maps MMIO, performs the halt/reset handshake, reports capabilities, allocates command/event rings, programs CRCR/ERST for interrupter 0, stands up the DCBAA, enables the advertised slot count, transitions the controller to RUN, and verifies command submission/completion with a NOOP (`kernel/src/drivers/usb/xhci/mod.rs:1`); runtime bring-up remains (no device contexts yet).
   - QEMU launch script pins `qemu-xhci` to the root bus so the virtual controller reliably enumerates during bring-up (`startQemu.sh:92`).
-- Allocate and initialize the command ring, event ring, and scratchpad buffers using DMA-capable physical memory; ensure virtual mappings stay uncached or write-back per spec.
+- Allocate and initialize the command ring, event ring, and scratchpad buffers using DMA-capable physical memory; ensure virtual mappings stay uncached or write-back per spec. (Command/event rings + DCBAA live, scratchpad pointer table and DMA allocation helpers now wired into the driver.)
+  - Root port diagnostics are logged after the controller transitions to RUN, exposing link state, power, and negotiated speed for each port to aid upcoming enumeration work.
 - Program slot contexts and endpoint contexts for the default control endpoint, handling doorbell and interrupter configuration; route interrupts via MSI/MSI-X if possible, falling back to IOAPIC.
 
 ## Milestone 4: USB Device Enumeration Stack
@@ -45,7 +46,7 @@
 - Provide a fallback polling path for early boot debugging when interrupts are not yet reliable, with a compile-time or runtime switch.
 
 ## Diagnostics & Testing
-- Add verbose logging hooks in the xHCI driver tied into the serial console to trace controller state transitions and USB requests.
+- Add verbose logging hooks in the xHCI driver tied into the serial console to trace controller state transitions and USB requests. (Port status snapshots and scratchpad bookkeeping now emit at INFO level during bring-up.)
 - Create a QEMU-based test recipe (`scripts/` or `docs/`) documenting how to launch with `-device qemu-xhci -device usb-kbd` and verify enumeration.
 - Plan unit-style tests for descriptor parsing and HID report decoding, plus a kernel monitor command to dump active USB devices and their endpoints.
 
