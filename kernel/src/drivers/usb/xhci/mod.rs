@@ -15,6 +15,7 @@ use crate::acpi;
 use crate::drivers::manager::driver_manager;
 use crate::drivers::pci;
 use crate::drivers::traits::{Device, DeviceClass, DeviceId, DeviceResource, Driver};
+use crate::memory::dma::DmaBuffer;
 use crate::memory::{
     current_pml4_phys, map_range_with_policy, phys_to_virt_pa, PageTable, PTE_GLOBAL, PTE_NO_EXEC,
     PTE_PCD, PTE_PRESENT, PTE_PWT, PTE_WRITABLE,
@@ -30,6 +31,10 @@ const USBSTS_HOST_CONTROLLER_ERROR: u32 = 1 << 2;
 const USBSTS_TRANSFER_EVENT: u32 = 1 << 3;
 const USBSTS_CONTROLLER_NOT_READY: u32 = 1 << 11;
 const RESET_SPIN_LIMIT: usize = 1_000_000;
+const TRB_SIZE: usize = 16;
+const COMMAND_RING_TRBS: usize = 256;
+const EVENT_RING_TRBS: usize = 256;
+const RING_ALIGNMENT: usize = 64;
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
@@ -47,6 +52,8 @@ struct XhciController {
     max_ports: u8,
     max_slots: u8,
     msi_enabled: AtomicBool,
+    command_ring: Option<DmaBuffer>,
+    event_ring: Option<DmaBuffer>,
 }
 
 pub fn register_xhci_driver() {
@@ -169,11 +176,17 @@ impl XhciDriver {
                 max_ports: ((hcsparams1 >> 24) & 0xFF) as u8,
                 max_slots: ((hcsparams1 & 0xFF) + 1) as u8,
                 msi_enabled: AtomicBool::new(false),
+                command_ring: None,
+                event_ring: None,
             };
 
             let mut list = CONTROLLERS.lock();
             list.push(controller);
-            let stored = list.last().unwrap() as *const XhciController;
+            let controller_ref = list.last_mut().unwrap();
+            if let Err(err) = self.initialise_memory(controller_ref, &ident) {
+                log_warn!("xHCI {}: memory init failed: {}", ident, err);
+            }
+            let stored = controller_ref as *const XhciController;
             dev.driver_data = Some(stored as usize);
         }
 
@@ -285,6 +298,41 @@ impl XhciDriver {
             spin_loop();
         }
         false
+    }
+
+    fn initialise_memory(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<(), &'static str> {
+        if controller.command_ring.is_some() {
+            return Ok(());
+        }
+
+        let command_ring = self.allocate_ring(COMMAND_RING_TRBS, "command")?;
+        let event_ring = self.allocate_ring(EVENT_RING_TRBS, "event")?;
+
+        log_info!(
+            "xHCI {} ring allocation: command phys={:#012x} size={} event phys={:#012x} size={}",
+            ident,
+            command_ring.phys_addr(),
+            command_ring.len(),
+            event_ring.phys_addr(),
+            event_ring.len()
+        );
+
+        controller.command_ring = Some(command_ring);
+        controller.event_ring = Some(event_ring);
+        Ok(())
+    }
+
+    fn allocate_ring(&self, trbs: usize, tag: &str) -> Result<DmaBuffer, &'static str> {
+        let size = trbs * TRB_SIZE;
+        DmaBuffer::allocate(size, RING_ALIGNMENT).map_err(|_| match tag {
+            "command" => "failed to allocate command ring",
+            "event" => "failed to allocate event ring",
+            _ => "failed to allocate ring",
+        })
     }
 
     fn describe_status(&self, sts: u32) -> String {
