@@ -78,8 +78,9 @@ struct XhciController {
     slots_enabled: bool,
     dcbaa: Option<DmaBuffer>,
     controller_running: bool,
-    last_command_status: Option<u32>,
+    last_command_status: Option<CommandCompletion>,
     pending_commands: usize,
+    slot_contexts: Vec<DmaBuffer>,
     slot_contexts: Vec<DmaBuffer>,
 }
 
@@ -94,6 +95,32 @@ struct EventRing {
     table: DmaBuffer,
     index: usize,
     cycle: bool,
+}
+
+/// Raw representation of a command TRB to be written to the command ring.
+#[derive(Debug, Clone, Copy)]
+struct RawCommandTrb {
+    /// Combined parameter value (typically pointer).
+    parameter: u64,
+    /// Third dword of the TRB (status field).
+    status: u32,
+    /// Control dword (type bits, interrupter toggle, etc.).
+    control: u32,
+}
+
+/// Summary of information extracted from a command completion event.
+#[derive(Debug, Clone, Copy)]
+struct CommandCompletion {
+    /// Completion code reported by hardware.
+    code: u32,
+    /// TRB type encoded in the event.
+    trb_type: u32,
+    /// Full parameter payload echoed by the controller.
+    parameter: u64,
+    /// Raw status dword from the event TRB.
+    status: u32,
+    /// Raw control dword from the event TRB.
+    control: u32,
 }
 
 impl CommandRing {
@@ -810,21 +837,14 @@ impl XhciDriver {
         Ok(())
     }
 
-    /// Write a NOOP TRB into the command ring, ring the host doorbell, and wait
-    /// for the completion event. This demonstrates the full command/doorbell
-    /// path for students.
-    ///
-    /// # Parameters
-    /// * `controller` - Mutable controller state.
-    /// * `ident` - Identifier used in log messages.
-    ///
-    /// # Returns
-    /// `Ok(())` when completion is observed, otherwise an error string.
-    fn submit_noop(
+    /// Issue an arbitrary command TRB, ring the host doorbell, and wait for the
+    /// completion event.
+    fn issue_command(
         &self,
         controller: &mut XhciController,
         ident: &str,
-    ) -> Result<(), &'static str> {
+        trb: RawCommandTrb,
+    ) -> Result<(CommandCompletion, usize), &'static str> {
         if !controller.controller_running {
             return Err("controller not running");
         }
@@ -834,31 +854,50 @@ impl XhciDriver {
         };
 
         let index = ring.index % COMMAND_RING_TRBS;
-        let trb_addr = ring.current_trb();
-        let cycle_bit = ring.cycle_bit_u32();
+        let trb_ptr = ring.current_trb();
         unsafe {
-            // Emit a NOOP TRB; the zeroed parameter fields keep side effects at
-            // bay while still exercising the doorbell path.
-            core::ptr::write_volatile(trb_addr, 0);
-            core::ptr::write_volatile(trb_addr.add(1), 0);
-            core::ptr::write_volatile(trb_addr.add(2), 0);
-            let control = cycle_bit | (TRB_TYPE_NOOP_COMMAND << 10);
-            core::ptr::write_volatile(trb_addr.add(3), control);
+            core::ptr::write_volatile(trb_ptr, trb.parameter as u32);
+            core::ptr::write_volatile(trb_ptr.add(1), (trb.parameter >> 32) as u32);
+            core::ptr::write_volatile(trb_ptr.add(2), trb.status);
+            let control = ring.cycle_bit_u32() | trb.control;
+            core::ptr::write_volatile(trb_ptr.add(3), control);
         }
 
         ring.advance();
 
         unsafe {
-            // Doorbells are 32-bit registers indexed by slot/endpoint; 0 hits
-            // the host command doorbell.
             let doorbell_base =
                 (controller.virt_base + controller.doorbell_offset as u64) as *mut u32;
             core::ptr::write_volatile(doorbell_base.add(DOORBELL_HOST as usize), 0);
         }
 
-        log_info!("xHCI {} submitted NOOP command (index={})", ident, index);
         controller.pending_commands += 1;
-        controller.last_command_status = Some(self.poll_command_completion(controller, ident)?);
+        let completion = self.poll_command_completion(controller, ident)?;
+        controller.last_command_status = Some(completion);
+        Ok((completion, index))
+    }
+
+    /// Write a NOOP TRB into the command ring, ring the host doorbell, and wait
+    /// for the completion event. This demonstrates the full command/doorbell
+    /// path for students.
+    fn submit_noop(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<(), &'static str> {
+        let trb = RawCommandTrb {
+            parameter: 0,
+            status: 0,
+            control: TRB_TYPE_NOOP_COMMAND << 10,
+        };
+
+        let (completion, index) = self.issue_command(controller, ident, trb)?;
+        log_info!(
+            "xHCI {} submitted NOOP command (index={}) -> completion code {}",
+            ident,
+            index,
+            completion.code
+        );
         Ok(())
     }
 
@@ -870,13 +909,13 @@ impl XhciDriver {
     /// * `ident` - Identifier used in log messages.
     ///
     /// # Returns
-    /// The completion code extracted from the event or an error string upon
-    /// timeout/desynchronisation.
+    /// A `CommandCompletion` describing the completion TRB or an error string if
+    /// a timeout/desynchronisation occurs.
     fn poll_command_completion(
         &self,
         controller: &mut XhciController,
         ident: &str,
-    ) -> Result<u32, &'static str> {
+    ) -> Result<CommandCompletion, &'static str> {
         let Some(event_ring) = controller.event_ring.as_mut() else {
             return Err("event ring missing");
         };
@@ -911,7 +950,10 @@ impl XhciDriver {
                 spin_loop();
             }
 
-            let completion = core::ptr::read_volatile(trb_ptr.add(2));
+            let parameter_lo = core::ptr::read_volatile(trb_ptr);
+            let parameter_hi = core::ptr::read_volatile(trb_ptr.add(1));
+            let parameter = ((parameter_hi as u64) << 32) | parameter_lo as u64;
+            let status = core::ptr::read_volatile(trb_ptr.add(2));
             let control = core::ptr::read_volatile(trb_ptr.add(3));
             let code = (control & TRB_COMPLETION_CODE_MASK) >> 24;
             let trb_type = (control & TRB_TYPE_MASK) >> 10;
@@ -931,7 +973,7 @@ impl XhciDriver {
                 ident,
                 code,
                 trb_type,
-                completion
+                parameter
             );
 
             if trb_type != TRB_TYPE_COMMAND_COMPLETION {
@@ -946,7 +988,13 @@ impl XhciDriver {
                 log_warn!("xHCI {} command completed with status code {}", ident, code);
             }
 
-            Ok(code)
+            Ok(CommandCompletion {
+                code,
+                trb_type,
+                parameter,
+                status,
+                control,
+            })
         }
     }
 
