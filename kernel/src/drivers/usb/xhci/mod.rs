@@ -45,6 +45,11 @@ const RUN_STOP_TIMEOUT: usize = 1_000_000;
 const TRB_TYPE_NOOP_COMMAND: u32 = 0x17;
 const TRB_COMPLETION_CODE_MASK: u32 = 0xFF << 24;
 const TRB_TYPE_MASK: u32 = 0x3F << 10;
+const TRB_TYPE_COMMAND_COMPLETION: u32 = 0x21;
+const TRB_COMPLETION_SUCCESS: u32 = 1;
+const TRB_CYCLE_BIT: u32 = 1;
+const DOORBELL_HOST: u32 = 0;
+const IMAN_IP: u32 = 1 << 0;
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
@@ -71,6 +76,9 @@ struct XhciController {
     controller_running: bool,
     command_ring_index: usize,
     last_command_status: Option<u32>,
+    pending_commands: usize,
+    event_ring_index: usize,
+    event_ring_cycle_state: bool,
 }
 
 pub fn register_xhci_driver() {
@@ -202,6 +210,9 @@ impl XhciDriver {
                 controller_running: false,
                 command_ring_index: 0,
                 last_command_status: None,
+                pending_commands: 0,
+                event_ring_index: 0,
+                event_ring_cycle_state: true,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -466,6 +477,9 @@ impl XhciDriver {
             event_ring.phys_addr()
         );
 
+        controller.event_ring_index = 0;
+        controller.event_ring_cycle_state = true;
+
         Ok(())
     }
 
@@ -611,10 +625,11 @@ impl XhciDriver {
         unsafe {
             let doorbell_base =
                 (controller.virt_base + controller.doorbell_offset as u64) as *mut u32;
-            core::ptr::write_volatile(doorbell_base, 0);
+            core::ptr::write_volatile(doorbell_base.add(DOORBELL_HOST as usize), 0);
         }
 
         log_info!("xHCI {} submitted NOOP command (index={})", ident, index);
+        controller.pending_commands += 1;
         controller.last_command_status = Some(self.poll_command_completion(controller, ident)?);
         Ok(())
     }
@@ -635,20 +650,48 @@ impl XhciDriver {
             let erdp_ptr = interrupter0.add(0x18) as *mut u64;
 
             if !self.poll_with_timeout(
-                || (core::ptr::read_volatile(iman_ptr) & 1) != 0,
+                || (core::ptr::read_volatile(iman_ptr) & IMAN_IP) != 0,
                 RUN_STOP_TIMEOUT,
             ) {
                 return Err("command completion timeout");
             }
 
-            let trb_ptr = event_ring.virt_addr() as *mut u32;
+            let mut spins = 0usize;
+            let mut trb_ptr;
+            let expected_cycle = controller.event_ring_cycle_state as u32;
+            loop {
+                trb_ptr = (event_ring.virt_addr() + (controller.event_ring_index * TRB_SIZE) as u64)
+                    as *mut u32;
+                let control = core::ptr::read_volatile(trb_ptr.add(3));
+                let cycle = control & TRB_CYCLE_BIT;
+                if cycle == expected_cycle {
+                    break;
+                }
+                if spins >= RUN_STOP_TIMEOUT {
+                    return Err("event ring desync");
+                }
+                spins += 1;
+                spin_loop();
+            }
+
             let completion = core::ptr::read_volatile(trb_ptr.add(2));
             let control = core::ptr::read_volatile(trb_ptr.add(3));
             let code = (control & TRB_COMPLETION_CODE_MASK) >> 24;
             let trb_type = (control & TRB_TYPE_MASK) >> 10;
 
-            core::ptr::write_volatile(iman_ptr, core::ptr::read_volatile(iman_ptr) & !1);
-            core::ptr::write_volatile(erdp_ptr, event_ring.phys_addr() & !0xF);
+            controller.event_ring_index = controller.event_ring_index.wrapping_add(1);
+            if controller.event_ring_index == EVENT_RING_TRBS {
+                controller.event_ring_index = 0;
+                controller.event_ring_cycle_state = !controller.event_ring_cycle_state;
+            }
+
+            controller.pending_commands = controller.pending_commands.saturating_sub(1);
+
+            core::ptr::write_volatile(iman_ptr, core::ptr::read_volatile(iman_ptr) & !IMAN_IP);
+            core::ptr::write_volatile(
+                erdp_ptr,
+                (event_ring.phys_addr() + (controller.event_ring_index * TRB_SIZE) as u64) & !0xF,
+            );
 
             log_info!(
                 "xHCI {} completion: code={} type={} parameter={:#x}",
@@ -657,6 +700,19 @@ impl XhciDriver {
                 trb_type,
                 completion
             );
+
+            if trb_type != TRB_TYPE_COMMAND_COMPLETION {
+                log_warn!(
+                    "xHCI {} unexpected event type {} while awaiting command completion",
+                    ident,
+                    trb_type
+                );
+            }
+
+            if code != TRB_COMPLETION_SUCCESS {
+                log_warn!("xHCI {} command completed with status code {}", ident, code);
+            }
+
             Ok(code)
         }
     }

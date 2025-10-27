@@ -29,7 +29,7 @@
 
 ## Milestone 3: xHCI Host Controller Bring-Up
 - ☐ Create an xHCI driver module that maps the controller MMIO region, parses capability/operational registers, and performs controller reset to a known state.
-  - Stub driver now maps MMIO, performs the halt/reset handshake, reports capabilities, allocates command/event rings, programs CRCR/ERST for interrupter 0, stands up the DCBAA, enables the advertised slot count, and transitions the controller to RUN (`kernel/src/drivers/usb/xhci/mod.rs:1`); runtime bring-up remains (no TRBs yet).
+  - Stub driver now maps MMIO, performs the halt/reset handshake, reports capabilities, allocates command/event rings, programs CRCR/ERST for interrupter 0, stands up the DCBAA, enables the advertised slot count, transitions the controller to RUN, and verifies command submission/completion with a NOOP (`kernel/src/drivers/usb/xhci/mod.rs:1`); runtime bring-up remains (no device contexts yet).
   - QEMU launch script pins `qemu-xhci` to the root bus so the virtual controller reliably enumerates during bring-up (`startQemu.sh:92`).
 - Allocate and initialize the command ring, event ring, and scratchpad buffers using DMA-capable physical memory; ensure virtual mappings stay uncached or write-back per spec.
 - Program slot contexts and endpoint contexts for the default control endpoint, handling doorbell and interrupter configuration; route interrupts via MSI/MSI-X if possible, falling back to IOAPIC.
