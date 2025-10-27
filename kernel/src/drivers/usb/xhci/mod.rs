@@ -40,6 +40,7 @@ const INTERRUPTER_STRIDE: u32 = 0x20;
 const IMAN_IE: u32 = 1 << 1;
 const MAX_SLOTS_REGISTER_OFFSET: u32 = 0x2C;
 const USBCMD_ENABLE_SLOT: u32 = 1 << 8;
+const DCBAA_ENTRY_SIZE: usize = 8;
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
@@ -62,6 +63,7 @@ struct XhciController {
     event_ring_table: Option<DmaBuffer>,
     command_ring_cycle_state: bool,
     slots_enabled: bool,
+    dcbaa: Option<DmaBuffer>,
 }
 
 pub fn register_xhci_driver() {
@@ -189,6 +191,7 @@ impl XhciDriver {
                 event_ring_table: None,
                 command_ring_cycle_state: true,
                 slots_enabled: false,
+                dcbaa: None,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -202,6 +205,9 @@ impl XhciDriver {
             }
             if let Err(err) = self.configure_event_ring(controller_ref, &ident) {
                 log_warn!("xHCI {}: event ring setup failed: {}", ident, err);
+            }
+            if let Err(err) = self.configure_dcbaa(controller_ref, &ident) {
+                log_warn!("xHCI {}: DCBAA setup failed: {}", ident, err);
             }
             if let Err(err) = self.enable_slots(controller_ref, &ident) {
                 log_warn!("xHCI {}: slot configuration failed: {}", ident, err);
@@ -436,6 +442,36 @@ impl XhciDriver {
             ident,
             controller.event_ring_table.as_ref().unwrap().phys_addr(),
             event_ring.phys_addr()
+        );
+
+        Ok(())
+    }
+
+    fn configure_dcbaa(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<(), &'static str> {
+        if controller.dcbaa.is_none() {
+            let entries = controller.max_slots as usize + 1;
+            let size = entries * DCBAA_ENTRY_SIZE;
+            let dcbaa = DmaBuffer::allocate(size, RING_ALIGNMENT)
+                .map_err(|_| "failed to allocate DCBAA")?;
+            controller.dcbaa = Some(dcbaa);
+        }
+
+        let dcbaa = controller.dcbaa.as_ref().unwrap();
+        let op_base = (controller.virt_base + controller.operational_offset as u64) as *mut u8;
+        unsafe {
+            let dcbaap_ptr = op_base.add(0x30) as *mut u64;
+            core::ptr::write_volatile(dcbaap_ptr, dcbaa.phys_addr());
+        }
+
+        log_info!(
+            "xHCI {} DCBAA configured: ptr={:#012x} entries={}",
+            ident,
+            dcbaa.phys_addr(),
+            controller.max_slots as usize + 1
         );
 
         Ok(())
