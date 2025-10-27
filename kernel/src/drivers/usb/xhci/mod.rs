@@ -53,6 +53,8 @@ const TRB_COMPLETION_SUCCESS: u32 = 1;
 const TRB_CYCLE_BIT: u32 = 1;
 const DOORBELL_HOST: u32 = 0;
 const IMAN_IP: u32 = 1 << 0;
+const DEVICE_CONTEXT_ALIGN: usize = 64;
+const DEVICE_CONTEXT_SIZE: usize = 2048;
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
@@ -78,6 +80,7 @@ struct XhciController {
     controller_running: bool,
     last_command_status: Option<u32>,
     pending_commands: usize,
+    slot_contexts: Vec<DmaBuffer>,
 }
 
 struct CommandRing {
@@ -353,6 +356,7 @@ impl XhciDriver {
                 controller_running: false,
                 last_command_status: None,
                 pending_commands: 0,
+                slot_contexts: Vec::new(),
             };
 
             let mut list = CONTROLLERS.lock();
@@ -658,19 +662,57 @@ impl XhciDriver {
             controller.dcbaa = Some(dcbaa);
         }
 
-        let dcbaa = controller.dcbaa.as_ref().unwrap();
-        let op_base = (controller.virt_base + controller.operational_offset as u64) as *mut u8;
-        unsafe {
-            let dcbaap_ptr = op_base.add(0x30) as *mut u64;
-            core::ptr::write_volatile(dcbaap_ptr, dcbaa.phys_addr());
-        }
+        let dcbaa_phys = {
+            let dcbaa = controller.dcbaa.as_mut().unwrap();
+            let op_base = (controller.virt_base + controller.operational_offset as u64) as *mut u8;
+            unsafe {
+                let dcbaap_ptr = op_base.add(0x30) as *mut u64;
+                core::ptr::write_volatile(dcbaap_ptr, dcbaa.phys_addr());
+            }
+            dcbaa.phys_addr()
+        };
+
+        self.initialise_slot_contexts(controller)?;
 
         log_info!(
             "xHCI {} DCBAA configured: ptr={:#012x} entries={}",
             ident,
-            dcbaa.phys_addr(),
+            dcbaa_phys,
             controller.max_slots as usize + 1
         );
+
+        Ok(())
+    }
+
+    /// Allocate placeholder device contexts for each slot and populate the
+    /// DCBAA entries.
+    fn initialise_slot_contexts(
+        &self,
+        controller: &mut XhciController,
+    ) -> Result<(), &'static str> {
+        controller.slot_contexts.clear();
+
+        let entries = controller.max_slots as usize + 1;
+        let dcbaa = controller.dcbaa.as_mut().unwrap();
+        let base = dcbaa.virt_addr() as *mut u64;
+
+        unsafe {
+            // Entry 0 is reserved for scratchpad pointers. Leave it zeroed for
+            // now; later lessons will populate it as needed.
+            core::ptr::write_volatile(base, 0);
+        }
+
+        for slot in 1..entries {
+            let ctx = DmaBuffer::allocate(DEVICE_CONTEXT_SIZE, DEVICE_CONTEXT_ALIGN)
+                .map_err(|_| "failed to allocate device context")?;
+
+            unsafe {
+                let entry_ptr = base.add(slot);
+                core::ptr::write_volatile(entry_ptr, ctx.phys_addr());
+            }
+
+            controller.slot_contexts.push(ctx);
+        }
 
         Ok(())
     }
