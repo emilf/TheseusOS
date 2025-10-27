@@ -26,6 +26,7 @@ use crate::memory::{
 };
 use crate::{log_debug, log_info, log_warn};
 
+/// Base virtual address used when mapping xHCI MMIO windows into the kernel.
 const XHCI_MMIO_WINDOW_BASE: u64 = 0xFFFF_FFB0_0000_0000;
 const XHCI_MIN_MMIO: usize = 0x2000;
 const USBCMD_RUN_STOP: u32 = 1 << 0;
@@ -113,6 +114,7 @@ struct XhciController {
     attached_speed: Option<PortSpeed>,
     control_context_ready: bool,
     active_slot: Option<u8>,
+    /// Transfer ring backing the default control endpoint (EP0).
     control_transfer_ring: Option<TransferRing>,
 }
 
@@ -139,6 +141,7 @@ struct TransferRing {
     buffer: DmaBuffer,
     #[allow(dead_code)]
     enqueue_index: usize,
+    #[allow(dead_code)]
     cycle: bool,
     trb_count: usize,
 }
@@ -455,7 +458,13 @@ impl CommandRing {
     }
 }
 
+/// Software producer view of an endpoint transfer ring.
+///
+/// The ring is shared between the controller (consumer) and the driver
+/// (producer). We track the next enqueue slot and toggle the cycle bit whenever
+/// the producer wraps back to the beginning.
 impl TransferRing {
+    /// Construct a transfer ring over the provided buffer.
     fn new(buffer: DmaBuffer, trb_count: usize) -> Self {
         Self {
             buffer,
@@ -465,28 +474,39 @@ impl TransferRing {
         }
     }
 
+    /// Physical base of the underlying DMA buffer.
     fn phys_addr(&self) -> u64 {
         self.buffer.phys_addr()
     }
 
+    /// TR dequeue pointer advertised in endpoint contexts (cycle in context).
     fn dequeue_pointer(&self) -> u64 {
         self.buffer.phys_addr() & !0xF
     }
 
+    /// Total number of TRBs the ring can hold.
     fn capacity(&self) -> usize {
         self.trb_count
     }
 
+    /// Append a TRB and advance the producer index, flipping the cycle on wrap.
+    #[allow(dead_code)]
     fn enqueue(&mut self, parameter: u64, status: u32, control: u32) {
-        let trb_ptr = (self.buffer.virt_addr() + (self.enqueue_index * TRB_SIZE) as u64) as *mut u32;
+        let trb_ptr =
+            (self.buffer.virt_addr() + (self.enqueue_index * TRB_SIZE) as u64) as *mut u32;
         unsafe {
             core::ptr::write_volatile(trb_ptr, parameter as u32);
             core::ptr::write_volatile(trb_ptr.add(1), (parameter >> 32) as u32);
             core::ptr::write_volatile(trb_ptr.add(2), status);
-            core::ptr::write_volatile(trb_ptr.add(3), control | if self.cycle { TRB_CYCLE_BIT } else { 0 });
+            core::ptr::write_volatile(
+                trb_ptr.add(3),
+                control | if self.cycle { TRB_CYCLE_BIT } else { 0 },
+            );
         }
 
         self.enqueue_index = (self.enqueue_index + 1) % self.trb_count;
+        // Every time the producer wraps, flip the cycle bit so the
+        // controller can distinguish newly written entries.
         if self.enqueue_index == 0 {
             self.cycle = !self.cycle;
         }
@@ -548,6 +568,12 @@ pub fn register_xhci_driver() {
     driver_manager().lock().register_driver(&XHCI_DRIVER);
 }
 
+/// Concrete implementation of the generic `Driver` trait for xHCI controllers.
+///
+/// The driver is responsible for mapping the controller MMIO aperture,
+/// staging command/event rings, negotiating firmware ownership, and eventually
+/// handling device enumeration. All of its state lives in `XhciController`
+/// instances tracked within `CONTROLLERS`.
 struct XhciDriver;
 
 impl XhciDriver {
@@ -1717,6 +1743,8 @@ impl XhciDriver {
         let transfer_ring = if let Some(ring) = controller.control_transfer_ring.as_mut() {
             ring
         } else {
+            // Allocate the transfer ring on first use so that EP0 has space for
+            // setup/data/status TRBs once the slot is addressed.
             let size = DEFAULT_EP0_RING_TRBS * TRB_SIZE;
             let buffer = DmaBuffer::allocate(size, RING_ALIGNMENT)
                 .map_err(|_| "failed to allocate control transfer ring")?;
@@ -1736,9 +1764,11 @@ impl XhciDriver {
             let slot_words = ctx.slot_words_mut(controller.context_entry_size);
             slot_words.fill(0);
             if !slot_words.is_empty() {
+                // ROUTE STRING (bits 0-19) + SPEED (bits 20-23)
                 slot_words[0] = route_string | (speed_code << 20);
             }
             if slot_words.len() > 1 {
+                // CONTEXT ENTRIES (bits 27-31) + ROOT HUB PORT (bits 16-23)
                 let context_entry = (slot_context_entries & 0x1F) << 27;
                 let port_field = (port_number & 0xFF) << 16;
                 slot_words[1] = context_entry | port_field;
@@ -1767,6 +1797,10 @@ impl XhciDriver {
     }
 
     /// Initialise the default control endpoint context template used during address assignment.
+    ///
+    /// `dequeue_pointer` should match the TR dequeue pointer field programmed in
+    /// the endpoint context (dword 2 and 3). The cycle bit is tracked in the
+    /// context rather than encoded in this pointer.
     fn populate_endpoint_zero(
         &self,
         endpoint_words: &mut [u32],
@@ -1787,6 +1821,12 @@ impl XhciDriver {
         }
         if endpoint_words.len() > 3 {
             endpoint_words[3] = (dequeue_pointer >> 32) as u32;
+        }
+        if endpoint_words.len() > 4 {
+            endpoint_words[4] = endpoint_words[2];
+        }
+        if endpoint_words.len() > 5 {
+            endpoint_words[5] = endpoint_words[3];
         }
         if endpoint_words.len() > 7 {
             endpoint_words[7] = max_packet as u32;
@@ -1830,6 +1870,9 @@ impl XhciDriver {
     }
 
     /// Issue the Address Device command for the active slot using the prepared input context.
+    ///
+    /// The control transfer ring must already exist so that the endpoint
+    /// context points at valid TRB storage once the controller enables the slot.
     fn address_device_command(
         &self,
         controller: &mut XhciController,
@@ -1996,9 +2039,3 @@ impl Driver for XhciDriver {
         false
     }
 }
-        if endpoint_words.len() > 4 {
-            endpoint_words[4] = endpoint_words[2];
-        }
-        if endpoint_words.len() > 5 {
-            endpoint_words[5] = endpoint_words[3];
-        }
