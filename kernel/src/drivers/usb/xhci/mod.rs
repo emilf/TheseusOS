@@ -41,6 +41,7 @@ const IMAN_IE: u32 = 1 << 1;
 const MAX_SLOTS_REGISTER_OFFSET: u32 = 0x2C;
 const USBCMD_ENABLE_SLOT: u32 = 1 << 8;
 const DCBAA_ENTRY_SIZE: usize = 8;
+const RUN_STOP_TIMEOUT: usize = 1_000_000;
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
@@ -64,6 +65,7 @@ struct XhciController {
     command_ring_cycle_state: bool,
     slots_enabled: bool,
     dcbaa: Option<DmaBuffer>,
+    controller_running: bool,
 }
 
 pub fn register_xhci_driver() {
@@ -192,6 +194,7 @@ impl XhciDriver {
                 command_ring_cycle_state: true,
                 slots_enabled: false,
                 dcbaa: None,
+                controller_running: false,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -211,6 +214,9 @@ impl XhciDriver {
             }
             if let Err(err) = self.enable_slots(controller_ref, &ident) {
                 log_warn!("xHCI {}: slot configuration failed: {}", ident, err);
+            }
+            if let Err(err) = self.start_controller(controller_ref, &ident) {
+                log_warn!("xHCI {}: run-state transition failed: {}", ident, err);
             }
             let stored = controller_ref as *const XhciController;
             dev.driver_data = Some(stored as usize);
@@ -287,9 +293,10 @@ impl XhciDriver {
                 let mut cmd = core::ptr::read_volatile(cmd_ptr);
                 cmd &= !USBCMD_RUN_STOP;
                 core::ptr::write_volatile(cmd_ptr, cmd);
-                if !self
-                    .poll_with_timeout(|| core::ptr::read_volatile(sts_ptr) & USBSTS_HCHALTED != 0)
-                {
+                if !self.poll_with_timeout(
+                    || core::ptr::read_volatile(sts_ptr) & USBSTS_HCHALTED != 0,
+                    RESET_SPIN_LIMIT,
+                ) {
                     log_warn!("xHCI {}: halt before reset timed out", ident);
                     return Err("xhci halt timeout");
                 }
@@ -298,13 +305,18 @@ impl XhciDriver {
             let mut cmd = core::ptr::read_volatile(cmd_ptr);
             cmd |= USBCMD_HCRST;
             core::ptr::write_volatile(cmd_ptr, cmd);
-            if !self.poll_with_timeout(|| core::ptr::read_volatile(cmd_ptr) & USBCMD_HCRST == 0) {
+            if !self.poll_with_timeout(
+                || core::ptr::read_volatile(cmd_ptr) & USBCMD_HCRST == 0,
+                RESET_SPIN_LIMIT,
+            ) {
                 log_warn!("xHCI {}: controller reset timed out", ident);
                 return Err("xhci reset timeout");
             }
 
-            if !self.poll_with_timeout(|| core::ptr::read_volatile(sts_ptr) & USBSTS_HCHALTED != 0)
-            {
+            if !self.poll_with_timeout(
+                || core::ptr::read_volatile(sts_ptr) & USBSTS_HCHALTED != 0,
+                RESET_SPIN_LIMIT,
+            ) {
                 log_warn!("xHCI {}: controller not halted after reset", ident);
             }
         }
@@ -313,11 +325,11 @@ impl XhciDriver {
         Ok(())
     }
 
-    fn poll_with_timeout<F>(&self, mut predicate: F) -> bool
+    fn poll_with_timeout<F>(&self, mut predicate: F, limit: usize) -> bool
     where
         F: FnMut() -> bool,
     {
-        for _ in 0..RESET_SPIN_LIMIT {
+        for _ in 0..limit {
             if predicate() {
                 return true;
             }
@@ -504,6 +516,51 @@ impl XhciDriver {
             controller.max_slots
         );
 
+        Ok(())
+    }
+
+    fn start_controller(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<(), &'static str> {
+        if controller.controller_running {
+            return Ok(());
+        }
+        if controller.command_ring.is_none()
+            || controller.event_ring.is_none()
+            || controller.dcbaa.is_none()
+        {
+            return Err("controller buffers incomplete");
+        }
+
+        unsafe {
+            let op_base = (controller.virt_base + controller.operational_offset as u64) as *mut u8;
+            let cmd_ptr = op_base.add(0x00) as *mut u32;
+            let sts_ptr = op_base.add(0x04) as *mut u32;
+
+            let mut cmd = core::ptr::read_volatile(cmd_ptr);
+            if cmd & USBCMD_RUN_STOP == 0 {
+                cmd |= USBCMD_RUN_STOP;
+                core::ptr::write_volatile(cmd_ptr, cmd);
+            }
+
+            if !self.poll_with_timeout(
+                || core::ptr::read_volatile(sts_ptr) & USBSTS_HCHALTED == 0,
+                RUN_STOP_TIMEOUT,
+            ) {
+                return Err("controller failed to leave halt state");
+            }
+
+            let status = core::ptr::read_volatile(sts_ptr);
+            let ready = (status & USBSTS_CONTROLLER_NOT_READY) == 0;
+            if !ready {
+                log_warn!("xHCI {} controller not ready after run", ident);
+            }
+        }
+
+        controller.controller_running = true;
+        log_info!("xHCI {} controller running", ident);
         Ok(())
     }
 

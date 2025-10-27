@@ -19,7 +19,7 @@ Milestone 1 establishes a clean PCI discovery layer that future USB work can bui
 - **MSI helper**: Introduced `pci::enable_msi` so future drivers can flip devices over to message-signalled interrupts without duplicating capability plumbing.
 - **DMA buffer helper**: `kernel/src/memory/dma.rs:1` wraps the contiguous allocator to provide aligned, zeroed, kernel-mapped buffers suitable for xHCI command/event rings or other DMA-heavy peripherals.
 - **Firmware handoff hooks**: `kernel/src/acpi/mod.rs:205` now captures FADT legacy ownership knobs and any ACPI `XHCI` descriptors, while `kernel/src/drivers/system.rs:155` invokes `usb::ensure_legacy_usb_handoff` so BIOS-owned controllers are released before drivers bind.
-- **Ring staging**: The nascent xHCI driver allocates DMA-backed command/event rings, programs CRCR/ERST for interrupter 0, sets up the DCBAA, enables the slot count, and logs their physical addresses so later milestones can plug in TRB programming quickly (`kernel/src/drivers/usb/xhci/mod.rs:300`).
+- **Ring staging**: The nascent xHCI driver allocates DMA-backed command/event rings, programs CRCR/ERST for interrupter 0, sets up the DCBAA, enables the slot count, brings the controller to RUN, and logs the resource layout so later milestones can plug in TRB programming quickly (`kernel/src/drivers/usb/xhci/mod.rs:300`).
 
 ## Outstanding Tasks
 1. **Interrupt model upgrade**: Integrate the MSI helper with the interrupt allocator (vector reservation, masks, teardown) and provide IO-APIC fallback policies.
