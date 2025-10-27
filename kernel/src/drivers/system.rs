@@ -154,6 +154,8 @@ pub fn init() -> DriverResult<PlatformInfo> {
 
     // Ensure firmware releases ownership of any legacy USB controllers
     usb::ensure_legacy_usb_handoff(&pci_topology.functions);
+    // Register USB-class drivers (e.g., xHCI) after handoff
+    usb::init();
 
     // Register PCI devices with driver manager
     let mut pci_devices: Vec<Device> = Vec::new();

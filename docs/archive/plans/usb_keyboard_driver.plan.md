@@ -28,7 +28,8 @@
 - ⬜ Document the firmware release procedure and codify policy wiring for MSI/IOAPIC fallback.
 
 ## Milestone 3: xHCI Host Controller Bring-Up
-- Create an xHCI driver module that maps the controller MMIO region, parses capability/operational registers, and performs controller reset to a known state.
+- ☐ Create an xHCI driver module that maps the controller MMIO region, parses capability/operational registers, and performs controller reset to a known state.
+  - Stub driver now maps MMIO, reports capabilities, and reserves slots for future rings (`kernel/src/drivers/usb/xhci/mod.rs:1`); controller reset and runtime bring-up remain.
 - Allocate and initialize the command ring, event ring, and scratchpad buffers using DMA-capable physical memory; ensure virtual mappings stay uncached or write-back per spec.
 - Program slot contexts and endpoint contexts for the default control endpoint, handling doorbell and interrupter configuration; route interrupts via MSI/MSI-X if possible, falling back to IOAPIC.
 

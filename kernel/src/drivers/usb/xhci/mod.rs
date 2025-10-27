@@ -1,0 +1,247 @@
+//! xHCI host controller driver scaffold.
+//!
+//! This module sets up the groundwork for a fully featured xHCI driver by
+//! mapping controller MMIO, inspecting capabilities, and wiring the controller
+//! into the driver manager. The focus is on the modern PCIe/MSI path; legacy
+//! emulation stays disabled once firmware handoff completes.
+
+use alloc::vec::Vec;
+use core::convert::TryFrom;
+use core::sync::atomic::AtomicBool;
+use spin::Mutex;
+
+use crate::acpi;
+use crate::drivers::manager::driver_manager;
+use crate::drivers::pci;
+use crate::drivers::traits::{Device, DeviceClass, DeviceId, DeviceResource, Driver};
+use crate::memory::{
+    current_pml4_phys, map_range_with_policy, phys_to_virt_pa, PageTable, PTE_GLOBAL, PTE_NO_EXEC,
+    PTE_PCD, PTE_PRESENT, PTE_PWT, PTE_WRITABLE,
+};
+use crate::{log_debug, log_info, log_warn};
+
+const XHCI_MMIO_WINDOW_BASE: u64 = 0xFFFF_FFB0_0000_0000;
+const XHCI_MIN_MMIO: usize = 0x2000;
+static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
+static XHCI_DRIVER: XhciDriver = XhciDriver;
+static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
+
+#[allow(dead_code)]
+struct XhciController {
+    phys_base: u64,
+    virt_base: u64,
+    mmio_length: usize,
+    cap_length: u8,
+    hci_version: u16,
+    operational_offset: u32,
+    runtime_offset: u32,
+    doorbell_offset: u32,
+    msi_enabled: AtomicBool,
+}
+
+pub fn register_xhci_driver() {
+    driver_manager().lock().register_driver(&XHCI_DRIVER);
+}
+
+struct XhciDriver;
+
+impl XhciDriver {
+    fn locate_mmio(&self, dev: &Device) -> Result<(u64, usize), &'static str> {
+        for res in dev.resources.iter() {
+            if let DeviceResource::Memory { base, size, .. } = res {
+                let length = usize::try_from(*size).unwrap_or(XHCI_MIN_MMIO);
+                return Ok((*base, length.max(XHCI_MIN_MMIO)));
+            }
+        }
+        dev.phys_addr
+            .map(|base| (base, XHCI_MIN_MMIO))
+            .ok_or("xHCI controller lacks memory resource")
+    }
+
+    fn map_mmio(&self, phys_addr: u64, size: usize) -> u64 {
+        let page_size = crate::memory::PAGE_SIZE as u64;
+        let phys_base = phys_addr & !(page_size - 1);
+        let offset = phys_addr - phys_base;
+        let size_aligned = ((offset + size as u64 + page_size - 1) / page_size) * page_size;
+        let virt_base = XHCI_MMIO_WINDOW_BASE + phys_base;
+
+        let _guard = MMIO_MAPPING_LOCK.lock();
+
+        unsafe {
+            let pml4_pa = current_pml4_phys();
+            let pml4_ptr = phys_to_virt_pa(pml4_pa) as *mut PageTable;
+            let pml4 = &mut *pml4_ptr;
+            let mut allocator = crate::physical_memory::PersistentFrameAllocator;
+            let flags = PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_NO_EXEC | PTE_PCD | PTE_PWT;
+            map_range_with_policy(
+                pml4,
+                virt_base,
+                phys_base,
+                size_aligned,
+                flags,
+                &mut allocator,
+            );
+        }
+
+        virt_base + offset
+    }
+
+    fn initialise_controller(
+        &'static self,
+        dev: &mut Device,
+        phys_base: u64,
+        mmio_length: usize,
+    ) -> Result<(), &'static str> {
+        let virt = self.map_mmio(phys_base, mmio_length);
+        unsafe {
+            let base = virt as *const u8;
+            let cap_length = core::ptr::read_volatile(base);
+            let hci_version = core::ptr::read_volatile(base.add(2) as *const u16);
+            let hcsparams1 = core::ptr::read_volatile(base.add(0x04) as *const u32);
+            let hccparams1 = core::ptr::read_volatile(base.add(0x10) as *const u32);
+            let operational_offset = cap_length as u32;
+            let runtime_offset =
+                core::ptr::read_volatile(base.add(0x18) as *const u32) & !0b11;
+            let doorbell_offset =
+                core::ptr::read_volatile(base.add(0x14) as *const u32) & !0b11;
+
+            log_info!(
+                "xHCI {:04x}:{:02x}:{:02x}.{} HCI v{}.{} slots={} ports={} context_size={}",
+                match dev.id {
+                    DeviceId::Pci { segment, .. } => segment,
+                    _ => 0,
+                },
+                match dev.id {
+                    DeviceId::Pci { bus, .. } => bus,
+                    _ => 0,
+                },
+                match dev.id {
+                    DeviceId::Pci { device, .. } => device,
+                    _ => 0,
+                },
+                match dev.id {
+                    DeviceId::Pci { function, .. } => function,
+                    _ => 0,
+                },
+                hci_version >> 8,
+                hci_version & 0xFF,
+                (hcsparams1 & 0xFF) + 1,
+                (hcsparams1 >> 24) & 0xFF,
+                if (hccparams1 & (1 << 2)) != 0 { 64 } else { 32 }
+            );
+
+            let controller = XhciController {
+                phys_base,
+                virt_base: virt,
+                mmio_length,
+                cap_length,
+                hci_version,
+                operational_offset,
+                runtime_offset,
+                doorbell_offset,
+                msi_enabled: AtomicBool::new(false),
+            };
+
+            {
+                let mut list = CONTROLLERS.lock();
+                list.push(controller);
+                let ptr = list.last().unwrap() as *const XhciController;
+                dev.driver_data = Some(ptr as usize);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn try_enable_msi(&self, dev: &Device) {
+        let DeviceId::Pci {
+            segment,
+            bus,
+            device,
+            function,
+        } = dev.id
+        else {
+            log_warn!("xHCI driver: device lacks PCI identity; cannot configure MSI");
+            return;
+        };
+
+        let platform = match acpi::cached_platform_info() {
+            Some(info) => info,
+            None => {
+                log_warn!("xHCI driver: platform info unavailable for MSI setup");
+                return;
+            }
+        };
+
+        let topology = pci::enumerate(&platform.pci_config_regions);
+        let Some(pci_info) = topology.functions.iter().find(|info| {
+            info.segment == segment
+                && info.bus == bus
+                && info.device == device
+                && info.function == function
+        }) else {
+            log_warn!(
+                "xHCI driver: PCI info not found for {:04x}:{:02x}:{:02x}.{}",
+                segment,
+                bus,
+                device,
+                function
+            );
+            return;
+        };
+
+        if !pci_info.capabilities.msi {
+            log_info!(
+                "xHCI {:02x}:{:02x}.{}: MSI not advertised, skipping setup",
+                bus,
+                device,
+                function
+            );
+            return;
+        }
+
+        // TODO: integrate with interrupt allocator to source a vector dynamically.
+        log_info!(
+            "xHCI {:02x}:{:02x}.{} advertises MSI/MSI-X (msi={} msix={})",
+            bus,
+            device,
+            function,
+            pci_info.capabilities.msi,
+            pci_info.capabilities.msix
+        );
+    }
+}
+
+impl Driver for XhciDriver {
+    fn supported_classes(&self) -> &'static [DeviceClass] {
+        &[DeviceClass::UsbController]
+    }
+
+    fn probe(&'static self, dev: &mut Device) -> Result<(), &'static str> {
+        if dev.class != DeviceClass::UsbController {
+            return Err("not USB class");
+        }
+        if self.locate_mmio(dev).is_err() {
+            return Err("missing MMIO resource");
+        }
+        Ok(())
+    }
+
+    fn init(&'static self, dev: &mut Device) -> Result<(), &'static str> {
+        let (phys, length) = self.locate_mmio(dev)?;
+        if dev.phys_addr.is_none() {
+            dev.phys_addr = Some(phys);
+        }
+
+        self.initialise_controller(dev, phys, length)?;
+        self.try_enable_msi(dev);
+
+        log_debug!("xHCI controller initialised at phys={:#012x}", phys);
+        Ok(())
+    }
+
+    fn irq_handler(&'static self, _dev: &mut Device, _irq: u32) -> bool {
+        // Placeholder: mainline path will be implemented alongside interrupt allocator work.
+        false
+    }
+}
