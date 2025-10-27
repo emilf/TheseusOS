@@ -15,14 +15,16 @@ Milestone 1 establishes a clean PCI discovery layer that future USB work can bui
 - **PCI monitor command**: Added a `pci` monitor command that re-enumerates functions/bridges on demand and prints BAR resources for quick topology inspection.
 - **MSI helper**: Introduced `pci::enable_msi` so future drivers can flip devices over to message-signalled interrupts without duplicating capability plumbing.
 - **DMA buffer helper**: `kernel/src/memory/dma.rs:1` wraps the contiguous allocator to provide aligned, zeroed, kernel-mapped buffers suitable for xHCI command/event rings or other DMA-heavy peripherals.
+- **Firmware handoff hooks**: `kernel/src/acpi/mod.rs:205` now captures FADT legacy ownership knobs and any ACPI `XHCI` descriptors, while `kernel/src/drivers/system.rs:155` invokes `usb::ensure_legacy_usb_handoff` so BIOS-owned controllers are released before drivers bind.
 
 ## Outstanding Tasks
 1. **Interrupt model upgrade**: Integrate the MSI helper with the interrupt allocator (vector reservation, masks, teardown) and provide IO-APIC fallback policies.
-2. **Diagnostics tooling**: Round out the `pci` monitor output with capability summaries when needed, and document the workflow for internal consumers.
+2. **Diagnostics tooling**: Round out the `pci` monitor output with capability summaries and surface the new FADT/legacy handoff state so bring-up issues are easier to spot.
 
 ## Testing & Verification
 - Sandbox runs reach the `=== Kernel environment setup complete ===` marker; serial/monitor pipes are intentionally disabled, so the harness exits immediately afterwards.
 - On a developer workstation, run `./startQemu.sh headless 15`. You should see bridge log entries showing the new secondary/subordinate allocation; once resource refinement lands the `qemu-xhci` controller (class `0c0330`) should enumerate.
+- With the new legacy handoff path, expect logs confirming OS ownership (or warnings if BIOS refuses to release); this should precede any future xHCI init traces.
 
 ## Next Milestone Preview
 - Feed the refined PCI class information into driver binding so xHCI and storage drivers can auto-attach.

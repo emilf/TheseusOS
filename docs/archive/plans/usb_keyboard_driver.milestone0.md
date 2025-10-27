@@ -19,7 +19,10 @@ Milestone 0 was about auditing prerequisites before writing any USB code. This n
 - Kernel logging of the firmware-provided inventory is enabled by default (`kernel/src/config.rs:15`), which means every boot will emit the device list needed to correlate PCI bus IDs with USB endpoints during early debugging.
 - With the new summaries (USB port/interface, PCI device/function numbering), we can sanity-check the QEMU topology before writing any enumeration code and confirm the keyboard is actually visible at boot.
 
-## Next Steps Toward Milestone 1
+## ACPI Legacy Ownership Inputs
+- `PlatformInfo::legacy_usb` now captures the FADT-provided SMI command port, SCI line, and ownership bytes so firmware handoff sequencing is documented alongside other prerequisites.
+- Any ACPI `XHCI` tables are mirrored into `PlatformInfo::xhci_descriptors`, preserving controller-specific hints for later milestones.
+
+## Follow-Up Actions (carried into Milestone 2)
 - Integrate the new MSI helper into real drivers (reserve vectors, mask IOAPIC routes, and handle teardown paths).
 - Extend the DMA pooling story with recycling strategies tailored for xHCI command/event rings.
-- Refine PCI bridge resource windows based on BAR sizing (I/O + MEM) so downstream devices decode correctly without wasting aperture space.

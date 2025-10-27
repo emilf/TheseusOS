@@ -5,6 +5,11 @@
 - Fill current gaps: no PCI bus layer, no USB stack, no input event pipeline, and limited DMA-friendly memory allocation.
 - Deliver a staged plan that sequences foundational infrastructure (PCI, ACPI handoff, DMA buffers), controller bring-up, USB protocol layers, and keyboard input integration.
 
+## Status Snapshot
+- [x] **Milestone 0 – Prerequisite Audit**: Baseline inventory captured; FADT-derived legacy USB knobs and XHCI descriptors are now mirrored in `PlatformInfo`.
+- [x] **Milestone 1 – PCI Discovery**: ECAM enumeration integrated with the driver system, and USB controllers are claimed via the new legacy handoff path.
+- [ ] **Milestone 2 – ACPI & Controller Handoff**: Firmware ownership negotiation is coded; remaining work focuses on diagnostics, policy wiring, and documentation.
+
 ## Milestone 0: Prerequisite Audit
 - Confirm interrupt delivery story: document current APIC/IOAPIC usage, available vectors, and whether MSI/MSI-X is viable for early use; define the fallback legacy IRQ path.
 - Inventory memory allocators: identify what is needed to hand out physically contiguous, cache-coherent buffers for xHCI rings (tie-in with the persistent frame allocator roadmap).
@@ -16,9 +21,10 @@
 - Enable bus mastering and MMIO for class `0x0C/0x03` (Serial Bus / USB controller) devices, and expose BAR information plus interrupt capabilities to later stages.
 
 ## Milestone 2: ACPI & Controller Handoff Support
-- Extend ACPI parsing to read XSDT/RSDT beyond MADT, focusing on finding the FADT (for legacy USB handoff) and the XHCI-specific Extended Capabilities Descriptor.
-- Implement BIOS ownership/OS ownership handoff (EHCI legacy handoff and xHCI Extended Capabilities) to disable firmware emulation that might steal the controller.
-- Surface MCFG ranges (if present) to let the PCI layer switch to memory-mapped config space for performance and to access devices above bus 255 if needed.
+- ✅ Extend ACPI parsing to read XSDT/RSDT beyond MADT, focusing on finding the FADT (for legacy USB handoff) and the XHCI-specific Extended Capabilities Descriptor.
+- ✅ Implement BIOS ownership/OS ownership handoff (EHCI legacy handoff and xHCI Extended Capabilities) to disable firmware emulation that might steal the controller.
+- ✅ Surface MCFG ranges (if present) to let the PCI layer switch to memory-mapped config space for performance and to access devices above bus 255 if needed.
+- ⬜ Expose diagnostics/monitor hooks for the newfound legacy handoff state and document the firmware release procedure.
 
 ## Milestone 3: xHCI Host Controller Bring-Up
 - Create an xHCI driver module that maps the controller MMIO region, parses capability/operational registers, and performs controller reset to a known state.
