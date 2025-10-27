@@ -139,7 +139,7 @@ impl DmaPool {
                 .map_err(|_| "dma slab allocation failed")?;
             let slab_index = self.slabs.len();
             self.slabs.push(slab);
-            
+
             // Add all blocks from the new slab to the free list
             for block_index in 0..self.blocks_per_slab {
                 self.free_list.push_back((slab_index, block_index));
@@ -149,7 +149,7 @@ impl DmaPool {
         // Remove a block from the free list
         let (slab_idx, block_idx) = self.free_list.pop_front().expect("pool must provide block");
         let phys_base = self.slabs[slab_idx].phys_addr();
-        
+
         Ok(DmaPoolBlock {
             pool: self,
             slab_idx,

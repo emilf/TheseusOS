@@ -91,10 +91,10 @@ impl DmaBuffer {
 
         // Ensure alignment is at least 1 byte
         let alignment = align.max(1);
-        
+
         // Allocate physically contiguous memory from the persistent allocator
         let phys = physical_memory::alloc_contiguous(size as u64, alignment as u64)?;
-        
+
         // Map the physical memory into kernel virtual address space
         let (virt, mapped) = map_dma_region(phys, size, cache_policy);
 
@@ -187,7 +187,7 @@ impl Drop for DmaBuffer {
     fn drop(&mut self) {
         // Free the physical memory back to the persistent allocator
         let _ = physical_memory::free_contiguous(self.phys_addr, self.size as u64);
-        
+
         // Note: Virtual mapping cleanup is intentionally omitted here
         // If PHYS_OFFSET is inactive, the buffer was mapped through the DMA window
         // and tearing down the mapping would require a dedicated unmap helper.
@@ -225,14 +225,14 @@ impl Drop for DmaBuffer {
 /// 5. Returns the virtual address and actual mapped size
 fn map_dma_region(phys_addr: u64, size: usize, policy: CachePolicy) -> (u64, usize) {
     let page_size = crate::memory::PAGE_SIZE as u64;
-    
+
     // Align physical address to page boundary
     let phys_base = phys_addr & !(page_size - 1);
     let offset = phys_addr - phys_base;
-    
+
     // Calculate size needed for mapping (including alignment padding)
     let size_aligned = ((offset + size as u64 + page_size - 1) / page_size) * page_size;
-    
+
     // Convert physical base to virtual address
     let virt_base = phys_to_virt_pa(phys_base);
 
@@ -242,10 +242,10 @@ fn map_dma_region(phys_addr: u64, size: usize, policy: CachePolicy) -> (u64, usi
         let pml4_ptr = phys_to_virt_pa(pml4_pa) as *mut PageTable;
         let pml4 = &mut *pml4_ptr;
         let mut allocator = PersistentFrameAllocator;
-        
+
         // Apply cache policy to page table flags
         let flags = policy.page_flags(PTE_PRESENT | PTE_WRITABLE);
-        
+
         map_range_with_policy(
             pml4,
             virt_base,
@@ -283,7 +283,7 @@ pub enum CachePolicy {
     /// for most DMA operations and provides good performance for general
     /// purpose buffers and descriptor rings.
     WriteBack,
-    
+
     /// Write-combining cache policy
     ///
     /// Optimized for bulk data transfers where the CPU writes large
@@ -291,7 +291,7 @@ pub enum CachePolicy {
     /// into fewer memory transactions, improving performance for frame
     /// buffers and bulk data transfers.
     WriteCombining,
-    
+
     /// Uncached memory policy
     ///
     /// Bypasses the CPU cache entirely. This is required for memory

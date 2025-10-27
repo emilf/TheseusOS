@@ -166,17 +166,17 @@ impl DriverManager {
     /// This method must be called while holding the driver manager lock.
     pub fn add_device(&mut self, device: Device) {
         log_trace!("Discovered device");
-        
+
         // Check if device already exists
         if let Some(existing) = self.devices.iter_mut().find(|d| d.id == device.id) {
             // Merge new device information into existing device
             existing.merge_from(&device);
             return;
         }
-        
+
         // Add new device to the registry
         self.devices.push(device);
-        
+
         // Attempt to bind the device to a driver
         self.probe_pending_devices();
     }
@@ -206,14 +206,14 @@ impl DriverManager {
             if dev.driver_data.is_some() {
                 continue;
             }
-            
+
             // Try each registered driver
             for drv in self.drivers.iter() {
                 // Check if driver supports this device class
                 if !drv.supports_class(dev.class) {
                     continue;
                 }
-                
+
                 // Attempt to probe the device
                 match drv.probe(dev) {
                     Ok(()) => {
@@ -222,7 +222,7 @@ impl DriverManager {
                             log_error!("Device init failed: {}", e);
                             continue;
                         }
-                        
+
                         log_debug!("Device bound successfully");
                         break; // Stop trying other drivers (first-match wins)
                     }

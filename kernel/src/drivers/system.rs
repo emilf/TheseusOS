@@ -16,6 +16,7 @@ use super::manager::driver_manager;
 use super::pci;
 use super::serial;
 use super::traits::{Device, DeviceClass, DeviceId, DeviceResource};
+use super::usb;
 use crate::monitor;
 
 /// Result type for driver system operations
@@ -109,7 +110,7 @@ pub fn init() -> DriverResult<PlatformInfo> {
                 _ => DeviceId::Raw(entry.device_type_str()),
             };
             let mut device = Device::new(device_id);
-            
+
             // Set up device-specific information
             if entry.device_type == theseus_shared::handoff::DEVICE_TYPE_SERIAL {
                 device.class = DeviceClass::Serial;
@@ -120,7 +121,7 @@ pub fn init() -> DriverResult<PlatformInfo> {
                     device.irq = Some(irq);
                 }
             }
-            
+
             // Register device with driver manager
             driver_manager().lock().add_device(device);
         }
@@ -151,11 +152,14 @@ pub fn init() -> DriverResult<PlatformInfo> {
         );
     }
 
+    // Ensure firmware releases ownership of any legacy USB controllers
+    usb::ensure_legacy_usb_handoff(&pci_topology.functions);
+
     // Register PCI devices with driver manager
     let mut pci_devices: Vec<Device> = Vec::new();
     for info in pci_topology.functions.iter() {
         let class = classify_pci_device(info);
-        
+
         // Skip bridge devices (they're handled separately)
         if class == DeviceClass::Bridge {
             log_trace!(

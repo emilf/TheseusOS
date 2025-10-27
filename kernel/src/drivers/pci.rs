@@ -36,14 +36,14 @@
 //! ```rust,no_run
 //! // Enumerate all PCI devices
 //! let topology = pci::enumerate(&platform_info.pci_config_regions);
-//! 
+//!
 //! // Find a specific device
 //! for device in topology.functions.iter() {
 //!     if device.vendor_id == 0x8086 && device.device_id == 0x1234 {
 //!         // Found our device
 //!     }
 //! }
-//! 
+//!
 //! // Enable MSI for a device
 //! pci::enable_msi(&device, &regions, apic_id, vector)?;
 //! ```
@@ -55,12 +55,12 @@ use alloc::vec::Vec;
 use core::fmt;
 
 // PCI configuration space constants
-const MAX_DEVICE: u8 = 31;    // Maximum device number (0-31)
-const MAX_FUNCTION: u8 = 7;   // Maximum function number (0-7)
+const MAX_DEVICE: u8 = 31; // Maximum device number (0-31)
+const MAX_FUNCTION: u8 = 7; // Maximum function number (0-7)
 
 // ECAM addressing constants (PCIe specification)
-const BUS_STRIDE: u64 = 0x1_0000;     // 1 MiB per bus
-const DEVICE_STRIDE: u64 = 0x8000;    // 32 KiB per device  
+const BUS_STRIDE: u64 = 0x1_0000; // 1 MiB per bus
+const DEVICE_STRIDE: u64 = 0x8000; // 32 KiB per device
 const FUNCTION_STRIDE: u64 = 0x1000; // 4 KiB per function
 
 // MSI configuration constants
@@ -75,7 +75,7 @@ const MSI_ADDR_BASE: u32 = 0xFEE0_0000; // MSI message address base
 /// # BAR Types
 ///
 /// - **Memory32**: 32-bit memory space BAR (up to 4GB)
-/// - **Memory64**: 64-bit memory space BAR (up to 16EB) 
+/// - **Memory64**: 64-bit memory space BAR (up to 16EB)
 /// - **Io**: I/O space BAR (up to 64KB)
 /// - **None**: Unused or invalid BAR
 ///
@@ -882,20 +882,20 @@ pub fn enable_msi(
     // single delivery for now until the interrupt allocator can hand out
     // batches of vectors.
     control &= !0x000E; // Clear multi-message bits (single vector)
-    // Standard MSI address format encodes the LAPIC destination ID in bits 12..19.
+                        // Standard MSI address format encodes the LAPIC destination ID in bits 12..19.
     let msg_addr = MSI_ADDR_BASE | ((apic_id as u32) << 12);
     let msg_data = vector as u16;
 
     // Write message address
     config_write_u32(base, cap_ptr + 4, msg_addr);
     let mut data_offset = cap_ptr + 8;
-    
+
     // Handle 64-bit address capability
     if is_64bit {
         config_write_u32(base, cap_ptr + 8, 0); // Upper address bits
         data_offset = cap_ptr + 12;
     }
-    
+
     // Write message data (interrupt vector)
     config_write_u16(base, data_offset, msg_data);
     let mut next_offset = data_offset + 2;

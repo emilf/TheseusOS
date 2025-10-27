@@ -10,7 +10,7 @@ use crate::memory::{
 };
 use crate::physical_memory;
 use crate::{log_debug, log_error, log_info, log_trace, log_warn};
-use acpi::{sdt::SdtHeader, AcpiHandler, AcpiTables, PhysicalMapping};
+use acpi::{fadt::Fadt, sdt::SdtHeader, AcpiHandler, AcpiTables, PhysicalMapping};
 use alloc::vec::Vec;
 use core::{
     ptr::NonNull,
@@ -202,6 +202,10 @@ pub struct PlatformInfo {
     pub pci_config_regions: Vec<PciConfigRegion>,
     /// Enumerated PCI bridges discovered during ECAM walk
     pub pci_bridges: Vec<PciBridgeInfo>,
+    /// Summary of FADT fields relevant for legacy USB and ACPI handoff
+    pub legacy_usb: Option<LegacyUsbInfo>,
+    /// Raw descriptors for ACPI XHCI tables (if present)
+    pub xhci_descriptors: Vec<XhciAcpiDescriptor>,
 }
 
 impl PlatformInfo {
@@ -216,6 +220,8 @@ impl PlatformInfo {
             madt_info: None,
             pci_config_regions: Vec::new(),
             pci_bridges: Vec::new(),
+            legacy_usb: None,
+            xhci_descriptors: Vec::new(),
         }
     }
 }
@@ -257,6 +263,50 @@ pub struct PciBridgeInfo {
     pub io_window: Option<BridgeWindow>,
     pub mem_window: Option<BridgeWindow>,
     pub pref_mem_window: Option<BridgeWindow>,
+}
+
+/// Subset of the FADT captured for USB legacy handoff and diagnostics.
+#[derive(Debug, Clone)]
+pub struct LegacyUsbInfo {
+    /// System Control Interrupt line (GSI/IRQ)
+    pub sci_interrupt: u16,
+    /// System Management Interrupt command port (0 if unsupported)
+    pub smi_cmd_port: u32,
+    /// Value to request ACPI ownership from firmware
+    pub acpi_enable: u8,
+    /// Value to release ACPI ownership back to firmware
+    pub acpi_disable: u8,
+    /// Firmware S4 request command byte
+    pub s4bios_req: u8,
+    /// Firmware P-state handoff command byte
+    pub pstate_control: u8,
+    /// Firmware C-state handoff command byte
+    pub c_state_control: u8,
+    /// Physical address of the Firmware ACPI Control Structure (if present)
+    pub facs_address: Option<u64>,
+    /// Physical address of the Differentiated System Description Table (if present)
+    pub dsdt_address: Option<u64>,
+    /// Whether legacy ISA/LPC devices remain reachable
+    pub legacy_devices: bool,
+    /// Whether firmware forbids enabling MSI/MSI-X interrupts
+    pub prohibit_msi: bool,
+}
+
+/// Minimal metadata about an ACPI `XHCI` table, if the platform provides one.
+#[derive(Debug, Clone)]
+pub struct XhciAcpiDescriptor {
+    /// Physical address of the table (including header)
+    pub physical_address: u64,
+    /// Total table length in bytes
+    pub length: u32,
+    /// Table revision reported in the SDT header
+    pub revision: u8,
+    /// Header checksum
+    pub checksum: u8,
+    /// OEM identifier string (padded with spaces)
+    pub oem_id: [u8; 6],
+    /// OEM table identifier string (padded with spaces)
+    pub oem_table_id: [u8; 8],
 }
 
 static PLATFORM_INFO_CACHE: Mutex<Option<PlatformInfo>> = Mutex::new(None);
@@ -420,6 +470,8 @@ fn extract_platform_info(
     }
 
     collect_pci_config_regions(tables, &mut platform_info);
+    collect_legacy_usb_info(tables, &mut platform_info);
+    collect_xhci_descriptors(tables, &mut platform_info);
 
     log_info!(
         "Total CPUs: {} IO APICs: {}",
@@ -511,6 +563,101 @@ fn collect_pci_config_regions(
         });
 
         offset += entry_size;
+    }
+}
+
+fn collect_legacy_usb_info(
+    tables: &AcpiTables<KernelAcpiHandler>,
+    platform_info: &mut PlatformInfo,
+) {
+    use acpi::sdt::Signature;
+
+    let mapping = unsafe { tables.get_sdt::<Fadt>(Signature::FADT) };
+    let fadt = match mapping {
+        Ok(Some(table)) => table,
+        Ok(None) => {
+            log_debug!("FADT table not present; legacy USB handoff unavailable");
+            return;
+        }
+        Err(err) => {
+            log_warn!("Failed to map FADT table: {:?}", err);
+            return;
+        }
+    };
+
+    let facs_address = fadt.facs_address().ok().map(|addr| addr as u64);
+    let dsdt_address = fadt.dsdt_address().ok().map(|addr| addr as u64);
+    let boot_arch = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(fadt.iapc_boot_arch)) };
+
+    let info = LegacyUsbInfo {
+        sci_interrupt: fadt.sci_interrupt,
+        smi_cmd_port: fadt.smi_cmd_port,
+        acpi_enable: fadt.acpi_enable,
+        acpi_disable: fadt.acpi_disable,
+        s4bios_req: fadt.s4bios_req,
+        pstate_control: fadt.pstate_control,
+        c_state_control: fadt.c_state_control,
+        facs_address,
+        dsdt_address,
+        legacy_devices: boot_arch.legacy_devices_are_accessible(),
+        prohibit_msi: boot_arch.dont_enable_msi(),
+    };
+
+    log_info!(
+        "FADT: SCI={} SMI_CMD={:#x} legacy_devices={} prohibit_msi={}",
+        info.sci_interrupt,
+        info.smi_cmd_port,
+        info.legacy_devices,
+        info.prohibit_msi
+    );
+
+    platform_info.legacy_usb = Some(info);
+}
+
+fn collect_xhci_descriptors(
+    tables: &AcpiTables<KernelAcpiHandler>,
+    platform_info: &mut PlatformInfo,
+) {
+    let mut found = 0;
+
+    for (sig, sdt) in tables.sdts.iter() {
+        if sig.as_str() != "XHCI" {
+            continue;
+        }
+
+        let header_ptr = ensure_acpi_virtual_mapping(
+            sdt.physical_address as u64,
+            core::mem::size_of::<SdtHeader>(),
+        ) as *const SdtHeader;
+        let header = unsafe { &*header_ptr };
+        let mut oem_id = [0u8; 6];
+        oem_id.copy_from_slice(&header.oem_id);
+        let mut oem_table_id = [0u8; 8];
+        oem_table_id.copy_from_slice(&header.oem_table_id);
+
+        platform_info.xhci_descriptors.push(XhciAcpiDescriptor {
+            physical_address: sdt.physical_address as u64,
+            length: sdt.length,
+            revision: header.revision,
+            checksum: header.checksum,
+            oem_id,
+            oem_table_id,
+        });
+
+        log_info!(
+            "Detected ACPI XHCI descriptor: phys=0x{:012x} len={:#x} rev={} OEM={}{}",
+            sdt.physical_address,
+            sdt.length,
+            header.revision,
+            core::str::from_utf8(&oem_id).unwrap_or("??????"),
+            core::str::from_utf8(&oem_table_id).unwrap_or("????????")
+        );
+
+        found += 1;
+    }
+
+    if found == 0 {
+        log_debug!("No ACPI XHCI descriptor tables present");
     }
 }
 
