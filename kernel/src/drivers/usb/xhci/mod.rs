@@ -35,6 +35,9 @@ const TRB_SIZE: usize = 16;
 const COMMAND_RING_TRBS: usize = 256;
 const EVENT_RING_TRBS: usize = 256;
 const RING_ALIGNMENT: usize = 64;
+const ERST_ENTRY_SIZE: usize = 16;
+const INTERRUPTER_STRIDE: u32 = 0x20;
+const IMAN_IE: u32 = 1 << 1;
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
@@ -54,6 +57,7 @@ struct XhciController {
     msi_enabled: AtomicBool,
     command_ring: Option<DmaBuffer>,
     event_ring: Option<DmaBuffer>,
+    event_ring_table: Option<DmaBuffer>,
     command_ring_cycle_state: bool,
 }
 
@@ -179,6 +183,7 @@ impl XhciDriver {
                 msi_enabled: AtomicBool::new(false),
                 command_ring: None,
                 event_ring: None,
+                event_ring_table: None,
                 command_ring_cycle_state: true,
             };
 
@@ -190,6 +195,9 @@ impl XhciDriver {
             }
             if let Err(err) = self.configure_command_ring(controller_ref, &ident) {
                 log_warn!("xHCI {}: command ring setup failed: {}", ident, err);
+            }
+            if let Err(err) = self.configure_event_ring(controller_ref, &ident) {
+                log_warn!("xHCI {}: event ring setup failed: {}", ident, err);
             }
             let stored = controller_ref as *const XhciController;
             dev.driver_data = Some(stored as usize);
@@ -370,6 +378,57 @@ impl XhciDriver {
             } else {
                 0
             }
+        );
+
+        Ok(())
+    }
+
+    fn configure_event_ring(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<(), &'static str> {
+        let Some(event_ring) = controller.event_ring.as_ref() else {
+            return Err("event ring not allocated");
+        };
+
+        if controller.event_ring_table.is_none() {
+            let table = DmaBuffer::allocate(ERST_ENTRY_SIZE, RING_ALIGNMENT)
+                .map_err(|_| "failed to allocate ERST")?;
+            controller.event_ring_table = Some(table);
+        }
+
+        let table = controller.event_ring_table.as_mut().unwrap();
+        unsafe {
+            let entry_ptr = table.virt_addr() as *mut u8;
+            core::ptr::write_volatile(entry_ptr as *mut u64, event_ring.phys_addr());
+            core::ptr::write_volatile(entry_ptr.add(8) as *mut u32, EVENT_RING_TRBS as u32);
+            core::ptr::write_volatile(entry_ptr.add(12) as *mut u32, 0);
+        }
+
+        let runtime_base = (controller.virt_base + controller.runtime_offset as u64) as *mut u8;
+        unsafe {
+            let interrupter0 = runtime_base.add(INTERRUPTER_STRIDE as usize);
+            let iman_ptr = interrupter0.add(0x00) as *mut u32;
+            let imod_ptr = interrupter0.add(0x04) as *mut u32;
+            let erstsz_ptr = interrupter0.add(0x08) as *mut u32;
+            let erstba_ptr = interrupter0.add(0x10) as *mut u64;
+            let erdp_ptr = interrupter0.add(0x18) as *mut u64;
+
+            core::ptr::write_volatile(imod_ptr, 0);
+            core::ptr::write_volatile(erstsz_ptr, 1);
+            core::ptr::write_volatile(erstba_ptr, table.phys_addr());
+            core::ptr::write_volatile(erdp_ptr, event_ring.phys_addr() & !0xF);
+
+            let iman = core::ptr::read_volatile(iman_ptr);
+            core::ptr::write_volatile(iman_ptr, (iman & !1) | IMAN_IE);
+        }
+
+        log_info!(
+            "xHCI {} event ring configured: erst={:#012x} entries=1 erdp={:#012x}",
+            ident,
+            controller.event_ring_table.as_ref().unwrap().phys_addr(),
+            event_ring.phys_addr()
         );
 
         Ok(())
