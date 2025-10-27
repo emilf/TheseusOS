@@ -8,7 +8,7 @@
 ## Status Snapshot
 - [x] **Milestone 0 – Prerequisite Audit**: Baseline inventory captured; FADT-derived legacy USB knobs and XHCI descriptors are now mirrored in `PlatformInfo`.
 - [x] **Milestone 1 – PCI Discovery**: ECAM enumeration integrated with the driver system, and USB controllers are claimed via the new legacy handoff path.
-- [ ] **Milestone 2 – ACPI & Controller Handoff**: Firmware ownership negotiation is coded; remaining work focuses on diagnostics, policy wiring, and documentation.
+- [ ] **Milestone 2 – ACPI & Controller Handoff**: Firmware ownership negotiation and monitor diagnostics are in place; documentation and policy wiring remain.
 
 ## Milestone 0: Prerequisite Audit
 - Confirm interrupt delivery story: document current APIC/IOAPIC usage, available vectors, and whether MSI/MSI-X is viable for early use; define the fallback legacy IRQ path.
@@ -24,7 +24,8 @@
 - ✅ Extend ACPI parsing to read XSDT/RSDT beyond MADT, focusing on finding the FADT (for legacy USB handoff) and the XHCI-specific Extended Capabilities Descriptor.
 - ✅ Implement BIOS ownership/OS ownership handoff (EHCI legacy handoff and xHCI Extended Capabilities) to disable firmware emulation that might steal the controller.
 - ✅ Surface MCFG ranges (if present) to let the PCI layer switch to memory-mapped config space for performance and to access devices above bus 255 if needed.
-- ⬜ Expose diagnostics/monitor hooks for the newfound legacy handoff state and document the firmware release procedure.
+- ✅ Expose diagnostics/monitor hooks for the newfound legacy handoff state so firmware ownership can be audited quickly.
+- ⬜ Document the firmware release procedure and codify policy wiring for MSI/IOAPIC fallback.
 
 ## Milestone 3: xHCI Host Controller Bring-Up
 - Create an xHCI driver module that maps the controller MMIO region, parses capability/operational registers, and performs controller reset to a known state.

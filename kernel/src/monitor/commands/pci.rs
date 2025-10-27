@@ -18,6 +18,56 @@ impl Monitor {
             return;
         }
 
+        if let Some(legacy) = platform_info.legacy_usb.as_ref() {
+            self.writeln("Legacy USB ownership (from FADT):");
+            self.writeln(&format!(
+                "  SCI={} SMI_CMD={:#x} acpi_enable={:#04x} acpi_disable={:#04x} pstate={:#04x} cstate={:#04x}",
+                legacy.sci_interrupt,
+                legacy.smi_cmd_port,
+                legacy.acpi_enable,
+                legacy.acpi_disable,
+                legacy.pstate_control,
+                legacy.c_state_control
+            ));
+            self.writeln(&format!(
+                "  legacy_devices={} prohibit_msi={} facs={:#014x?} dsdt={:#014x?}",
+                legacy.legacy_devices,
+                legacy.prohibit_msi,
+                legacy.facs_address,
+                legacy.dsdt_address
+            ));
+        } else {
+            self.writeln("Legacy USB ownership: (no FADT data cached)");
+        }
+
+        if !platform_info.xhci_descriptors.is_empty() {
+            self.writeln("ACPI XHCI descriptors:");
+            for desc in platform_info.xhci_descriptors.iter() {
+                let oem_id = core::str::from_utf8(&desc.oem_id)
+                    .unwrap_or("")
+                    .trim_end_matches(char::from(0))
+                    .trim();
+                let oem_table_id = core::str::from_utf8(&desc.oem_table_id)
+                    .unwrap_or("")
+                    .trim_end_matches(char::from(0))
+                    .trim();
+                self.writeln(&format!(
+                    "  phys=0x{:012x} len={:#x} rev={} checksum={:#04x} OEM={} {}",
+                    desc.physical_address,
+                    desc.length,
+                    desc.revision,
+                    desc.checksum,
+                    if oem_id.is_empty() { "-" } else { oem_id },
+                    if oem_table_id.is_empty() {
+                        "-"
+                    } else {
+                        oem_table_id
+                    }
+                ));
+            }
+        }
+        self.writeln("");
+
         let topology = pci::enumerate(&platform_info.pci_config_regions);
         self.writeln(&format!(
             "PCI functions discovered: {} ({} bridges)",
