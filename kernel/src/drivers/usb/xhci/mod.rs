@@ -5,7 +5,7 @@
 //! into the driver manager. The focus is on the modern PCIe/MSI path; legacy
 //! emulation stays disabled once firmware handoff completes.
 
-use alloc::vec::Vec;
+use alloc::{format, string::String, vec::Vec};
 use core::convert::TryFrom;
 use core::sync::atomic::AtomicBool;
 use spin::Mutex;
@@ -27,6 +27,7 @@ static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
 
 #[allow(dead_code)]
+#[allow(dead_code)]
 struct XhciController {
     phys_base: u64,
     virt_base: u64,
@@ -46,6 +47,23 @@ pub fn register_xhci_driver() {
 struct XhciDriver;
 
 impl XhciDriver {
+    fn pci_ident(dev: &Device) -> (u16, u8, u8, u8) {
+        match dev.id {
+            DeviceId::Pci {
+                segment,
+                bus,
+                device,
+                function,
+            } => (segment, bus, device, function),
+            _ => (0, 0, 0, 0),
+        }
+    }
+
+    fn pci_display(dev: &Device) -> String {
+        let (segment, bus, device, function) = Self::pci_ident(dev);
+        format!("{:04x}:{:02x}:{:02x}.{}", segment, bus, device, function)
+    }
+
     fn locate_mmio(&self, dev: &Device) -> Result<(u64, usize), &'static str> {
         for res in dev.resources.iter() {
             if let DeviceResource::Memory { base, size, .. } = res {
@@ -91,7 +109,8 @@ impl XhciDriver {
         dev: &mut Device,
         phys_base: u64,
         mmio_length: usize,
-    ) -> Result<(), &'static str> {
+    ) -> Result<bool, &'static str> {
+        let ident = Self::pci_display(dev);
         let virt = self.map_mmio(phys_base, mmio_length);
         unsafe {
             let base = virt as *const u8;
@@ -100,29 +119,23 @@ impl XhciDriver {
             let hcsparams1 = core::ptr::read_volatile(base.add(0x04) as *const u32);
             let hccparams1 = core::ptr::read_volatile(base.add(0x10) as *const u32);
             let operational_offset = cap_length as u32;
-            let runtime_offset =
-                core::ptr::read_volatile(base.add(0x18) as *const u32) & !0b11;
-            let doorbell_offset =
-                core::ptr::read_volatile(base.add(0x14) as *const u32) & !0b11;
+            let runtime_offset = core::ptr::read_volatile(base.add(0x18) as *const u32) & !0b11;
+            let doorbell_offset = core::ptr::read_volatile(base.add(0x14) as *const u32) & !0b11;
+
+            let mut list = CONTROLLERS.lock();
+            if let Some(existing) = list.iter().find(|ctrl| ctrl.phys_base == phys_base) {
+                log_debug!(
+                    "xHCI {} shares phys base {:#x}; reusing existing mapping",
+                    ident,
+                    phys_base
+                );
+                dev.driver_data = Some(existing as *const XhciController as usize);
+                return Ok(false);
+            }
 
             log_info!(
-                "xHCI {:04x}:{:02x}:{:02x}.{} HCI v{}.{} slots={} ports={} context_size={}",
-                match dev.id {
-                    DeviceId::Pci { segment, .. } => segment,
-                    _ => 0,
-                },
-                match dev.id {
-                    DeviceId::Pci { bus, .. } => bus,
-                    _ => 0,
-                },
-                match dev.id {
-                    DeviceId::Pci { device, .. } => device,
-                    _ => 0,
-                },
-                match dev.id {
-                    DeviceId::Pci { function, .. } => function,
-                    _ => 0,
-                },
+                "xHCI {} HCI v{}.{} slots={} ports={} context_size={}",
+                ident,
                 hci_version >> 8,
                 hci_version & 0xFF,
                 (hcsparams1 & 0xFF) + 1,
@@ -142,18 +155,16 @@ impl XhciDriver {
                 msi_enabled: AtomicBool::new(false),
             };
 
-            {
-                let mut list = CONTROLLERS.lock();
-                list.push(controller);
-                let ptr = list.last().unwrap() as *const XhciController;
-                dev.driver_data = Some(ptr as usize);
-            }
+            list.push(controller);
+            let stored = list.last().unwrap() as *const XhciController;
+            dev.driver_data = Some(stored as usize);
         }
 
-        Ok(())
+        Ok(true)
     }
 
     fn try_enable_msi(&self, dev: &Device) {
+        let ident = Self::pci_display(dev);
         let DeviceId::Pci {
             segment,
             bus,
@@ -168,7 +179,7 @@ impl XhciDriver {
         let platform = match acpi::cached_platform_info() {
             Some(info) => info,
             None => {
-                log_warn!("xHCI driver: platform info unavailable for MSI setup");
+                log_debug!("xHCI {}: platform info unavailable for MSI setup", ident);
                 return;
             }
         };
@@ -180,13 +191,7 @@ impl XhciDriver {
                 && info.device == device
                 && info.function == function
         }) else {
-            log_warn!(
-                "xHCI driver: PCI info not found for {:04x}:{:02x}:{:02x}.{}",
-                segment,
-                bus,
-                device,
-                function
-            );
+            log_debug!("xHCI {}: PCI info not found while enabling MSI", ident);
             return;
         };
 
@@ -233,10 +238,12 @@ impl Driver for XhciDriver {
             dev.phys_addr = Some(phys);
         }
 
-        self.initialise_controller(dev, phys, length)?;
-        self.try_enable_msi(dev);
+        let newly_mapped = self.initialise_controller(dev, phys, length)?;
+        if newly_mapped {
+            self.try_enable_msi(dev);
+            log_debug!("xHCI controller initialised at phys={:#012x}", phys);
+        }
 
-        log_debug!("xHCI controller initialised at phys={:#012x}", phys);
         Ok(())
     }
 

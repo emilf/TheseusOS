@@ -89,7 +89,7 @@ QEMU_CMD=(
   # GPU on its own root port
   -device virtio-gpu-pci,bus=rp0
   # XHCI USB3 controller + USB devices
-  -device qemu-xhci,id=xhci0,bus=rp1
+  -device qemu-xhci,id=xhci0
   -device usb-kbd,bus=xhci0.0
   -device usb-mouse,bus=xhci0.0
   # NIC on its own root port
