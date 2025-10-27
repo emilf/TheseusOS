@@ -54,7 +54,12 @@ const TRB_CYCLE_BIT: u32 = 1;
 const DOORBELL_HOST: u32 = 0;
 const IMAN_IP: u32 = 1 << 0;
 const DEVICE_CONTEXT_ALIGN: usize = 64;
-const DEVICE_CONTEXT_SIZE: usize = 2048;
+const MAX_ENDPOINT_CONTEXTS: usize = 32;
+const DEVICE_CONTEXT_ENTRIES: usize = 1 + MAX_ENDPOINT_CONTEXTS;
+#[allow(dead_code)]
+const SLOT_CONTEXT_INDEX: usize = 0;
+#[allow(dead_code)]
+const DEFAULT_CONTROL_ENDPOINT: usize = 1;
 const PORTSC_REGISTER_OFFSET: usize = 0x400;
 const PORT_REGISTER_STRIDE: usize = 0x10;
 const PORTSC_CCS: u32 = 1 << 0;
@@ -87,6 +92,7 @@ struct XhciController {
     max_slots: u8,
     hcsparams2: u32,
     scratchpad_count: u16,
+    context_entry_size: usize,
     msi_enabled: AtomicBool,
     command_ring: Option<CommandRing>,
     event_ring: Option<EventRing>,
@@ -224,6 +230,16 @@ impl EventRing {
     }
 }
 
+/// Round `value` up to the nearest multiple of `align`.
+///
+/// # Parameters
+/// * `value` - Quantity that must be aligned.
+/// * `align` - Alignment boundary, which must be a power of two.
+fn align_up(value: usize, align: usize) -> usize {
+    debug_assert!(align.is_power_of_two());
+    (value + align - 1) & !(align - 1)
+}
+
 /// Register the xHCI scaffold driver with the global driver manager.
 ///
 /// # Returns
@@ -276,6 +292,72 @@ impl XhciDriver {
         let low = (hcsparams2 >> 21) & 0x1F;
         let high = (hcsparams2 >> 27) & 0x1F;
         ((high << 5) | low) as u16
+    }
+
+    /// Determine the size of each context entry from `HCCParams1`.
+    ///
+    /// # Parameters
+    /// * `hccparams1` - First Host Controller Capability Parameters register.
+    ///
+    /// # Returns
+    /// `64` when 64-byte contexts are required, otherwise `32`.
+    fn context_entry_size_from_params(hccparams1: u32) -> usize {
+        if (hccparams1 & (1 << 2)) != 0 {
+            64
+        } else {
+            32
+        }
+    }
+
+    /// Compute the total size of a device context buffer for the controller.
+    ///
+    /// The xHCI specification defines `DeviceContextEntries` (slot context +
+    /// endpoint contexts) with each entry sized according to the
+    /// `Context Size` bit in `HCCParams1`. We ensure the allocation respects
+    /// the required 64-byte alignment.
+    fn device_context_bytes(&self, controller: &XhciController) -> usize {
+        let raw = controller.context_entry_size * DEVICE_CONTEXT_ENTRIES;
+        align_up(raw, DEVICE_CONTEXT_ALIGN)
+    }
+
+    #[allow(dead_code)]
+    /// Obtain a mutable pointer to the slot context for the given slot ID.
+    ///
+    /// # Safety
+    /// The caller is responsible for interpreting and writing the slot context
+    /// fields according to the xHCI specification. The returned pointer stays
+    /// valid as long as the referenced `DmaBuffer` remains alive.
+    fn slot_context_mut(
+        &self,
+        controller: &mut XhciController,
+        slot_id: usize,
+    ) -> Option<*mut u32> {
+        if slot_id == 0 || slot_id > controller.slot_contexts.len() {
+            return None;
+        }
+        let buffer = controller.slot_contexts.get_mut(slot_id - 1)?;
+        Some(buffer.virt_addr() as *mut u32)
+    }
+
+    /// Obtain a mutable pointer to an endpoint context within the device context.
+    ///
+    /// # Parameters
+    /// * `slot_id` - Slot whose device context should be accessed (1-based).
+    /// * `endpoint` - Endpoint index (1-31, with `DEFAULT_CONTROL_ENDPOINT` selecting the
+    ///   default control endpoint).
+    #[allow(dead_code)]
+    fn endpoint_context_mut(
+        &self,
+        controller: &mut XhciController,
+        slot_id: usize,
+        endpoint: usize,
+    ) -> Option<*mut u32> {
+        if endpoint == SLOT_CONTEXT_INDEX || endpoint >= DEVICE_CONTEXT_ENTRIES {
+            return None;
+        }
+        let buffer = controller.slot_contexts.get_mut(slot_id.checked_sub(1)?)?;
+        let offset = endpoint * controller.context_entry_size;
+        Some((buffer.virt_addr() + offset as u64) as *mut u32)
     }
 
     /// Determine the controller's MMIO base and size from the reported BARs.
@@ -367,6 +449,7 @@ impl XhciDriver {
             let runtime_offset = core::ptr::read_volatile(base.add(0x18) as *const u32) & !0b11;
             let doorbell_offset = core::ptr::read_volatile(base.add(0x14) as *const u32) & !0b11;
             let scratchpad_count = Self::scratchpad_count_from_params(hcsparams2);
+            let context_entry_size = Self::context_entry_size_from_params(hccparams1);
 
             {
                 let list = CONTROLLERS.lock();
@@ -408,6 +491,7 @@ impl XhciDriver {
                 max_slots: ((hcsparams1 & 0xFF) + 1) as u8,
                 hcsparams2,
                 scratchpad_count,
+                context_entry_size,
                 msi_enabled: AtomicBool::new(false),
                 command_ring: None,
                 event_ring: None,
@@ -738,14 +822,15 @@ impl XhciDriver {
             dcbaa.phys_addr()
         };
 
-        self.initialise_slot_contexts(controller)?;
+        self.initialise_slot_contexts(controller, ident)?;
         self.configure_scratchpad_buffers(controller, ident)?;
 
         log_info!(
-            "xHCI {} DCBAA configured: ptr={:#012x} entries={}",
+            "xHCI {} DCBAA configured: ptr={:#012x} entries={} ctx_entry={}",
             ident,
             dcbaa_phys,
-            controller.max_slots as usize + 1
+            controller.max_slots as usize + 1,
+            controller.context_entry_size
         );
 
         Ok(())
@@ -756,12 +841,14 @@ impl XhciDriver {
     fn initialise_slot_contexts(
         &self,
         controller: &mut XhciController,
+        ident: &str,
     ) -> Result<(), &'static str> {
-        controller.slot_contexts.clear();
-
         let entries = controller.max_slots as usize + 1;
+        controller.slot_contexts.clear();
+        controller.slot_contexts.reserve(entries - 1);
         let dcbaa = controller.dcbaa.as_mut().unwrap();
         let base = dcbaa.virt_addr() as *mut u64;
+        let context_bytes = self.device_context_bytes(controller);
 
         unsafe {
             // Entry 0 is reserved for scratchpad pointers and will be populated
@@ -770,7 +857,7 @@ impl XhciDriver {
         }
 
         for slot in 1..entries {
-            let ctx = DmaBuffer::allocate(DEVICE_CONTEXT_SIZE, DEVICE_CONTEXT_ALIGN)
+            let ctx = DmaBuffer::allocate(context_bytes, DEVICE_CONTEXT_ALIGN)
                 .map_err(|_| "failed to allocate device context")?;
 
             unsafe {
@@ -780,6 +867,14 @@ impl XhciDriver {
 
             controller.slot_contexts.push(ctx);
         }
+
+        log_info!(
+            "xHCI {} context arena: entry_size={} total_bytes={} per_slot={}",
+            ident,
+            controller.context_entry_size,
+            context_bytes * (entries - 1),
+            context_bytes
+        );
 
         Ok(())
     }
@@ -1229,7 +1324,7 @@ impl XhciDriver {
         runtime_offset: u32,
         doorbell_offset: u32,
     ) {
-        let context_size = if (hccparams1 & (1 << 2)) != 0 { 64 } else { 32 };
+        let context_size = Self::context_entry_size_from_params(hccparams1);
         let port_count = (hcsparams1 >> 24) & 0xFF;
         let max_slots = (hcsparams1 & 0xFF) + 1;
         let scratchpads = Self::scratchpad_count_from_params(hcsparams2);

@@ -33,7 +33,7 @@
   - QEMU launch script pins `qemu-xhci` to the root bus so the virtual controller reliably enumerates during bring-up (`startQemu.sh:92`).
 - Allocate and initialize the command ring, event ring, and scratchpad buffers using DMA-capable physical memory; ensure virtual mappings stay uncached or write-back per spec. (Command/event rings + DCBAA live, scratchpad pointer table and DMA allocation helpers now wired into the driver.)
   - Root port diagnostics are logged after the controller transitions to RUN, exposing link state, power, and negotiated speed for each port to aid upcoming enumeration work.
-- Program slot contexts and endpoint contexts for the default control endpoint, handling doorbell and interrupter configuration; route interrupts via MSI/MSI-X if possible, falling back to IOAPIC.
+- Program slot contexts and endpoint contexts for the default control endpoint, handling doorbell and interrupter configuration; route interrupts via MSI/MSI-X if possible, falling back to IOAPIC. (Context sizing helpers and pointer accessors now prepare per-slot device contexts for future population.)
 
 ## Milestone 4: USB Device Enumeration Stack
 - Implement basic USB request/response infrastructure (setup packets, control transfers, TRBs) sufficient to enumerate attached devices over the default control endpoint.
