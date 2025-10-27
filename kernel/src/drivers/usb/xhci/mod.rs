@@ -44,6 +44,7 @@ const DCBAA_ENTRY_SIZE: usize = 8;
 const RUN_STOP_TIMEOUT: usize = 1_000_000;
 const TRB_TYPE_NOOP_COMMAND: u32 = 0x17;
 const TRB_COMPLETION_CODE_MASK: u32 = 0xFF << 24;
+const TRB_TYPE_MASK: u32 = 0x3F << 10;
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
@@ -644,14 +645,16 @@ impl XhciDriver {
             let completion = core::ptr::read_volatile(trb_ptr.add(2));
             let control = core::ptr::read_volatile(trb_ptr.add(3));
             let code = (control & TRB_COMPLETION_CODE_MASK) >> 24;
+            let trb_type = (control & TRB_TYPE_MASK) >> 10;
 
             core::ptr::write_volatile(iman_ptr, core::ptr::read_volatile(iman_ptr) & !1);
             core::ptr::write_volatile(erdp_ptr, event_ring.phys_addr() & !0xF);
 
             log_info!(
-                "xHCI {} completion: code={} parameter={:#x}",
+                "xHCI {} completion: code={} type={} parameter={:#x}",
                 ident,
                 code,
+                trb_type,
                 completion
             );
             Ok(code)
