@@ -17,8 +17,8 @@ Milestone 1 establishes a clean PCI discovery layer that future USB work can bui
 - **DMA buffer helper**: `kernel/src/memory/dma.rs:1` wraps the contiguous allocator to provide aligned, zeroed, kernel-mapped buffers suitable for xHCI command/event rings or other DMA-heavy peripherals.
 
 ## Outstanding Tasks
-1. **Interrupt model upgrade**: Add MSI/MSI-X capability enablement; the current IO-APIC routing works but is not ideal for a high-throughput xHCI driver.
-2. **Diagnostics tooling**: Expand the new `devices` monitor output (already shows bridges) into a full PCI topology dump, including BAR sizes and capability lists.
+1. **Interrupt model upgrade**: Integrate the MSI helper with the interrupt allocator (vector reservation, masks, teardown) and provide IO-APIC fallback policies.
+2. **Diagnostics tooling**: Round out the `pci` monitor output with capability summaries when needed, and document the workflow for internal consumers.
 
 ## Testing & Verification
 - Sandbox runs reach the `=== Kernel environment setup complete ===` marker; serial/monitor pipes are intentionally disabled, so the harness exits immediately afterwards.

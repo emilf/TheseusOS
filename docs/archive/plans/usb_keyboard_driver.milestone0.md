@@ -20,6 +20,6 @@ Milestone 0 was about auditing prerequisites before writing any USB code. This n
 - With the new summaries (USB port/interface, PCI device/function numbering), we can sanity-check the QEMU topology before writing any enumeration code and confirm the keyboard is actually visible at boot.
 
 ## Next Steps Toward Milestone 1
-- Add MSI/MSI-X enablement helpers (and IO-APIC fallback policy) so future USB drivers can opt into edge-triggered interrupts cleanly.
-- Extend the new DMA helper with cache hints and pooled lifetimes, then start migrating upcoming drivers to it.
+- Integrate the new MSI helper into real drivers (reserve vectors, mask IOAPIC routes, and handle teardown paths).
+- Extend the DMA pooling story with recycling strategies tailored for xHCI command/event rings.
 - Refine PCI bridge resource windows based on BAR sizing (I/O + MEM) so downstream devices decode correctly without wasting aperture space.
