@@ -26,6 +26,9 @@ const XHCI_MIN_MMIO: usize = 0x2000;
 const USBCMD_RUN_STOP: u32 = 1 << 0;
 const USBCMD_HCRST: u32 = 1 << 1;
 const USBSTS_HCHALTED: u32 = 1 << 0;
+const USBSTS_HOST_CONTROLLER_ERROR: u32 = 1 << 2;
+const USBSTS_TRANSFER_EVENT: u32 = 1 << 3;
+const USBSTS_CONTROLLER_NOT_READY: u32 = 1 << 11;
 const RESET_SPIN_LIMIT: usize = 1_000_000;
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
@@ -284,6 +287,27 @@ impl XhciDriver {
         false
     }
 
+    fn describe_status(&self, sts: u32) -> String {
+        let mut parts = Vec::new();
+        if sts & USBSTS_HCHALTED != 0 {
+            parts.push("HALTED");
+        }
+        if sts & USBSTS_HOST_CONTROLLER_ERROR != 0 {
+            parts.push("ERROR");
+        }
+        if sts & USBSTS_TRANSFER_EVENT != 0 {
+            parts.push("EVENT");
+        }
+        if sts & USBSTS_CONTROLLER_NOT_READY != 0 {
+            parts.push("NOT_READY");
+        }
+        if parts.is_empty() {
+            "none".into()
+        } else {
+            parts.join("|")
+        }
+    }
+
     fn log_capabilities(
         &self,
         ident: &str,
@@ -322,11 +346,13 @@ impl XhciDriver {
             let cmd = core::ptr::read_volatile(op_base.add((0x00 / 4) as usize));
             let sts = core::ptr::read_volatile(op_base.add((0x04 / 4) as usize));
             let config = core::ptr::read_volatile(op_base.add((0x38 / 4) as usize));
+            let status_flags = self.describe_status(sts);
             log_debug!(
-                "xHCI {} operational state: USBCMD={:#010x} USBSTS={:#010x} CONFIG={:#010x}",
+                "xHCI {} operational state: USBCMD={:#010x} USBSTS={:#010x} ({}) CONFIG={:#010x}",
                 ident,
                 cmd,
                 sts,
+                status_flags,
                 config
             );
         }
