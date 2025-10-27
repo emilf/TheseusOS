@@ -58,6 +58,7 @@ const TRB_TYPE_ENABLE_SLOT: u32 = 0x09;
 #[allow(dead_code)]
 const TRB_TYPE_ADDRESS_DEVICE: u32 = 0x0B;
 const ENDPOINT_TYPE_CONTROL: u32 = 4;
+const DEFAULT_EP0_RING_TRBS: usize = 64;
 const DEVICE_CONTEXT_ALIGN: usize = 64;
 const MAX_ENDPOINT_CONTEXTS: usize = 32;
 const DEVICE_CONTEXT_ENTRIES: usize = 1 + MAX_ENDPOINT_CONTEXTS;
@@ -112,6 +113,7 @@ struct XhciController {
     attached_speed: Option<PortSpeed>,
     control_context_ready: bool,
     active_slot: Option<u8>,
+    control_transfer_ring: Option<TransferRing>,
 }
 
 struct CommandRing {
@@ -130,6 +132,15 @@ struct EventRing {
 /// DMA-backed input context used when programming slot and endpoint state.
 struct InputContext {
     buffer: DmaBuffer,
+}
+
+/// Transfer ring backing storage for a device endpoint.
+struct TransferRing {
+    buffer: DmaBuffer,
+    #[allow(dead_code)]
+    enqueue_index: usize,
+    cycle: bool,
+    trb_count: usize,
 }
 
 impl InputContext {
@@ -441,6 +452,29 @@ impl CommandRing {
             self.index = 0;
             self.cycle = !self.cycle;
         }
+    }
+}
+
+impl TransferRing {
+    fn new(buffer: DmaBuffer, trb_count: usize) -> Self {
+        Self {
+            buffer,
+            enqueue_index: 0,
+            cycle: true,
+            trb_count,
+        }
+    }
+
+    fn phys_addr(&self) -> u64 {
+        self.buffer.phys_addr()
+    }
+
+    fn dequeue_pointer(&self) -> u64 {
+        (self.buffer.phys_addr() & !0xF) | if self.cycle { 1 } else { 0 }
+    }
+
+    fn capacity(&self) -> usize {
+        self.trb_count
     }
 }
 
@@ -803,6 +837,7 @@ impl XhciDriver {
                 attached_speed: None,
                 control_context_ready: false,
                 active_slot: None,
+                control_transfer_ring: None,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -1664,6 +1699,24 @@ impl XhciDriver {
         let port_number = port.index as u32;
         let speed_code = port.speed.raw();
 
+        let transfer_ring = if let Some(ring) = controller.control_transfer_ring.as_mut() {
+            ring
+        } else {
+            let size = DEFAULT_EP0_RING_TRBS * TRB_SIZE;
+            let buffer = DmaBuffer::allocate(size, RING_ALIGNMENT)
+                .map_err(|_| "failed to allocate control transfer ring")?;
+            let ring = TransferRing::new(buffer, DEFAULT_EP0_RING_TRBS);
+            controller.control_transfer_ring = Some(ring);
+            let ring_ref = controller.control_transfer_ring.as_mut().unwrap();
+            log_info!(
+                "xHCI {} control transfer ring allocated: phys={:#012x} trbs={}",
+                ident,
+                ring_ref.phys_addr(),
+                ring_ref.capacity()
+            );
+            ring_ref
+        };
+
         {
             let slot_words = ctx.slot_words_mut(controller.context_entry_size);
             slot_words.fill(0);
@@ -1681,7 +1734,7 @@ impl XhciDriver {
             let ep0_words = ctx
                 .endpoint_words_mut(controller.context_entry_size, DEFAULT_CONTROL_ENDPOINT)
                 .ok_or("failed to map endpoint context")?;
-            self.populate_endpoint_zero(ep0_words, port.speed);
+            self.populate_endpoint_zero(ep0_words, port.speed, transfer_ring.dequeue_pointer());
         }
 
         controller.control_context_ready = true;
@@ -1699,17 +1752,26 @@ impl XhciDriver {
     }
 
     /// Initialise the default control endpoint context template used during address assignment.
-    fn populate_endpoint_zero(&self, endpoint_words: &mut [u32], speed: PortSpeed) {
+    fn populate_endpoint_zero(
+        &self,
+        endpoint_words: &mut [u32],
+        speed: PortSpeed,
+        dequeue_pointer: u64,
+    ) {
         endpoint_words.fill(0);
 
         let error_recovery_count: u32 = 3;
         let max_packet = Self::control_max_packet_size(speed);
 
         if endpoint_words.len() > 1 {
-            endpoint_words[1] = (ENDPOINT_TYPE_CONTROL << 3) | (error_recovery_count << 1);
+            endpoint_words[1] =
+                (ENDPOINT_TYPE_CONTROL << 3) | (error_recovery_count << 1) | (max_packet << 16);
         }
         if endpoint_words.len() > 2 {
-            endpoint_words[2] = max_packet << 16;
+            endpoint_words[2] = dequeue_pointer as u32;
+        }
+        if endpoint_words.len() > 3 {
+            endpoint_words[3] = (dequeue_pointer >> 32) as u32;
         }
         if endpoint_words.len() > 7 {
             endpoint_words[7] = max_packet as u32;
