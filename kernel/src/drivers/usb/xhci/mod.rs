@@ -41,6 +41,8 @@ struct XhciController {
     operational_offset: u32,
     runtime_offset: u32,
     doorbell_offset: u32,
+    max_ports: u8,
+    max_slots: u8,
     msi_enabled: AtomicBool,
 }
 
@@ -140,16 +142,17 @@ impl XhciDriver {
             }
 
             self.reset_controller(virt, operational_offset, &ident)?;
-
-            log_info!(
-                "xHCI {} HCI v{}.{} slots={} ports={} context_size={}",
-                ident,
-                hci_version >> 8,
-                hci_version & 0xFF,
-                (hcsparams1 & 0xFF) + 1,
-                (hcsparams1 >> 24) & 0xFF,
-                if (hccparams1 & (1 << 2)) != 0 { 64 } else { 32 }
+            self.log_capabilities(
+                &ident,
+                hci_version,
+                hcsparams1,
+                hccparams1,
+                cap_length,
+                runtime_offset,
+                doorbell_offset,
             );
+
+            self.log_operational_state(virt, operational_offset, &ident);
 
             let controller = XhciController {
                 phys_base,
@@ -160,6 +163,8 @@ impl XhciDriver {
                 operational_offset,
                 runtime_offset,
                 doorbell_offset,
+                max_ports: ((hcsparams1 >> 24) & 0xFF) as u8,
+                max_slots: ((hcsparams1 & 0xFF) + 1) as u8,
                 msi_enabled: AtomicBool::new(false),
             };
 
@@ -277,6 +282,54 @@ impl XhciDriver {
             spin_loop();
         }
         false
+    }
+
+    fn log_capabilities(
+        &self,
+        ident: &str,
+        hci_version: u16,
+        hcsparams1: u32,
+        hccparams1: u32,
+        cap_length: u8,
+        runtime_offset: u32,
+        doorbell_offset: u32,
+    ) {
+        let context_size = if (hccparams1 & (1 << 2)) != 0 { 64 } else { 32 };
+        let port_count = (hcsparams1 >> 24) & 0xFF;
+        let max_slots = (hcsparams1 & 0xFF) + 1;
+        log_info!(
+            "xHCI {} HCI v{}.{} slots={} ports={} context_size={}",
+            ident,
+            hci_version >> 8,
+            hci_version & 0xFF,
+            max_slots,
+            port_count,
+            context_size
+        );
+        log_debug!(
+            "xHCI {} capability offsets: caplen={:#x} operational={:#x} runtime={:#x} doorbell={:#x}",
+            ident,
+            cap_length,
+            cap_length,
+            runtime_offset,
+            doorbell_offset
+        );
+    }
+
+    fn log_operational_state(&self, virt_base: u64, operational_offset: u32, ident: &str) {
+        unsafe {
+            let op_base = (virt_base + operational_offset as u64) as *const u32;
+            let cmd = core::ptr::read_volatile(op_base.add((0x00 / 4) as usize));
+            let sts = core::ptr::read_volatile(op_base.add((0x04 / 4) as usize));
+            let config = core::ptr::read_volatile(op_base.add((0x38 / 4) as usize));
+            log_debug!(
+                "xHCI {} operational state: USBCMD={:#010x} USBSTS={:#010x} CONFIG={:#010x}",
+                ident,
+                cmd,
+                sts,
+                config
+            );
+        }
     }
 }
 
