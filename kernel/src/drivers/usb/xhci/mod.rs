@@ -11,6 +11,7 @@
 use alloc::{format, string::String, vec::Vec};
 use core::convert::TryFrom;
 use core::hint::spin_loop;
+use core::slice;
 use core::sync::atomic::AtomicBool;
 use spin::Mutex;
 
@@ -56,9 +57,7 @@ const IMAN_IP: u32 = 1 << 0;
 const DEVICE_CONTEXT_ALIGN: usize = 64;
 const MAX_ENDPOINT_CONTEXTS: usize = 32;
 const DEVICE_CONTEXT_ENTRIES: usize = 1 + MAX_ENDPOINT_CONTEXTS;
-#[allow(dead_code)]
 const SLOT_CONTEXT_INDEX: usize = 0;
-#[allow(dead_code)]
 const DEFAULT_CONTROL_ENDPOINT: usize = 1;
 const PORTSC_REGISTER_OFFSET: usize = 0x400;
 const PORT_REGISTER_STRIDE: usize = 0x10;
@@ -144,6 +143,176 @@ struct CommandCompletion {
     status: u32,
     /// Raw control dword from the event TRB.
     control: u32,
+}
+
+/// Enumerated representation of the link state reported in PORTSC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+enum PortLinkState {
+    U0,
+    U1,
+    U2,
+    U3,
+    Disabled,
+    RxDetect,
+    Inactive,
+    Polling,
+    Compliance,
+    Recovery,
+    HotReset,
+    Resume,
+    Reserved,
+    Test,
+    ResumePending,
+    Unknown(u32),
+}
+
+impl PortLinkState {
+    /// Convert the raw link state field into the strongly typed variant.
+    fn from_raw(raw: u32) -> Self {
+        match raw {
+            0 => PortLinkState::U0,
+            1 => PortLinkState::U1,
+            2 => PortLinkState::U2,
+            3 => PortLinkState::U3,
+            4 => PortLinkState::Disabled,
+            5 => PortLinkState::RxDetect,
+            6 => PortLinkState::Inactive,
+            7 => PortLinkState::Polling,
+            8 => PortLinkState::Compliance,
+            9 => PortLinkState::Recovery,
+            10 => PortLinkState::HotReset,
+            11 => PortLinkState::Resume,
+            12 => PortLinkState::Reserved,
+            13 => PortLinkState::Test,
+            14 => PortLinkState::ResumePending,
+            other => PortLinkState::Unknown(other),
+        }
+    }
+
+    /// String label suitable for logging.
+    fn as_str(&self) -> &'static str {
+        match self {
+            PortLinkState::U0 => "U0",
+            PortLinkState::U1 => "U1",
+            PortLinkState::U2 => "U2",
+            PortLinkState::U3 => "U3",
+            PortLinkState::Disabled => "Disabled",
+            PortLinkState::RxDetect => "RxDetect",
+            PortLinkState::Inactive => "Inactive",
+            PortLinkState::Polling => "Polling",
+            PortLinkState::Compliance => "Compliance",
+            PortLinkState::Recovery => "Recovery",
+            PortLinkState::HotReset => "HotReset",
+            PortLinkState::Resume => "Resume",
+            PortLinkState::Reserved => "Reserved",
+            PortLinkState::Test => "Test",
+            PortLinkState::ResumePending => "ResumePending",
+            PortLinkState::Unknown(_) => "Unknown",
+        }
+    }
+}
+
+/// USB port speeds supported under the xHCI specification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+enum PortSpeed {
+    Invalid,
+    Full,
+    Low,
+    High,
+    Super,
+    SuperPlus,
+    Reserved(u32),
+}
+
+impl PortSpeed {
+    fn from_raw(raw: u32) -> Self {
+        match raw {
+            0 => PortSpeed::Invalid,
+            1 => PortSpeed::Full,
+            2 => PortSpeed::Low,
+            3 => PortSpeed::High,
+            4 => PortSpeed::Super,
+            5 => PortSpeed::SuperPlus,
+            other => PortSpeed::Reserved(other),
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            PortSpeed::Invalid => "invalid",
+            PortSpeed::Full => "full",
+            PortSpeed::Low => "low",
+            PortSpeed::High => "high",
+            PortSpeed::Super => "super",
+            PortSpeed::SuperPlus => "super+",
+            PortSpeed::Reserved(_) => "reserved",
+        }
+    }
+}
+
+/// Snapshot of a root hub port as reported through `PORTSC`.
+#[derive(Debug, Clone, Copy)]
+struct PortState {
+    /// 1-based port index.
+    index: usize,
+    /// Raw `PORTSC` value.
+    register: u32,
+    connected: bool,
+    enabled: bool,
+    powered: bool,
+    overcurrent: bool,
+    resetting: bool,
+    link_state: PortLinkState,
+    speed: PortSpeed,
+}
+
+impl PortState {
+    /// Construct a `PortState` from a `PORTSC` register snapshot.
+    fn from_register(index: usize, portsc: u32) -> Self {
+        let link_bits = (portsc & PORTSC_LINK_STATE_MASK) >> PORTSC_LINK_STATE_SHIFT;
+        let speed_bits = (portsc & PORTSC_SPEED_MASK) >> PORTSC_SPEED_SHIFT;
+        Self {
+            index,
+            register: portsc,
+            connected: (portsc & PORTSC_CCS) != 0,
+            enabled: (portsc & PORTSC_PED) != 0,
+            powered: (portsc & PORTSC_POWER) != 0,
+            overcurrent: (portsc & PORTSC_OCA) != 0,
+            resetting: (portsc & PORTSC_PR) != 0,
+            link_state: PortLinkState::from_raw(link_bits),
+            speed: PortSpeed::from_raw(speed_bits),
+        }
+    }
+
+    /// Human readable summary used in bring-up logs.
+    fn summary(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        parts.push(if self.connected {
+            "connected".into()
+        } else {
+            "disconnected".into()
+        });
+        if self.enabled {
+            parts.push("enabled".into());
+        }
+        if self.powered {
+            parts.push("powered".into());
+        }
+        if self.resetting {
+            parts.push("reset".into());
+        }
+        if self.overcurrent {
+            parts.push("overcurrent".into());
+        }
+        parts.push(format!("link={}", self.link_state.as_str()));
+        if !matches!(self.speed, PortSpeed::Invalid | PortSpeed::Reserved(_)) {
+            parts.push(format!("speed={}", self.speed.as_str()));
+        }
+        parts.push(format!("raw={:#010x}", self.register));
+        parts.join(" ")
+    }
 }
 
 impl CommandRing {
@@ -320,6 +489,11 @@ impl XhciDriver {
         align_up(raw, DEVICE_CONTEXT_ALIGN)
     }
 
+    /// Number of 32-bit words in a single context entry.
+    fn context_word_count(controller: &XhciController) -> usize {
+        controller.context_entry_size / core::mem::size_of::<u32>()
+    }
+
     #[allow(dead_code)]
     /// Obtain a mutable pointer to the slot context for the given slot ID.
     ///
@@ -337,6 +511,17 @@ impl XhciDriver {
         }
         let buffer = controller.slot_contexts.get_mut(slot_id - 1)?;
         Some(buffer.virt_addr() as *mut u32)
+    }
+
+    /// Obtain a mutable slice over the slot context words.
+    fn slot_context_words_mut(
+        &self,
+        controller: &mut XhciController,
+        slot_id: usize,
+    ) -> Option<&mut [u32]> {
+        let ptr = self.slot_context_mut(controller, slot_id)?;
+        let words = Self::context_word_count(controller);
+        Some(unsafe { slice::from_raw_parts_mut(ptr, words) })
     }
 
     /// Obtain a mutable pointer to an endpoint context within the device context.
@@ -358,6 +543,18 @@ impl XhciDriver {
         let buffer = controller.slot_contexts.get_mut(slot_id.checked_sub(1)?)?;
         let offset = endpoint * controller.context_entry_size;
         Some((buffer.virt_addr() + offset as u64) as *mut u32)
+    }
+
+    /// Obtain a mutable slice over an endpoint context for the provided slot.
+    fn endpoint_context_words_mut(
+        &self,
+        controller: &mut XhciController,
+        slot_id: usize,
+        endpoint: usize,
+    ) -> Option<&mut [u32]> {
+        let ptr = self.endpoint_context_mut(controller, slot_id, endpoint)?;
+        let words = Self::context_word_count(controller);
+        Some(unsafe { slice::from_raw_parts_mut(ptr, words) })
     }
 
     /// Determine the controller's MMIO base and size from the reported BARs.
@@ -866,6 +1063,15 @@ impl XhciDriver {
             }
 
             controller.slot_contexts.push(ctx);
+
+            if let Some(words) = self.slot_context_words_mut(controller, slot) {
+                words.fill(0);
+            }
+            if let Some(endpoint0) =
+                self.endpoint_context_words_mut(controller, slot, DEFAULT_CONTROL_ENDPOINT)
+            {
+                endpoint0.fill(0);
+            }
         }
 
         log_info!(
@@ -1201,11 +1407,11 @@ impl XhciDriver {
         }
     }
 
-    /// Emit a human-readable summary of every root hub port.
-    fn log_ports(&self, controller: &XhciController, ident: &str) {
+    /// Read the PORTSC register for each root port and return decoded states.
+    fn collect_port_states(&self, controller: &XhciController) -> Vec<PortState> {
+        let mut ports = Vec::new();
         if controller.max_ports == 0 {
-            log_info!("xHCI {} reports zero root ports", ident);
-            return;
+            return ports;
         }
 
         unsafe {
@@ -1216,77 +1422,38 @@ impl XhciDriver {
                     .add(PORTSC_REGISTER_OFFSET + (port_index * PORT_REGISTER_STRIDE))
                     as *const u32;
                 let portsc = core::ptr::read_volatile(portsc_ptr);
-                let summary = self.describe_portsc(portsc);
-                log_info!("xHCI {} port{:02} {}", ident, port_index + 1, summary);
+                ports.push(PortState::from_register(port_index + 1, portsc));
             }
         }
+
+        ports
     }
 
-    /// Build a descriptive string for a `PORTSC` register snapshot.
-    fn describe_portsc(&self, portsc: u32) -> String {
-        let mut parts: Vec<String> = Vec::new();
-        if (portsc & PORTSC_CCS) != 0 {
-            parts.push("connected".into());
+    /// Emit a human-readable summary of every root hub port.
+    fn log_ports(&self, controller: &XhciController, ident: &str) {
+        let states = self.collect_port_states(controller);
+        if states.is_empty() {
+            log_info!("xHCI {} reports zero root ports", ident);
+            return;
+        }
+
+        for state in &states {
+            log_info!("xHCI {} port{:02} {}", ident, state.index, state.summary());
+        }
+
+        if let Some(first_connected) = states
+            .iter()
+            .find(|state| state.connected && !state.overcurrent)
+        {
+            log_info!(
+                "xHCI {} first connected port{:02} speed={} link={}",
+                ident,
+                first_connected.index,
+                first_connected.speed.as_str(),
+                first_connected.link_state.as_str()
+            );
         } else {
-            parts.push("disconnected".into());
-        }
-        if (portsc & PORTSC_PED) != 0 {
-            parts.push("enabled".into());
-        }
-        if (portsc & PORTSC_POWER) != 0 {
-            parts.push("powered".into());
-        }
-        if (portsc & PORTSC_PR) != 0 {
-            parts.push("reset".into());
-        }
-        if (portsc & PORTSC_OCA) != 0 {
-            parts.push("overcurrent".into());
-        }
-
-        let link_state = (portsc & PORTSC_LINK_STATE_MASK) >> PORTSC_LINK_STATE_SHIFT;
-        parts.push(format!("link={}", self.describe_link_state(link_state)));
-
-        let speed = (portsc & PORTSC_SPEED_MASK) >> PORTSC_SPEED_SHIFT;
-        if speed != 0 {
-            parts.push(format!("speed={}", self.describe_port_speed(speed)));
-        }
-
-        parts.push(format!("raw={:#010x}", portsc));
-        parts.join(" ")
-    }
-
-    /// Translate the link state field from PORTSC into a short label.
-    fn describe_link_state(&self, state: u32) -> &'static str {
-        match state {
-            0 => "U0",
-            1 => "U1",
-            2 => "U2",
-            3 => "U3",
-            4 => "Disabled",
-            5 => "RxDetect",
-            6 => "Inactive",
-            7 => "Polling",
-            8 => "Compliance",
-            9 => "Recovery",
-            10 => "HotReset",
-            11 => "Resume",
-            12 => "Reserved",
-            13 => "Test",
-            14 => "ResumePending",
-            _ => "Unknown",
-        }
-    }
-
-    /// Translate the port speed field from PORTSC into a human-readable term.
-    fn describe_port_speed(&self, speed: u32) -> &'static str {
-        match speed {
-            0 => "invalid",
-            1 => "full",
-            2 => "low",
-            3 => "high",
-            4 => "super",
-            5 => "super+",
-            _ => "reserved",
+            log_info!("xHCI {} no connected ports detected", ident);
         }
     }
 
