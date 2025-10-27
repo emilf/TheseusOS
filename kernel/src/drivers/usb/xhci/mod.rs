@@ -81,7 +81,6 @@ struct XhciController {
     last_command_status: Option<CommandCompletion>,
     pending_commands: usize,
     slot_contexts: Vec<DmaBuffer>,
-    slot_contexts: Vec<DmaBuffer>,
 }
 
 struct CommandRing {
@@ -110,6 +109,7 @@ struct RawCommandTrb {
 
 /// Summary of information extracted from a command completion event.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 struct CommandCompletion {
     /// Completion code reported by hardware.
     code: u32,
