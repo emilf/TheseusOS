@@ -57,6 +57,7 @@ const IMAN_IP: u32 = 1 << 0;
 const TRB_TYPE_ENABLE_SLOT: u32 = 0x09;
 #[allow(dead_code)]
 const TRB_TYPE_ADDRESS_DEVICE: u32 = 0x0B;
+const ENDPOINT_TYPE_CONTROL: u32 = 4;
 const DEVICE_CONTEXT_ALIGN: usize = 64;
 const MAX_ENDPOINT_CONTEXTS: usize = 32;
 const DEVICE_CONTEXT_ENTRIES: usize = 1 + MAX_ENDPOINT_CONTEXTS;
@@ -839,6 +840,14 @@ impl XhciDriver {
                                 "xHCI {}: enable slot failed after port {} preparation: {}",
                                 ident,
                                 port_state.index,
+                                err
+                            );
+                        }
+                        if let Err(err) = self.address_device_command(controller_ref, &ident) {
+                            log_warn!(
+                                "xHCI {}: address device failed in slot {}: {}",
+                                ident,
+                                controller_ref.active_slot.unwrap_or_default(),
                                 err
                             );
                         }
@@ -1642,38 +1651,37 @@ impl XhciDriver {
 
         ctx.zero();
 
-        let control_words = ctx.control_words_mut(controller.context_entry_size);
-        if control_words.len() >= 2 {
-            control_words.fill(0);
-            control_words[1] = (1 << SLOT_CONTEXT_INDEX) | (1 << DEFAULT_CONTROL_ENDPOINT);
-        }
-
-        let route = port.route_string();
-        let speed_code = port.speed.raw();
-        let context_entries = DEFAULT_CONTROL_ENDPOINT as u32;
-        let slot_words = ctx.slot_words_mut(controller.context_entry_size);
-        if !slot_words.is_empty() {
-            slot_words.fill(0);
-            slot_words[0] = route | (speed_code << 20);
-            if slot_words.len() > 1 {
-                slot_words[1] = ((context_entries & 0x1F) << 27) | ((port.index as u32) << 16);
-            }
-        }
-
-        if let Some(endpoint_words) =
-            ctx.endpoint_words_mut(controller.context_entry_size, DEFAULT_CONTROL_ENDPOINT)
         {
-            endpoint_words.fill(0);
-            let endpoint_type_control: u32 = 4;
-            let error_recovery_count: u32 = 3;
-            let max_packet = Self::control_max_packet_size(port.speed);
+            let input_control = ctx.control_words_mut(controller.context_entry_size);
+            input_control.fill(0);
+            if input_control.len() > 1 {
+                input_control[1] = (1 << SLOT_CONTEXT_INDEX) | (1 << DEFAULT_CONTROL_ENDPOINT);
+            }
+        }
 
-            if endpoint_words.len() > 1 {
-                endpoint_words[1] = (endpoint_type_control << 3) | (error_recovery_count << 1);
+        let route_string = port.route_string();
+        let slot_context_entries = DEFAULT_CONTROL_ENDPOINT as u32;
+        let port_number = port.index as u32;
+        let speed_code = port.speed.raw();
+
+        {
+            let slot_words = ctx.slot_words_mut(controller.context_entry_size);
+            slot_words.fill(0);
+            if !slot_words.is_empty() {
+                slot_words[0] = route_string | (speed_code << 20);
             }
-            if endpoint_words.len() > 2 {
-                endpoint_words[2] = max_packet << 16;
+            if slot_words.len() > 1 {
+                let context_entry = (slot_context_entries & 0x1F) << 27;
+                let port_field = (port_number & 0xFF) << 16;
+                slot_words[1] = context_entry | port_field;
             }
+        }
+
+        {
+            let ep0_words = ctx
+                .endpoint_words_mut(controller.context_entry_size, DEFAULT_CONTROL_ENDPOINT)
+                .ok_or("failed to map endpoint context")?;
+            self.populate_endpoint_zero(ep0_words, port.speed);
         }
 
         controller.control_context_ready = true;
@@ -1682,12 +1690,30 @@ impl XhciDriver {
             "xHCI {} input context primed for port{:02}: route={:#x} speed={} ictx={:#012x}",
             ident,
             port.index,
-            route,
+            route_string,
             port.speed.as_str(),
             ctx.phys_addr()
         );
 
         Ok(())
+    }
+
+    /// Initialise the default control endpoint context template used during address assignment.
+    fn populate_endpoint_zero(&self, endpoint_words: &mut [u32], speed: PortSpeed) {
+        endpoint_words.fill(0);
+
+        let error_recovery_count: u32 = 3;
+        let max_packet = Self::control_max_packet_size(speed);
+
+        if endpoint_words.len() > 1 {
+            endpoint_words[1] = (ENDPOINT_TYPE_CONTROL << 3) | (error_recovery_count << 1);
+        }
+        if endpoint_words.len() > 2 {
+            endpoint_words[2] = max_packet << 16;
+        }
+        if endpoint_words.len() > 7 {
+            endpoint_words[7] = max_packet as u32;
+        }
     }
 
     /// Issue an Enable Slot command and capture the returned slot identifier.
@@ -1724,6 +1750,56 @@ impl XhciDriver {
         );
 
         Ok(slot_id)
+    }
+
+    /// Issue the Address Device command for the active slot using the prepared input context.
+    fn address_device_command(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<(), &'static str> {
+        let slot_id = controller
+            .active_slot
+            .ok_or("address device requested without slot")?;
+        if !controller.control_context_ready {
+            return Err("control context not initialised");
+        }
+
+        let ctx = controller
+            .input_context
+            .as_ref()
+            .ok_or("input context missing")?;
+
+        let ics_flag = if controller.context_entry_size == 64 {
+            1
+        } else {
+            0
+        }; // ICS bit
+        let parameter = ctx.phys_addr() & !0xF;
+        let trb = RawCommandTrb {
+            parameter,
+            status: ics_flag,
+            control: (TRB_TYPE_ADDRESS_DEVICE << 10) | ((slot_id as u32) << 24),
+        };
+
+        let (completion, index) = self.issue_command(controller, ident, trb)?;
+        if completion.code != TRB_COMPLETION_SUCCESS {
+            log_warn!(
+                "xHCI {} address-device (slot {}) returned completion code {}",
+                ident,
+                slot_id,
+                completion.code
+            );
+        } else {
+            log_info!(
+                "xHCI {} address-device success (slot {} index={})",
+                ident,
+                slot_id,
+                index
+            );
+        }
+
+        Ok(())
     }
 
     /// Decode USBSTS into a pipe-separated list of active flags.
