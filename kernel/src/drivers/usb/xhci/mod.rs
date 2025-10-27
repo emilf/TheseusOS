@@ -470,11 +470,26 @@ impl TransferRing {
     }
 
     fn dequeue_pointer(&self) -> u64 {
-        (self.buffer.phys_addr() & !0xF) | if self.cycle { 1 } else { 0 }
+        self.buffer.phys_addr() & !0xF
     }
 
     fn capacity(&self) -> usize {
         self.trb_count
+    }
+
+    fn enqueue(&mut self, parameter: u64, status: u32, control: u32) {
+        let trb_ptr = (self.buffer.virt_addr() + (self.enqueue_index * TRB_SIZE) as u64) as *mut u32;
+        unsafe {
+            core::ptr::write_volatile(trb_ptr, parameter as u32);
+            core::ptr::write_volatile(trb_ptr.add(1), (parameter >> 32) as u32);
+            core::ptr::write_volatile(trb_ptr.add(2), status);
+            core::ptr::write_volatile(trb_ptr.add(3), control | if self.cycle { TRB_CYCLE_BIT } else { 0 });
+        }
+
+        self.enqueue_index = (self.enqueue_index + 1) % self.trb_count;
+        if self.enqueue_index == 0 {
+            self.cycle = !self.cycle;
+        }
     }
 }
 
@@ -1768,7 +1783,7 @@ impl XhciDriver {
                 (ENDPOINT_TYPE_CONTROL << 3) | (error_recovery_count << 1) | (max_packet << 16);
         }
         if endpoint_words.len() > 2 {
-            endpoint_words[2] = dequeue_pointer as u32;
+            endpoint_words[2] = (dequeue_pointer & 0xFFFF_FFF0) as u32;
         }
         if endpoint_words.len() > 3 {
             endpoint_words[3] = (dequeue_pointer >> 32) as u32;
@@ -1831,6 +1846,10 @@ impl XhciDriver {
             .input_context
             .as_ref()
             .ok_or("input context missing")?;
+
+        if controller.control_transfer_ring.is_none() {
+            return Err("control transfer ring not initialised");
+        }
 
         let ics_flag = if controller.context_entry_size == 64 {
             1
@@ -1977,3 +1996,9 @@ impl Driver for XhciDriver {
         false
     }
 }
+        if endpoint_words.len() > 4 {
+            endpoint_words[4] = endpoint_words[2];
+        }
+        if endpoint_words.len() > 5 {
+            endpoint_words[5] = endpoint_words[3];
+        }
