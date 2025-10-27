@@ -95,6 +95,7 @@ struct XhciController {
     msi_enabled: AtomicBool,
     command_ring: Option<CommandRing>,
     event_ring: Option<EventRing>,
+    input_context: Option<InputContext>,
     slots_enabled: bool,
     dcbaa: Option<DmaBuffer>,
     controller_running: bool,
@@ -103,6 +104,9 @@ struct XhciController {
     slot_contexts: Vec<DmaBuffer>,
     scratchpad_table: Option<DmaBuffer>,
     scratchpad_buffers: Vec<DmaBuffer>,
+    attached_port: Option<u8>,
+    attached_speed: Option<PortSpeed>,
+    control_context_ready: bool,
 }
 
 struct CommandRing {
@@ -116,6 +120,55 @@ struct EventRing {
     table: DmaBuffer,
     index: usize,
     cycle: bool,
+}
+
+/// DMA-backed input context used when programming slot and endpoint state.
+struct InputContext {
+    buffer: DmaBuffer,
+}
+
+impl InputContext {
+    /// Create a new input context wrapper.
+    fn new(buffer: DmaBuffer) -> Self {
+        Self { buffer }
+    }
+
+    /// Physical address advertised to the controller when submitting commands.
+    fn phys_addr(&self) -> u64 {
+        self.buffer.phys_addr()
+    }
+
+    /// Zero the entire input context to a known state.
+    fn zero(&mut self) {
+        self.buffer.as_mut_slice().fill(0);
+    }
+
+    /// Mutable view of the input control context words.
+    fn control_words_mut(&mut self, entry_size: usize) -> &mut [u32] {
+        let words = entry_size / core::mem::size_of::<u32>();
+        unsafe { slice::from_raw_parts_mut(self.buffer.virt_addr() as *mut u32, words) }
+    }
+
+    /// Mutable view of the slot context words.
+    fn slot_words_mut(&mut self, entry_size: usize) -> &mut [u32] {
+        let ptr = (self.buffer.virt_addr() + entry_size as u64) as *mut u32;
+        let words = entry_size / core::mem::size_of::<u32>();
+        unsafe { slice::from_raw_parts_mut(ptr, words) }
+    }
+
+    /// Mutable view of an endpoint context identified by `endpoint`.
+    fn endpoint_words_mut(&mut self, entry_size: usize, endpoint: usize) -> Option<&mut [u32]> {
+        if endpoint == SLOT_CONTEXT_INDEX || endpoint >= DEVICE_CONTEXT_ENTRIES {
+            return None;
+        }
+        let offset = entry_size * (1 + endpoint);
+        if offset + entry_size > self.buffer.len() {
+            return None;
+        }
+        let ptr = (self.buffer.virt_addr() + offset as u64) as *mut u32;
+        let words = entry_size / core::mem::size_of::<u32>();
+        Some(unsafe { slice::from_raw_parts_mut(ptr, words) })
+    }
 }
 
 /// Raw representation of a command TRB to be written to the command ring.
@@ -250,6 +303,19 @@ impl PortSpeed {
             PortSpeed::Reserved(_) => "reserved",
         }
     }
+
+    /// Raw encoding used in PORTSC and slot contexts.
+    fn raw(&self) -> u32 {
+        match self {
+            PortSpeed::Invalid => 0,
+            PortSpeed::Full => 1,
+            PortSpeed::Low => 2,
+            PortSpeed::High => 3,
+            PortSpeed::Super => 4,
+            PortSpeed::SuperPlus => 5,
+            PortSpeed::Reserved(value) => *value,
+        }
+    }
 }
 
 /// Snapshot of a root hub port as reported through `PORTSC`.
@@ -312,6 +378,14 @@ impl PortState {
         }
         parts.push(format!("raw={:#010x}", self.register));
         parts.join(" ")
+    }
+
+    /// Route string to be programmed into the slot context.
+    ///
+    /// For root hub ports the route string is the 5-bit port index encoded in
+    /// the least significant bits.
+    fn route_string(&self) -> u32 {
+        (self.index as u32) & 0xFFFFF
     }
 }
 
@@ -487,6 +561,23 @@ impl XhciDriver {
     fn device_context_bytes(&self, controller: &XhciController) -> usize {
         let raw = controller.context_entry_size * DEVICE_CONTEXT_ENTRIES;
         align_up(raw, DEVICE_CONTEXT_ALIGN)
+    }
+
+    /// Compute the total size of the input context buffer (control + device contexts).
+    fn input_context_bytes(&self, controller: &XhciController) -> usize {
+        let raw = controller.context_entry_size * (1 + DEVICE_CONTEXT_ENTRIES);
+        align_up(raw, DEVICE_CONTEXT_ALIGN)
+    }
+
+    /// Determine the default control endpoint packet size for a given port speed.
+    fn control_max_packet_size(speed: PortSpeed) -> u32 {
+        match speed {
+            PortSpeed::Low => 8,
+            PortSpeed::Full | PortSpeed::High => 64,
+            PortSpeed::Super => 512,
+            PortSpeed::SuperPlus => 1024,
+            PortSpeed::Invalid | PortSpeed::Reserved(_) => 8,
+        }
     }
 
     /// Number of 32-bit words in a single context entry.
@@ -692,6 +783,7 @@ impl XhciDriver {
                 msi_enabled: AtomicBool::new(false),
                 command_ring: None,
                 event_ring: None,
+                input_context: None,
                 slots_enabled: false,
                 dcbaa: None,
                 controller_running: false,
@@ -700,6 +792,9 @@ impl XhciDriver {
                 slot_contexts: Vec::new(),
                 scratchpad_table: None,
                 scratchpad_buffers: Vec::new(),
+                attached_port: None,
+                attached_speed: None,
+                control_context_ready: false,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -720,9 +815,31 @@ impl XhciDriver {
             if let Err(err) = self.enable_slots(controller_ref, &ident) {
                 log_warn!("xHCI {}: slot configuration failed: {}", ident, err);
             }
+            let mut first_connected_port = None;
             match self.start_controller(controller_ref, &ident) {
-                Ok(()) => self.log_ports(&*controller_ref, &ident),
+                Ok(()) => {
+                    first_connected_port = self.log_ports(&*controller_ref, &ident);
+                }
                 Err(err) => log_warn!("xHCI {}: run-state transition failed: {}", ident, err),
+            }
+            controller_ref.attached_port = first_connected_port.map(|state| state.index as u8);
+            controller_ref.attached_speed = first_connected_port.map(|state| state.speed);
+            if let Some(port_state) = first_connected_port {
+                if let Err(err) =
+                    self.prepare_default_control_context(controller_ref, &ident, port_state)
+                {
+                    log_warn!(
+                        "xHCI {}: control endpoint scaffold failed for port {}: {}",
+                        ident,
+                        port_state.index,
+                        err
+                    );
+                }
+            } else {
+                log_info!(
+                    "xHCI {} awaiting device connection before programming contexts",
+                    ident
+                );
             }
             if let Err(err) = self.submit_noop(controller_ref, &ident) {
                 log_warn!("xHCI {}: noop command submission failed: {}", ident, err);
@@ -900,6 +1017,7 @@ impl XhciDriver {
 
         controller.command_ring = Some(CommandRing::new(command_ring));
         controller.event_ring = Some(EventRing::new(event_ring, erst));
+        self.allocate_input_context(controller, ident)?;
         Ok(())
     }
 
@@ -911,6 +1029,33 @@ impl XhciDriver {
             "event" => "failed to allocate event ring",
             _ => "failed to allocate ring",
         })
+    }
+
+    /// Allocate and zero an input context for the controller.
+    fn allocate_input_context(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<(), &'static str> {
+        if controller.input_context.is_some() {
+            return Ok(());
+        }
+
+        let size = self.input_context_bytes(controller);
+        let buffer = DmaBuffer::allocate(size, DEVICE_CONTEXT_ALIGN)
+            .map_err(|_| "failed to allocate input context")?;
+        let mut ctx = InputContext::new(buffer);
+        ctx.zero();
+
+        log_info!(
+            "xHCI {} input context allocated: phys={:#012x} bytes={}",
+            ident,
+            ctx.phys_addr(),
+            size
+        );
+
+        controller.input_context = Some(ctx);
+        Ok(())
     }
 
     /// Program CRCR with the command ring base and initial cycle state.
@@ -1429,32 +1574,97 @@ impl XhciDriver {
         ports
     }
 
-    /// Emit a human-readable summary of every root hub port.
-    fn log_ports(&self, controller: &XhciController, ident: &str) {
+    /// Emit a human-readable summary of every root hub port and surface the first connected one.
+    fn log_ports(&self, controller: &XhciController, ident: &str) -> Option<PortState> {
         let states = self.collect_port_states(controller);
         if states.is_empty() {
             log_info!("xHCI {} reports zero root ports", ident);
-            return;
+            return None;
         }
 
+        let mut first_connected = None;
         for state in &states {
             log_info!("xHCI {} port{:02} {}", ident, state.index, state.summary());
+            if first_connected.is_none() && state.connected && !state.overcurrent {
+                first_connected = Some(*state);
+            }
         }
 
-        if let Some(first_connected) = states
-            .iter()
-            .find(|state| state.connected && !state.overcurrent)
-        {
+        if let Some(state) = first_connected {
             log_info!(
                 "xHCI {} first connected port{:02} speed={} link={}",
                 ident,
-                first_connected.index,
-                first_connected.speed.as_str(),
-                first_connected.link_state.as_str()
+                state.index,
+                state.speed.as_str(),
+                state.link_state.as_str()
             );
         } else {
             log_info!("xHCI {} no connected ports detected", ident);
         }
+
+        first_connected
+    }
+
+    /// Prepare the input context for the default control endpoint on the selected port.
+    fn prepare_default_control_context(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+        port: PortState,
+    ) -> Result<(), &'static str> {
+        self.allocate_input_context(controller, ident)?;
+        let Some(ctx) = controller.input_context.as_mut() else {
+            return Err("input context unavailable");
+        };
+
+        ctx.zero();
+
+        let control_words = ctx.control_words_mut(controller.context_entry_size);
+        if control_words.len() >= 2 {
+            control_words.fill(0);
+            control_words[1] = (1 << SLOT_CONTEXT_INDEX) | (1 << DEFAULT_CONTROL_ENDPOINT);
+        }
+
+        let route = port.route_string();
+        let speed_code = port.speed.raw();
+        let context_entries = DEFAULT_CONTROL_ENDPOINT as u32;
+        let slot_words = ctx.slot_words_mut(controller.context_entry_size);
+        if !slot_words.is_empty() {
+            slot_words.fill(0);
+            slot_words[0] = route | (speed_code << 20);
+            if slot_words.len() > 1 {
+                slot_words[1] = ((context_entries & 0x1F) << 27) | ((port.index as u32) << 16);
+            }
+        }
+
+        if let Some(endpoint_words) =
+            ctx.endpoint_words_mut(controller.context_entry_size, DEFAULT_CONTROL_ENDPOINT)
+        {
+            endpoint_words.fill(0);
+            let endpoint_type_control: u32 = 4;
+            let error_recovery_count: u32 = 3;
+            let max_packet = Self::control_max_packet_size(port.speed);
+
+            if endpoint_words.len() > 1 {
+                endpoint_words[1] = (endpoint_type_control << 3) | (error_recovery_count << 1);
+            }
+            if endpoint_words.len() > 2 {
+                endpoint_words[2] = max_packet << 16;
+            }
+        }
+
+        controller.control_context_ready = true;
+
+        log_info!(
+            "xHCI {} input context primed for port{:02}: route={:#x} speed={} ictx={:#012x}",
+            ident,
+            port.index,
+            route,
+            port.speed.as_str(),
+            ctx.phys_addr()
+        );
+
+        Ok(())
     }
 
     /// Decode USBSTS into a pipe-separated list of active flags.

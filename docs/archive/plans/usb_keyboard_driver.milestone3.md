@@ -3,10 +3,10 @@
 Milestone 3 focuses on bringing the xHCI host controller online with modern practices so later stages can layer USB protocol support without revisiting firmware handoff or DMA plumbing.
 
 ## Completed Work This Iteration
-- **Scratchpad infrastructure**: The driver now decodes `HCSParams2`, allocates the scratchpad pointer table, and provisions aligned DMA buffers when the controller advertises a non-zero count (`kernel/src/drivers/usb/xhci/mod.rs:887`). DCBAA entry 0 is updated automatically so future slot/context setup can assume the scratchpad array is ready.
-- **Capability telemetry**: Capability logging now reports the required scratchpad count alongside slots, ports, and context size, making controller expectations visible in the serial log (`kernel/src/drivers/usb/xhci/mod.rs:1232`).
-- **Port diagnostics**: After RUN is asserted the driver walks each root port, emitting a structured summary (link state, speed, power, reset) and highlighting the first connected port to seed enumeration decisions (`kernel/src/drivers/usb/xhci/mod.rs:1125`).
-- **Context scaffolding**: Device-context allocations now respect the controller's advertised context size, record the stride once per controller, and expose slice-based helpers for slot/endpoint context access so future milestones can program the default control endpoint cleanly (`kernel/src/drivers/usb/xhci/mod.rs:866`).
+- **Scratchpad infrastructure**: The driver now decodes `HCSParams2`, allocates the scratchpad pointer table, and provisions aligned DMA buffers when the controller advertises a non-zero count (`kernel/src/drivers/usb/xhci/mod.rs:1242`). DCBAA entry 0 is updated automatically so future slot/context setup can assume the scratchpad array is ready.
+- **Capability telemetry**: Capability logging now reports the required scratchpad count alongside slots, ports, and context size, making controller expectations visible in the serial log (`kernel/src/drivers/usb/xhci/mod.rs:1491`).
+- **Port diagnostics**: After RUN is asserted the driver walks each root port, emitting a structured summary (link state, speed, power, reset) and highlighting the first connected port to seed enumeration decisions (`kernel/src/drivers/usb/xhci/mod.rs:1569`).
+- **Context scaffolding**: Device-context allocations now respect the controller's advertised context size, record the stride once per controller, expose slice-based helpers for slot/endpoint access, and prime the input context for the default control endpoint using the first connected port (`kernel/src/drivers/usb/xhci/mod.rs:1621`).
 - **Documentation coverage**: Every helper added for scratchpads and port introspection carries Rustdoc comments so new contributors can follow the flow without cross-referencing the xHCI spec.
 
 ## Observations from QEMU (`./startQemu.sh headless 10`)
