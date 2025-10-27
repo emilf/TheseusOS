@@ -38,6 +38,8 @@ const RING_ALIGNMENT: usize = 64;
 const ERST_ENTRY_SIZE: usize = 16;
 const INTERRUPTER_STRIDE: u32 = 0x20;
 const IMAN_IE: u32 = 1 << 1;
+const MAX_SLOTS_REGISTER_OFFSET: u32 = 0x2C;
+const USBCMD_ENABLE_SLOT: u32 = 1 << 8;
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
@@ -59,6 +61,7 @@ struct XhciController {
     event_ring: Option<DmaBuffer>,
     event_ring_table: Option<DmaBuffer>,
     command_ring_cycle_state: bool,
+    slots_enabled: bool,
 }
 
 pub fn register_xhci_driver() {
@@ -185,6 +188,7 @@ impl XhciDriver {
                 event_ring: None,
                 event_ring_table: None,
                 command_ring_cycle_state: true,
+                slots_enabled: false,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -198,6 +202,9 @@ impl XhciDriver {
             }
             if let Err(err) = self.configure_event_ring(controller_ref, &ident) {
                 log_warn!("xHCI {}: event ring setup failed: {}", ident, err);
+            }
+            if let Err(err) = self.enable_slots(controller_ref, &ident) {
+                log_warn!("xHCI {}: slot configuration failed: {}", ident, err);
             }
             let stored = controller_ref as *const XhciController;
             dev.driver_data = Some(stored as usize);
@@ -429,6 +436,36 @@ impl XhciDriver {
             ident,
             controller.event_ring_table.as_ref().unwrap().phys_addr(),
             event_ring.phys_addr()
+        );
+
+        Ok(())
+    }
+
+    fn enable_slots(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<(), &'static str> {
+        if controller.slots_enabled {
+            return Ok(());
+        }
+
+        unsafe {
+            let op_base = (controller.virt_base + controller.operational_offset as u64) as *mut u8;
+            let config_ptr = op_base.add(MAX_SLOTS_REGISTER_OFFSET as usize) as *mut u32;
+            core::ptr::write_volatile(config_ptr, controller.max_slots as u32);
+
+            let cmd_ptr = op_base.add(0x00) as *mut u32;
+            let mut cmd = core::ptr::read_volatile(cmd_ptr);
+            cmd |= USBCMD_ENABLE_SLOT;
+            core::ptr::write_volatile(cmd_ptr, cmd);
+        }
+
+        controller.slots_enabled = true;
+        log_info!(
+            "xHCI {} slot configuration: max_slots={}",
+            ident,
+            controller.max_slots
         );
 
         Ok(())
