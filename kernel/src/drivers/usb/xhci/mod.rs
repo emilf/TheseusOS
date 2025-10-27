@@ -54,6 +54,7 @@ struct XhciController {
     msi_enabled: AtomicBool,
     command_ring: Option<DmaBuffer>,
     event_ring: Option<DmaBuffer>,
+    command_ring_cycle_state: bool,
 }
 
 pub fn register_xhci_driver() {
@@ -178,6 +179,7 @@ impl XhciDriver {
                 msi_enabled: AtomicBool::new(false),
                 command_ring: None,
                 event_ring: None,
+                command_ring_cycle_state: true,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -185,6 +187,9 @@ impl XhciDriver {
             let controller_ref = list.last_mut().unwrap();
             if let Err(err) = self.initialise_memory(controller_ref, &ident) {
                 log_warn!("xHCI {}: memory init failed: {}", ident, err);
+            }
+            if let Err(err) = self.configure_command_ring(controller_ref, &ident) {
+                log_warn!("xHCI {}: command ring setup failed: {}", ident, err);
             }
             let stored = controller_ref as *const XhciController;
             dev.driver_data = Some(stored as usize);
@@ -333,6 +338,41 @@ impl XhciDriver {
             "event" => "failed to allocate event ring",
             _ => "failed to allocate ring",
         })
+    }
+
+    fn configure_command_ring(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<(), &'static str> {
+        let Some(ring) = controller.command_ring.as_ref() else {
+            return Err("command ring not allocated");
+        };
+
+        let op_base = (controller.virt_base + controller.operational_offset as u64) as *mut u8;
+        unsafe {
+            let crcr_ptr = op_base.add(0x18) as *mut u64;
+            let cycle_bit = if controller.command_ring_cycle_state {
+                1u64
+            } else {
+                0
+            };
+            let value = (ring.phys_addr() & !0xF) | cycle_bit;
+            core::ptr::write_volatile(crcr_ptr, value);
+        }
+
+        log_info!(
+            "xHCI {} command ring configured: crcr={:#012x} (cycle {})",
+            ident,
+            ring.phys_addr(),
+            if controller.command_ring_cycle_state {
+                1
+            } else {
+                0
+            }
+        );
+
+        Ok(())
     }
 
     fn describe_status(&self, sts: u32) -> String {
