@@ -1043,6 +1043,33 @@ for bar in info.bars.iter() {
 - **Class-based I/O**: Direct driver lookup
 - **Thread Safety**: Minimal lock contention
 
+### MSI Programming Helper
+
+The `pci::enable_msi` helper wraps the book-keeping needed to transition a
+device from legacy INTx to MSI delivery. It locates the MSI capability exposed
+through `PciCapabilities`, programmes the LAPIC destination ID and interrupt
+vector, copes with 32- versus 64-bit message formats, and clears optional
+mask/pending registers when present. Drivers no longer need to hand-roll this
+logic—they simply reserve a vector, disable their IOAPIC route, and call the
+helper.
+
+### Interactive Inspection Tools
+
+The kernel monitor exposes two commands that are invaluable while validating
+PCI discovery and resource sizing:
+
+- **`devices`** – enumerates the driver manager's view of the world, including
+  merged `DeviceResource` entries and IRQ assignments. Use this to verify
+  that BAR relocations made it into the runtime registry.
+- **`pci`** – re-runs ECAM enumeration on demand and prints each function's
+  vendor/device IDs, class triplet, header type, and BAR information. It also
+  lists the active bridge windows so you can confirm secondary/subordinate bus
+  assignments after hot changes.
+
+Run these commands before digging into logs—they mirror exactly what the kernel
+discovered during boot and save full reboot cycles when iterating on resource
+allocation.
+
 ---
 
 ## Troubleshooting Guide
@@ -1068,7 +1095,7 @@ for bar in info.bars.iter() {
 - ECAM region problems
 **Solutions**:
 - Check device presence with `lspci`
-- Verify bridge configuration
+- Verify bridge configuration (`pci` monitor command shows secondary/subordinate buses and bridge windows)
 - Check ECAM region validity
 
 #### 3. Driver Binding Failures

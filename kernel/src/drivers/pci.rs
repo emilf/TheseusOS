@@ -839,7 +839,7 @@ fn parse_capabilities(function_base: u64, header_type: u8, status: u16) -> PciCa
 /// ```rust,no_run
 /// // Check if device supports MSI
 /// if device.capabilities.msi {
-///     // Enable MSI with vector 32 for APIC 0
+///     // Enable MSI with vector 32 for LAPIC 0
 ///     pci::enable_msi(&device, &regions, 0, 32)?;
 /// }
 /// ```
@@ -878,8 +878,11 @@ pub fn enable_msi(
     let is_64bit = (control & (1 << 7)) != 0;
     let per_vector_mask = (control & (1 << 8)) != 0;
 
-    // Program MSI for a single vector
+    // Program MSI for a single vector. We clamp the multi-message fields to a
+    // single delivery for now until the interrupt allocator can hand out
+    // batches of vectors.
     control &= !0x000E; // Clear multi-message bits (single vector)
+    // Standard MSI address format encodes the LAPIC destination ID in bits 12..19.
     let msg_addr = MSI_ADDR_BASE | ((apic_id as u32) << 12);
     let msg_data = vector as u16;
 
