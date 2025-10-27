@@ -43,6 +43,7 @@ const USBCMD_ENABLE_SLOT: u32 = 1 << 8;
 const DCBAA_ENTRY_SIZE: usize = 8;
 const RUN_STOP_TIMEOUT: usize = 1_000_000;
 const TRB_TYPE_NOOP_COMMAND: u32 = 0x17;
+const TRB_COMPLETION_CODE_MASK: u32 = 0xFF << 24;
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
@@ -68,6 +69,7 @@ struct XhciController {
     dcbaa: Option<DmaBuffer>,
     controller_running: bool,
     command_ring_index: usize,
+    last_command_status: Option<u32>,
 }
 
 pub fn register_xhci_driver() {
@@ -198,6 +200,7 @@ impl XhciDriver {
                 dcbaa: None,
                 controller_running: false,
                 command_ring_index: 0,
+                last_command_status: None,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -611,7 +614,48 @@ impl XhciDriver {
         }
 
         log_info!("xHCI {} submitted NOOP command (index={})", ident, index);
+        controller.last_command_status = Some(self.poll_command_completion(controller, ident)?);
         Ok(())
+    }
+
+    fn poll_command_completion(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<u32, &'static str> {
+        let Some(event_ring) = controller.event_ring.as_ref() else {
+            return Err("event ring missing");
+        };
+
+        let runtime_base = (controller.virt_base + controller.runtime_offset as u64) as *mut u8;
+        unsafe {
+            let interrupter0 = runtime_base.add(INTERRUPTER_STRIDE as usize);
+            let iman_ptr = interrupter0.add(0x00) as *mut u32;
+            let erdp_ptr = interrupter0.add(0x18) as *mut u64;
+
+            if !self.poll_with_timeout(
+                || (core::ptr::read_volatile(iman_ptr) & 1) != 0,
+                RUN_STOP_TIMEOUT,
+            ) {
+                return Err("command completion timeout");
+            }
+
+            let trb_ptr = event_ring.virt_addr() as *mut u32;
+            let completion = core::ptr::read_volatile(trb_ptr.add(2));
+            let control = core::ptr::read_volatile(trb_ptr.add(3));
+            let code = (control & TRB_COMPLETION_CODE_MASK) >> 24;
+
+            core::ptr::write_volatile(iman_ptr, core::ptr::read_volatile(iman_ptr) & !1);
+            core::ptr::write_volatile(erdp_ptr, event_ring.phys_addr() & !0xF);
+
+            log_info!(
+                "xHCI {} completion: code={} parameter={:#x}",
+                ident,
+                code,
+                completion
+            );
+            Ok(code)
+        }
     }
 
     fn describe_status(&self, sts: u32) -> String {
