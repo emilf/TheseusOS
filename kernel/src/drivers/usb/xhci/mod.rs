@@ -67,18 +67,99 @@ struct XhciController {
     max_ports: u8,
     max_slots: u8,
     msi_enabled: AtomicBool,
-    command_ring: Option<DmaBuffer>,
-    event_ring: Option<DmaBuffer>,
-    event_ring_table: Option<DmaBuffer>,
-    command_ring_cycle_state: bool,
+    command_ring: Option<CommandRing>,
+    event_ring: Option<EventRing>,
     slots_enabled: bool,
     dcbaa: Option<DmaBuffer>,
     controller_running: bool,
-    command_ring_index: usize,
     last_command_status: Option<u32>,
     pending_commands: usize,
-    event_ring_index: usize,
-    event_ring_cycle_state: bool,
+}
+
+struct CommandRing {
+    buffer: DmaBuffer,
+    index: usize,
+    cycle: bool,
+}
+
+struct EventRing {
+    buffer: DmaBuffer,
+    table: DmaBuffer,
+    index: usize,
+    cycle: bool,
+}
+
+impl CommandRing {
+    fn new(buffer: DmaBuffer) -> Self {
+        Self {
+            buffer,
+            index: 0,
+            cycle: true,
+        }
+    }
+
+    fn phys_addr(&self) -> u64 {
+        self.buffer.phys_addr()
+    }
+
+    fn current_trb(&self) -> *mut u32 {
+        (self.buffer.virt_addr() + (self.index * TRB_SIZE) as u64) as *mut u32
+    }
+
+    fn cycle_bit_u32(&self) -> u32 {
+        if self.cycle {
+            TRB_CYCLE_BIT
+        } else {
+            0
+        }
+    }
+
+    fn cycle_bit_u64(&self) -> u64 {
+        if self.cycle {
+            TRB_CYCLE_BIT as u64
+        } else {
+            0
+        }
+    }
+
+    fn advance(&mut self) {
+        self.index += 1;
+        if self.index == COMMAND_RING_TRBS {
+            self.index = 0;
+            self.cycle = !self.cycle;
+        }
+    }
+}
+
+impl EventRing {
+    fn new(buffer: DmaBuffer, table: DmaBuffer) -> Self {
+        Self {
+            buffer,
+            table,
+            index: 0,
+            cycle: true,
+        }
+    }
+
+    fn phys_addr(&self) -> u64 {
+        self.buffer.phys_addr()
+    }
+
+    fn table_phys_addr(&self) -> u64 {
+        self.table.phys_addr()
+    }
+
+    fn current_trb(&self) -> *mut u32 {
+        (self.buffer.virt_addr() + (self.index * TRB_SIZE) as u64) as *mut u32
+    }
+
+    fn advance(&mut self) {
+        self.index += 1;
+        if self.index == EVENT_RING_TRBS {
+            self.index = 0;
+            self.cycle = !self.cycle;
+        }
+    }
 }
 
 pub fn register_xhci_driver() {
@@ -203,16 +284,11 @@ impl XhciDriver {
                 msi_enabled: AtomicBool::new(false),
                 command_ring: None,
                 event_ring: None,
-                event_ring_table: None,
-                command_ring_cycle_state: true,
                 slots_enabled: false,
                 dcbaa: None,
                 controller_running: false,
-                command_ring_index: 0,
                 last_command_status: None,
                 pending_commands: 0,
-                event_ring_index: 0,
-                event_ring_cycle_state: true,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -370,6 +446,8 @@ impl XhciDriver {
 
         let command_ring = self.allocate_ring(COMMAND_RING_TRBS, "command")?;
         let event_ring = self.allocate_ring(EVENT_RING_TRBS, "event")?;
+        let erst = DmaBuffer::allocate(ERST_ENTRY_SIZE, RING_ALIGNMENT)
+            .map_err(|_| "failed to allocate ERST")?;
 
         log_info!(
             "xHCI {} ring allocation: command phys={:#012x} size={} event phys={:#012x} size={}",
@@ -380,8 +458,8 @@ impl XhciDriver {
             event_ring.len()
         );
 
-        controller.command_ring = Some(command_ring);
-        controller.event_ring = Some(event_ring);
+        controller.command_ring = Some(CommandRing::new(command_ring));
+        controller.event_ring = Some(EventRing::new(event_ring, erst));
         Ok(())
     }
 
@@ -399,19 +477,14 @@ impl XhciDriver {
         controller: &mut XhciController,
         ident: &str,
     ) -> Result<(), &'static str> {
-        let Some(ring) = controller.command_ring.as_ref() else {
+        let Some(ring) = controller.command_ring.as_mut() else {
             return Err("command ring not allocated");
         };
 
         let op_base = (controller.virt_base + controller.operational_offset as u64) as *mut u8;
         unsafe {
             let crcr_ptr = op_base.add(0x18) as *mut u64;
-            let cycle_bit = if controller.command_ring_cycle_state {
-                1u64
-            } else {
-                0
-            };
-            let value = (ring.phys_addr() & !0xF) | cycle_bit;
+            let value = (ring.phys_addr() & !0xF) | ring.cycle_bit_u64();
             core::ptr::write_volatile(crcr_ptr, value);
         }
 
@@ -419,11 +492,7 @@ impl XhciDriver {
             "xHCI {} command ring configured: crcr={:#012x} (cycle {})",
             ident,
             ring.phys_addr(),
-            if controller.command_ring_cycle_state {
-                1
-            } else {
-                0
-            }
+            if ring.cycle { 1 } else { 0 }
         );
 
         Ok(())
@@ -434,19 +503,12 @@ impl XhciDriver {
         controller: &mut XhciController,
         ident: &str,
     ) -> Result<(), &'static str> {
-        let Some(event_ring) = controller.event_ring.as_ref() else {
+        let Some(event_ring) = controller.event_ring.as_mut() else {
             return Err("event ring not allocated");
         };
 
-        if controller.event_ring_table.is_none() {
-            let table = DmaBuffer::allocate(ERST_ENTRY_SIZE, RING_ALIGNMENT)
-                .map_err(|_| "failed to allocate ERST")?;
-            controller.event_ring_table = Some(table);
-        }
-
-        let table = controller.event_ring_table.as_mut().unwrap();
         unsafe {
-            let entry_ptr = table.virt_addr() as *mut u8;
+            let entry_ptr = event_ring.table.virt_addr() as *mut u8;
             core::ptr::write_volatile(entry_ptr as *mut u64, event_ring.phys_addr());
             core::ptr::write_volatile(entry_ptr.add(8) as *mut u32, EVENT_RING_TRBS as u32);
             core::ptr::write_volatile(entry_ptr.add(12) as *mut u32, 0);
@@ -463,22 +525,22 @@ impl XhciDriver {
 
             core::ptr::write_volatile(imod_ptr, 0);
             core::ptr::write_volatile(erstsz_ptr, 1);
-            core::ptr::write_volatile(erstba_ptr, table.phys_addr());
+            core::ptr::write_volatile(erstba_ptr, event_ring.table_phys_addr());
             core::ptr::write_volatile(erdp_ptr, event_ring.phys_addr() & !0xF);
 
             let iman = core::ptr::read_volatile(iman_ptr);
-            core::ptr::write_volatile(iman_ptr, (iman & !1) | IMAN_IE);
+            core::ptr::write_volatile(iman_ptr, (iman & !IMAN_IP) | IMAN_IE);
         }
+
+        event_ring.index = 0;
+        event_ring.cycle = true;
 
         log_info!(
             "xHCI {} event ring configured: erst={:#012x} entries=1 erdp={:#012x}",
             ident,
-            controller.event_ring_table.as_ref().unwrap().phys_addr(),
+            event_ring.table_phys_addr(),
             event_ring.phys_addr()
         );
-
-        controller.event_ring_index = 0;
-        controller.event_ring_cycle_state = true;
 
         Ok(())
     }
@@ -597,17 +659,13 @@ impl XhciDriver {
             return Err("controller not running");
         }
 
-        let Some(ring) = controller.command_ring.as_ref() else {
+        let Some(ring) = controller.command_ring.as_mut() else {
             return Err("command ring not allocated");
         };
 
-        let index = controller.command_ring_index % COMMAND_RING_TRBS;
-        let trb_addr = (ring.virt_addr() + (index * TRB_SIZE) as u64) as *mut u32;
-        let cycle_bit = if controller.command_ring_cycle_state {
-            1u32
-        } else {
-            0
-        };
+        let index = ring.index % COMMAND_RING_TRBS;
+        let trb_addr = ring.current_trb();
+        let cycle_bit = ring.cycle_bit_u32();
         unsafe {
             core::ptr::write_volatile(trb_addr, 0);
             core::ptr::write_volatile(trb_addr.add(1), 0);
@@ -616,11 +674,7 @@ impl XhciDriver {
             core::ptr::write_volatile(trb_addr.add(3), control);
         }
 
-        controller.command_ring_index = controller.command_ring_index.wrapping_add(1);
-        if controller.command_ring_index == COMMAND_RING_TRBS {
-            controller.command_ring_index = 0;
-            controller.command_ring_cycle_state = !controller.command_ring_cycle_state;
-        }
+        ring.advance();
 
         unsafe {
             let doorbell_base =
@@ -639,7 +693,7 @@ impl XhciDriver {
         controller: &mut XhciController,
         ident: &str,
     ) -> Result<u32, &'static str> {
-        let Some(event_ring) = controller.event_ring.as_ref() else {
+        let Some(event_ring) = controller.event_ring.as_mut() else {
             return Err("event ring missing");
         };
 
@@ -658,10 +712,9 @@ impl XhciDriver {
 
             let mut spins = 0usize;
             let mut trb_ptr;
-            let expected_cycle = controller.event_ring_cycle_state as u32;
+            let expected_cycle = event_ring.cycle as u32;
             loop {
-                trb_ptr = (event_ring.virt_addr() + (controller.event_ring_index * TRB_SIZE) as u64)
-                    as *mut u32;
+                trb_ptr = event_ring.current_trb();
                 let control = core::ptr::read_volatile(trb_ptr.add(3));
                 let cycle = control & TRB_CYCLE_BIT;
                 if cycle == expected_cycle {
@@ -679,18 +732,14 @@ impl XhciDriver {
             let code = (control & TRB_COMPLETION_CODE_MASK) >> 24;
             let trb_type = (control & TRB_TYPE_MASK) >> 10;
 
-            controller.event_ring_index = controller.event_ring_index.wrapping_add(1);
-            if controller.event_ring_index == EVENT_RING_TRBS {
-                controller.event_ring_index = 0;
-                controller.event_ring_cycle_state = !controller.event_ring_cycle_state;
-            }
+            event_ring.advance();
 
             controller.pending_commands = controller.pending_commands.saturating_sub(1);
 
             core::ptr::write_volatile(iman_ptr, core::ptr::read_volatile(iman_ptr) & !IMAN_IP);
             core::ptr::write_volatile(
                 erdp_ptr,
-                (event_ring.phys_addr() + (controller.event_ring_index * TRB_SIZE) as u64) & !0xF,
+                (event_ring.phys_addr() + (event_ring.index * TRB_SIZE) as u64) & !0xF,
             );
 
             log_info!(
