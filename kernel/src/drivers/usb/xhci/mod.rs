@@ -54,6 +54,9 @@ const TRB_COMPLETION_SUCCESS: u32 = 1;
 const TRB_CYCLE_BIT: u32 = 1;
 const DOORBELL_HOST: u32 = 0;
 const IMAN_IP: u32 = 1 << 0;
+const TRB_TYPE_ENABLE_SLOT: u32 = 0x09;
+#[allow(dead_code)]
+const TRB_TYPE_ADDRESS_DEVICE: u32 = 0x0B;
 const DEVICE_CONTEXT_ALIGN: usize = 64;
 const MAX_ENDPOINT_CONTEXTS: usize = 32;
 const DEVICE_CONTEXT_ENTRIES: usize = 1 + MAX_ENDPOINT_CONTEXTS;
@@ -107,6 +110,7 @@ struct XhciController {
     attached_port: Option<u8>,
     attached_speed: Option<PortSpeed>,
     control_context_ready: bool,
+    active_slot: Option<u8>,
 }
 
 struct CommandRing {
@@ -196,6 +200,8 @@ struct CommandCompletion {
     status: u32,
     /// Raw control dword from the event TRB.
     control: u32,
+    /// Slot ID associated with the command completion, when applicable.
+    slot_id: Option<u8>,
 }
 
 /// Enumerated representation of the link state reported in PORTSC.
@@ -795,6 +801,7 @@ impl XhciDriver {
                 attached_port: None,
                 attached_speed: None,
                 control_context_ready: false,
+                active_slot: None,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -825,15 +832,25 @@ impl XhciDriver {
             controller_ref.attached_port = first_connected_port.map(|state| state.index as u8);
             controller_ref.attached_speed = first_connected_port.map(|state| state.speed);
             if let Some(port_state) = first_connected_port {
-                if let Err(err) =
-                    self.prepare_default_control_context(controller_ref, &ident, port_state)
-                {
-                    log_warn!(
-                        "xHCI {}: control endpoint scaffold failed for port {}: {}",
-                        ident,
-                        port_state.index,
-                        err
-                    );
+                match self.prepare_default_control_context(controller_ref, &ident, port_state) {
+                    Ok(()) => {
+                        if let Err(err) = self.enable_device_slot(controller_ref, &ident) {
+                            log_warn!(
+                                "xHCI {}: enable slot failed after port {} preparation: {}",
+                                ident,
+                                port_state.index,
+                                err
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        log_warn!(
+                            "xHCI {}: control endpoint scaffold failed for port {}: {}",
+                            ident,
+                            port_state.index,
+                            err
+                        );
+                    }
                 }
             } else {
                 log_info!(
@@ -1542,12 +1559,18 @@ impl XhciDriver {
                 log_warn!("xHCI {} command completed with status code {}", ident, code);
             }
 
+            let slot_id = match ((control >> 24) & 0xFF) as u8 {
+                0 => None,
+                value => Some(value),
+            };
+
             Ok(CommandCompletion {
                 code,
                 trb_type,
                 parameter,
                 status,
                 control,
+                slot_id,
             })
         }
     }
@@ -1665,6 +1688,42 @@ impl XhciDriver {
         );
 
         Ok(())
+    }
+
+    /// Issue an Enable Slot command and capture the returned slot identifier.
+    fn enable_device_slot(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<u8, &'static str> {
+        if let Some(slot) = controller.active_slot {
+            return Ok(slot);
+        }
+        if controller.attached_port.is_none() {
+            return Err("no attached port to enable slot");
+        }
+
+        let trb = RawCommandTrb {
+            parameter: 0,
+            status: 0,
+            control: TRB_TYPE_ENABLE_SLOT << 10,
+        };
+
+        let (completion, index) = self.issue_command(controller, ident, trb)?;
+        let Some(slot_id) = completion.slot_id else {
+            return Err("enable slot completion missing slot id");
+        };
+
+        controller.active_slot = Some(slot_id);
+
+        log_info!(
+            "xHCI {} enable-slot command index={} -> slot {}",
+            ident,
+            index,
+            slot_id
+        );
+
+        Ok(slot_id)
     }
 
     /// Decode USBSTS into a pipe-separated list of active flags.
