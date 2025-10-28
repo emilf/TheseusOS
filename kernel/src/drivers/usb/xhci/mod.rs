@@ -2044,7 +2044,7 @@ impl XhciDriver {
                 return Ok(event);
             }
 
-            let event = self.fetch_event_trb(controller, ident, RUN_STOP_TIMEOUT * 3)?;
+            let event = self.fetch_event_trb(controller, ident, RUN_STOP_TIMEOUT * 100)?;
             let trb_type = event.trb_type();
             let code = event.completion_code();
 
