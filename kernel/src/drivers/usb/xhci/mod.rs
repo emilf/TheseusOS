@@ -2403,7 +2403,7 @@ impl XhciDriver {
             TransferDir::In,
             true,
             true,
-            1,
+            0,
         );
             // Status stage toggles direction back OUT to complete the control transfer.
             self.enqueue_status_stage(ring, TransferDir::Out, true);
@@ -2719,46 +2719,48 @@ impl XhciDriver {
             return Err("control context not initialised");
         }
 
-        let ctx = controller
-            .input_context
-            .as_ref()
-            .ok_or("input context missing")?;
-
         if controller.control_transfer_ring.is_none() {
             return Err("control transfer ring not initialised");
         }
 
-        let entry_size = controller.context_entry_size;
-        let dev_ctx = controller
-            .slot_contexts
-            .get_mut(slot_id as usize - 1)
-            .ok_or("device context missing")?;
+        let parameter = {
+            let ctx = controller
+                .input_context
+                .as_mut()
+                .ok_or("input context missing")?;
+            let entry_size = controller.context_entry_size;
+            let dev_ctx = controller
+                .slot_contexts
+                .get_mut(slot_id as usize - 1)
+                .ok_or("device context missing")?;
 
-        unsafe {
-            let input_base = ctx.buffer.virt_addr();
-            // Slot context resides at index 1 in the input context.
-            let slot_src = (input_base + entry_size as u64) as *const u8;
-            let slot_dst = dev_ctx.virt_addr() as *mut u8;
-            if entry_size <= dev_ctx.len() {
-                core::ptr::copy_nonoverlapping(slot_src, slot_dst, entry_size);
+            unsafe {
+                let input_base = ctx.buffer.virt_addr();
+                // Slot context resides at index 1 in the input context.
+                let slot_src = (input_base + entry_size as u64) as *const u8;
+                let slot_dst = dev_ctx.virt_addr() as *mut u8;
+                if entry_size <= dev_ctx.len() {
+                    core::ptr::copy_nonoverlapping(slot_src, slot_dst, entry_size);
+                }
+
+                // Endpoint contexts start after the slot context; EP0 is index 1 in the device context.
+                let ep_src = (input_base + (entry_size * (1 + DEFAULT_CONTROL_ENDPOINT)) as u64)
+                    as *const u8;
+                let ep_offset = entry_size * DEFAULT_CONTROL_ENDPOINT;
+                if ep_offset + entry_size <= dev_ctx.len() {
+                    let ep_dst = (dev_ctx.virt_addr() + ep_offset as u64) as *mut u8;
+                    core::ptr::copy_nonoverlapping(ep_src, ep_dst, entry_size);
+                }
             }
 
-            // Endpoint contexts start after the slot context; EP0 is index 1 in the device context.
-            let ep_src = (input_base + (entry_size * (1 + DEFAULT_CONTROL_ENDPOINT)) as u64)
-                as *const u8;
-            let ep_offset = entry_size * DEFAULT_CONTROL_ENDPOINT;
-            if ep_offset + entry_size <= dev_ctx.len() {
-                let ep_dst = (dev_ctx.virt_addr() + ep_offset as u64) as *mut u8;
-                core::ptr::copy_nonoverlapping(ep_src, ep_dst, entry_size);
-            }
-        }
+            ctx.phys_addr() & !0xF
+        };
 
         let ics_flag = if controller.context_entry_size == 64 {
             1
         } else {
             0
         }; // ICS bit
-        let parameter = ctx.phys_addr() & !0xF;
         let trb = RawCommandTrb {
             parameter,
             status: ics_flag,
@@ -2826,6 +2828,16 @@ impl XhciDriver {
                             d3
                         );
                     }
+                }
+            }
+
+            if let Some(ctx) = controller.input_context.as_mut() {
+                let control_words = ctx.control_words_mut(controller.context_entry_size);
+                if !control_words.is_empty() {
+                    control_words[0] = 0;
+                }
+                if control_words.len() > 1 {
+                    control_words[1] = (1 << SLOT_CONTEXT_INDEX) | (1 << DEFAULT_CONTROL_ENDPOINT);
                 }
             }
 
