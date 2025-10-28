@@ -1596,6 +1596,9 @@ impl XhciDriver {
             }
 
             let mut spins = 0usize;
+            // Spin until the controller flips the cycle bit indicating a fresh
+            // event TRB is ready. The RUN_STOP_TIMEOUT is re-used to avoid
+            // hanging forever if the controller becomes unresponsive.
             let mut trb_ptr;
             let expected_cycle = event_ring.cycle as u32;
             loop {
