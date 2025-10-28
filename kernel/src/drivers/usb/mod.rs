@@ -8,6 +8,7 @@ mod xhci;
 
 pub use handoff::ensure_legacy_usb_handoff;
 pub use xhci::register_xhci_driver;
+pub use xhci::{diagnostics_snapshot, ControllerDiagnostics, HidEndpointSummary, PortDiagnostics};
 
 /// Register all USB-class drivers with the driver manager.
 pub fn init() {

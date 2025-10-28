@@ -11,3 +11,4 @@ pub mod memory;
 pub mod pci;
 pub mod system;
 pub mod tables;
+pub mod usb;

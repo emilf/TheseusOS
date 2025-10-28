@@ -9,6 +9,7 @@
 //! full USB enumeration.
 
 use alloc::{format, string::String, vec::Vec};
+use alloc::string::ToString;
 use core::convert::TryFrom;
 use core::hint::spin_loop;
 use core::slice;
@@ -107,6 +108,7 @@ static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
 #[allow(dead_code)]
 /// Aggregated state for a discovered controller.
 struct XhciController {
+    ident: String,
     phys_base: u64,
     virt_base: u64,
     mmio_length: usize,
@@ -153,6 +155,45 @@ struct HidEndpoint {
     endpoint_address: u8,
     max_packet_size: u16,
     interval: u8,
+}
+
+/// Human-readable snapshot of an xHCI controller used for diagnostics.
+#[derive(Clone, Debug)]
+pub struct ControllerDiagnostics {
+    pub ident: String,
+    pub phys_base: u64,
+    pub mmio_length: usize,
+    pub max_ports: u8,
+    pub max_slots: u8,
+    pub controller_running: bool,
+    pub slots_enabled: bool,
+    pub active_slot: Option<u8>,
+    pub attached_port: Option<u8>,
+    pub attached_speed: Option<String>,
+    pub hid_keyboard: Option<HidEndpointSummary>,
+    pub ports: Vec<PortDiagnostics>,
+}
+
+/// Diagnostic snapshot of a root-port line state.
+#[derive(Clone, Debug)]
+pub struct PortDiagnostics {
+    pub index: u8,
+    pub connected: bool,
+    pub enabled: bool,
+    pub powered: bool,
+    pub overcurrent: bool,
+    pub speed: String,
+    pub link_state: String,
+    pub raw: u32,
+}
+
+/// Summary of the HID boot keyboard endpoint discovered during enumeration.
+#[derive(Clone, Debug)]
+pub struct HidEndpointSummary {
+    pub interface_number: u8,
+    pub endpoint_address: u8,
+    pub max_packet_size: u16,
+    pub interval: u8,
 }
 
 /// Software producer view of the command ring shared with the controller.
@@ -1032,6 +1073,7 @@ impl XhciDriver {
             self.log_operational_state(virt, operational_offset, &ident);
 
             let controller = XhciController {
+                ident: ident.clone(),
                 phys_base,
                 virt_base: virt,
                 mmio_length,
@@ -2817,6 +2859,53 @@ impl XhciDriver {
         }
     }
 
+    /// Collect the current diagnostic snapshot of all managed xHCI controllers.
+    pub fn diagnostics_snapshot(&self) -> Vec<ControllerDiagnostics> {
+        let mut snapshot = Vec::new();
+        let controllers = CONTROLLERS.lock();
+        for controller in controllers.iter() {
+            let ports = self.collect_port_states(controller);
+            let port_diags = ports
+                .iter()
+                .map(|state| PortDiagnostics {
+                    index: state.index as u8,
+                    connected: state.connected,
+                    enabled: state.enabled,
+                    powered: state.powered,
+                    overcurrent: state.overcurrent,
+                    speed: state.speed.as_str().to_string(),
+                    link_state: state.link_state.as_str().to_string(),
+                    raw: state.register,
+                })
+                .collect();
+
+            let hid_keyboard = controller.hid_boot_keyboard.map(|hid| HidEndpointSummary {
+                interface_number: hid.interface_number,
+                endpoint_address: hid.endpoint_address,
+                max_packet_size: hid.max_packet_size,
+                interval: hid.interval,
+            });
+
+            snapshot.push(ControllerDiagnostics {
+                ident: controller.ident.clone(),
+                phys_base: controller.phys_base,
+                mmio_length: controller.mmio_length,
+                max_ports: controller.max_ports,
+                max_slots: controller.max_slots,
+                controller_running: controller.controller_running,
+                slots_enabled: controller.slots_enabled,
+                active_slot: controller.active_slot,
+                attached_port: controller.attached_port,
+                attached_speed: controller
+                    .attached_speed
+                    .map(|speed| speed.as_str().to_string()),
+                hid_keyboard,
+                ports: port_diags,
+            });
+        }
+        snapshot
+    }
+
     /// Await completion of an EP0 descriptor transfer and return the captured bytes.
     fn finalize_ep0_transfer_data(
         &self,
@@ -3562,4 +3651,9 @@ impl Driver for XhciDriver {
         // Placeholder: mainline path will be implemented alongside interrupt allocator work.
         false
     }
+}
+
+/// Public entry point for collecting xHCI diagnostic information.
+pub fn diagnostics_snapshot() -> Vec<ControllerDiagnostics> {
+    XHCI_DRIVER.diagnostics_snapshot()
 }

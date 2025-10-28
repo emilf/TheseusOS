@@ -375,6 +375,7 @@ impl Monitor {
             "reset" => self.cmd_reset(),
             "halt" => self.cmd_halt(),
             "clear" | "cls" => self.cmd_clear(),
+            "usb" => self.cmd_usb(&parts[1..]),
             _ => {
                 self.writeln(&format!("Unknown command: '{}'", parts[0]));
                 self.writeln("Type 'help' for available commands");
@@ -400,6 +401,7 @@ impl Monitor {
         self.writeln("  phys|physmem        - Display physical memory statistics");
         self.writeln("  devices|dev         - List registered devices");
         self.writeln("  pci                 - Enumerate PCI functions and BARs");
+        self.writeln("  usb [OPTIONS]       - USB/xHCI diagnostics (use 'usb help' for options)");
         self.writeln("");
         self.writeln("Tables & Maps:");
         self.writeln("  idt [VECTOR]        - Display IDT information");
