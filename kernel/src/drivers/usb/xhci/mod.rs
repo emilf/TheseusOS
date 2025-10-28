@@ -69,6 +69,7 @@ const TRB_TYPE_ENABLE_SLOT: u32 = 0x09;
 const TRB_TYPE_ADDRESS_DEVICE: u32 = 0x0B;
 const ENDPOINT_TYPE_CONTROL: u32 = 4;
 const DEFAULT_EP0_RING_TRBS: usize = 64;
+const DEVICE_DESCRIPTOR_LENGTH: usize = 18;
 const DEVICE_CONTEXT_ALIGN: usize = 64;
 const MAX_ENDPOINT_CONTEXTS: usize = 32;
 const DEVICE_CONTEXT_ENTRIES: usize = 1 + MAX_ENDPOINT_CONTEXTS;
@@ -125,6 +126,7 @@ struct XhciController {
     active_slot: Option<u8>,
     /// Transfer ring backing the default control endpoint (EP0).
     control_transfer_ring: Option<TransferRing>,
+    ep0_descriptor_buffer: Option<DmaBuffer>,
 }
 
 struct CommandRing {
@@ -544,6 +546,12 @@ impl TransferRing {
         self.cycle
     }
 
+    /// Reset the producer state so the next transfer starts from TRB 0.
+    fn reset(&mut self) {
+        self.enqueue_index = 0;
+        self.cycle = true;
+    }
+
     /// Append a TRB and advance the producer index, flipping the cycle on wrap.
     #[allow(dead_code)]
     fn enqueue(&mut self, parameter: u64, status: u32, control: u32) {
@@ -938,6 +946,7 @@ impl XhciDriver {
                 control_context_ready: false,
                 active_slot: None,
                 control_transfer_ring: None,
+                ep0_descriptor_buffer: None,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -1825,6 +1834,12 @@ impl XhciDriver {
             ring_ref
         };
 
+        if controller.ep0_descriptor_buffer.is_none() {
+            let buffer = DmaBuffer::allocate(64, RING_ALIGNMENT)
+                .map_err(|_| "failed to allocate descriptor buffer")?;
+            controller.ep0_descriptor_buffer = Some(buffer);
+        }
+
         {
             let slot_words = ctx.slot_words_mut(controller.context_entry_size);
             slot_words.fill(0);
@@ -1911,6 +1926,60 @@ impl XhciDriver {
             control |= TRB_IOC;
         }
         ring.enqueue(0, 0, control);
+    }
+
+    fn queue_device_descriptor_request(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<(), &'static str> {
+        let slot_id = controller
+            .active_slot
+            .ok_or("cannot queue descriptor request without active slot")?;
+        let ring = controller
+            .control_transfer_ring
+            .as_mut()
+            .ok_or("control transfer ring missing")?;
+        let buffer = controller
+            .ep0_descriptor_buffer
+            .as_mut()
+            .ok_or("descriptor buffer missing")?;
+
+        ring.reset();
+
+        let slice = buffer.as_mut_slice();
+        let clear_len = DEVICE_DESCRIPTOR_LENGTH.min(slice.len());
+        slice[..clear_len].fill(0);
+
+        let setup = UsbControlSetup::device_descriptor();
+        self.enqueue_setup_stage(ring, setup, true);
+        self.enqueue_data_stage(
+            ring,
+            buffer.phys_addr(),
+            DEVICE_DESCRIPTOR_LENGTH,
+            TransferDir::In,
+            true,
+            false,
+        );
+        self.enqueue_status_stage(ring, TransferDir::Out, true);
+
+        unsafe {
+            let doorbell_base =
+                (controller.virt_base + controller.doorbell_offset as u64) as *mut u32;
+            core::ptr::write_volatile(
+                doorbell_base.add(slot_id as usize),
+                DEFAULT_CONTROL_ENDPOINT as u32,
+            );
+        }
+
+        log_info!(
+            "xHCI {} queued GET_DESCRIPTOR(Device) on slot {} buffer={:#x}",
+            ident,
+            slot_id,
+            buffer.phys_addr()
+        );
+
+        Ok(())
     }
 
     /// Initialise the default control endpoint context template used during address assignment.
@@ -2042,6 +2111,14 @@ impl XhciDriver {
                 slot_id,
                 index
             );
+
+            if let Err(err) = self.queue_device_descriptor_request(controller, ident) {
+                log_warn!(
+                    "xHCI {} failed to queue device descriptor request: {}",
+                    ident,
+                    err
+                );
+            }
         }
 
         Ok(())
