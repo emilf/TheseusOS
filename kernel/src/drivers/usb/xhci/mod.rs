@@ -1901,6 +1901,13 @@ impl XhciDriver {
             // Per xHCI §4.9.4 software must set the Event Handler Busy (EHB) bit
             // whenever it advances ERDP so the controller can post new events.
             core::ptr::write_volatile(erdp_ptr, erdp | (1 << 3));
+            log_debug!(
+                "xHCI {} ERDP -> {:#x} (event_index={} cycle={})",
+                ident,
+                erdp,
+                event_ring.index,
+                if event_ring.cycle { 1 } else { 0 }
+            );
 
             (parameter, status, control)
         };
@@ -2163,7 +2170,12 @@ impl XhciDriver {
                 PORTSC_REGISTER_OFFSET + ((port.index.saturating_sub(1)) * PORT_REGISTER_STRIDE);
             let portsc_ptr = op_base.add(offset) as *mut u32;
 
-            core::ptr::write_volatile(portsc_ptr, PORTSC_POWER | PORTSC_PR);
+            let rw1c_mask = PORTSC_CSC | PORTSC_PEC | PORTSC_WRC | PORTSC_OCC | PORTSC_PRC
+                | PORTSC_PLC | PORTSC_CEC;
+            let mut value = core::ptr::read_volatile(portsc_ptr);
+            value &= !rw1c_mask;
+            value |= PORTSC_PR;
+            core::ptr::write_volatile(portsc_ptr, value);
 
             if !self.poll_with_timeout(
                 || (core::ptr::read_volatile(portsc_ptr) & PORTSC_PR) == 0,
@@ -2193,7 +2205,10 @@ impl XhciDriver {
             let clear_mask =
                 PORTSC_CSC | PORTSC_PEC | PORTSC_WRC | PORTSC_OCC | PORTSC_PRC | PORTSC_PLC
                     | PORTSC_CEC;
-            core::ptr::write_volatile(portsc_ptr, PORTSC_POWER | clear_mask);
+            let mut current = core::ptr::read_volatile(portsc_ptr);
+            current &= !rw1c_mask;
+            current |= clear_mask;
+            core::ptr::write_volatile(portsc_ptr, current);
             log_info!(
                 "xHCI {} port{:02} reset -> {}",
                 ident,
@@ -2741,7 +2756,12 @@ impl XhciDriver {
             endpoint_words[3] = dequeue_high;
         }
         if endpoint_words.len() > 4 {
-            endpoint_words[4] = 0;
+            let average_trb_length = core::cmp::max(max_packet as u32, 8);
+            let max_burst = match speed {
+                PortSpeed::High | PortSpeed::Super | PortSpeed::SuperPlus => 0,
+                _ => 0,
+            };
+            endpoint_words[4] = (max_burst << 16) | average_trb_length;
         }
         if endpoint_words.len() > 5 {
             endpoint_words[5] = 0;
