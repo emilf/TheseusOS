@@ -48,12 +48,21 @@ const USBCMD_ENABLE_SLOT: u32 = 1 << 8;
 const DCBAA_ENTRY_SIZE: usize = 8;
 const RUN_STOP_TIMEOUT: usize = 1_000_000;
 const TRB_TYPE_NOOP_COMMAND: u32 = 0x17;
+const TRB_TYPE_SETUP_STAGE: u32 = 0x02;
+const TRB_TYPE_DATA_STAGE: u32 = 0x03;
+const TRB_TYPE_STATUS_STAGE: u32 = 0x04;
+#[allow(dead_code)]
+const TRB_TYPE_TRANSFER_EVENT: u32 = 0x20;
 const TRB_COMPLETION_CODE_MASK: u32 = 0xFF << 24;
 const TRB_TYPE_MASK: u32 = 0x3F << 10;
 const TRB_TYPE_COMMAND_COMPLETION: u32 = 0x21;
 const TRB_COMPLETION_SUCCESS: u32 = 1;
 const TRB_CYCLE_BIT: u32 = 1;
 const DOORBELL_HOST: u32 = 0;
+const TRB_CHAIN: u32 = 1 << 4;
+const TRB_IOC: u32 = 1 << 5;
+const TRB_IDT: u32 = 1 << 6;
+const TRB_DIR_IN: u32 = 1 << 16;
 const IMAN_IP: u32 = 1 << 0;
 const TRB_TYPE_ENABLE_SLOT: u32 = 0x09;
 #[allow(dead_code)]
@@ -144,6 +153,47 @@ struct TransferRing {
     #[allow(dead_code)]
     cycle: bool,
     trb_count: usize,
+}
+
+/// Encoded view of a USB control SETUP packet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UsbControlSetup {
+    request_type: u8,
+    request: u8,
+    value: u16,
+    index: u16,
+    length: u16,
+}
+
+impl UsbControlSetup {
+    /// Construct the canonical GET_DESCRIPTOR(Device) setup packet.
+    #[allow(dead_code)]
+    fn device_descriptor() -> Self {
+        Self {
+            request_type: 0x80,
+            request: 6,
+            value: (1u16 << 8),
+            index: 0,
+            length: 18,
+        }
+    }
+
+    /// Encode the packet as the immediate data payload used by setup TRBs.
+    fn to_immediate(self) -> u64 {
+        (self.request_type as u64)
+            | ((self.request as u64) << 8)
+            | ((self.value as u64) << 16)
+            | ((self.index as u64) << 32)
+            | ((self.length as u64) << 48)
+    }
+}
+
+/// Direction flag used when staging data/status TRBs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+enum TransferDir {
+    In,
+    Out,
 }
 
 impl InputContext {
@@ -1814,6 +1864,53 @@ impl XhciDriver {
         );
 
         Ok(())
+    }
+
+    #[allow(dead_code)]
+    fn enqueue_setup_stage(&self, ring: &mut TransferRing, setup: UsbControlSetup, chain: bool) {
+        let control = (TRB_TYPE_SETUP_STAGE << 10) | TRB_IDT | if chain { TRB_CHAIN } else { 0 };
+        ring.enqueue(setup.to_immediate(), 8, control);
+    }
+
+    #[allow(dead_code)]
+    fn enqueue_data_stage(
+        &self,
+        ring: &mut TransferRing,
+        buffer_addr: u64,
+        length: usize,
+        direction: TransferDir,
+        chain: bool,
+        interrupt_on_completion: bool,
+    ) {
+        assert!(length <= u32::MAX as usize);
+        let mut control = TRB_TYPE_DATA_STAGE << 10;
+        if matches!(direction, TransferDir::In) {
+            control |= TRB_DIR_IN;
+        }
+        if chain {
+            control |= TRB_CHAIN;
+        }
+        if interrupt_on_completion {
+            control |= TRB_IOC;
+        }
+        ring.enqueue(buffer_addr, length as u32, control);
+    }
+
+    #[allow(dead_code)]
+    fn enqueue_status_stage(
+        &self,
+        ring: &mut TransferRing,
+        direction: TransferDir,
+        interrupt_on_completion: bool,
+    ) {
+        let mut control = TRB_TYPE_STATUS_STAGE << 10;
+        if matches!(direction, TransferDir::In) {
+            control |= TRB_DIR_IN;
+        }
+        if interrupt_on_completion {
+            control |= TRB_IOC;
+        }
+        ring.enqueue(0, 0, control);
     }
 
     /// Initialise the default control endpoint context template used during address assignment.
