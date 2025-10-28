@@ -36,6 +36,7 @@
 - Program slot contexts and endpoint contexts for the default control endpoint, handling doorbell and interrupter configuration; route interrupts via MSI/MSI-X if possible, falling back to IOAPIC. (Context sizing helpers, input-context priming, and on-boot enable-slot/address-device commands now capture the assigned slot ID for the first attached port.)
   - Detailed EP0 control-transfer design captured in `docs/archive/plans/usb_keyboard_driver.ep0_control_transfer.design.md`.
 - Teach the shared event ring to separate command completions from EP0 transfer events, cache control-transfer completions, and synchronously request the device descriptor right after `ADDRESS_DEVICE`. (Current runs reveal a cycle-bit mismatch on QEMU before the event TRB materialises; the driver now logs ring snapshots to guide the follow-up fix.)
+- Ensure the slot context advertises both the slot and EP0 endpoint in the Context Entries field and seed the endpoint context with the correct TR dequeue pointer/cycle state so the controller has a valid view before the first doorbell. (Despite the correction, QEMU still fails to emit the transfer event; additional controller-side investigation is required.)
 
 ## Milestone 4: USB Device Enumeration Stack
 - Implement basic USB request/response infrastructure (setup packets, control transfers, TRBs) sufficient to enumerate attached devices over the default control endpoint.

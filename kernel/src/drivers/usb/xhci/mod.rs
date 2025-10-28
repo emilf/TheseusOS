@@ -51,7 +51,9 @@ const TRB_TYPE_NOOP_COMMAND: u32 = 0x17;
 const TRB_TYPE_SETUP_STAGE: u32 = 0x02;
 const TRB_TYPE_DATA_STAGE: u32 = 0x03;
 const TRB_TYPE_STATUS_STAGE: u32 = 0x04;
+const TRB_TYPE_LINK: u32 = 0x06;
 const TRB_TYPE_TRANSFER_EVENT: u32 = 0x20;
+const TRB_TYPE_SET_TR_DEQUEUE_POINTER: u32 = 0x0E;
 const TRB_COMPLETION_CODE_MASK: u32 = 0xFF << 24;
 const TRB_TYPE_MASK: u32 = 0x3F << 10;
 const TRB_TYPE_COMMAND_COMPLETION: u32 = 0x21;
@@ -62,6 +64,7 @@ const TRB_CHAIN: u32 = 1 << 4;
 const TRB_IOC: u32 = 1 << 5;
 const TRB_IDT: u32 = 1 << 6;
 const TRB_DIR_IN: u32 = 1 << 16;
+const TRB_LINK_TOGGLE_CYCLE: u32 = 1 << 1;
 const IMAN_IP: u32 = 1 << 0;
 const TRB_TYPE_ENABLE_SLOT: u32 = 0x09;
 #[allow(dead_code)]
@@ -85,6 +88,13 @@ const PORTSC_LINK_STATE_SHIFT: u32 = 5;
 const PORTSC_POWER: u32 = 1 << 9;
 const PORTSC_SPEED_MASK: u32 = 0xF << 10;
 const PORTSC_SPEED_SHIFT: u32 = 10;
+const PORTSC_CSC: u32 = 1 << 17;
+const PORTSC_PEC: u32 = 1 << 18;
+const PORTSC_WRC: u32 = 1 << 19;
+const PORTSC_OCC: u32 = 1 << 20;
+const PORTSC_PRC: u32 = 1 << 21;
+const PORTSC_PLC: u32 = 1 << 22;
+const PORTSC_CEC: u32 = 1 << 23;
 const SCRATCHPAD_ENTRY_SIZE: usize = 8;
 const SCRATCHPAD_POINTER_ALIGN: usize = 64;
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
@@ -151,11 +161,10 @@ struct InputContext {
 /// Transfer ring backing storage for a device endpoint.
 struct TransferRing {
     buffer: DmaBuffer,
-    #[allow(dead_code)]
     enqueue_index: usize,
-    #[allow(dead_code)]
     cycle: bool,
     trb_count: usize,
+    link_index: usize,
 }
 
 /// Encoded view of a USB control SETUP packet.
@@ -241,6 +250,7 @@ impl InputContext {
         let words = entry_size / core::mem::size_of::<u32>();
         Some(unsafe { slice::from_raw_parts_mut(ptr, words) })
     }
+
 }
 
 /// Raw representation of a command TRB to be written to the command ring.
@@ -557,12 +567,16 @@ impl CommandRing {
 impl TransferRing {
     /// Construct a transfer ring over the provided buffer.
     fn new(buffer: DmaBuffer, trb_count: usize) -> Self {
-        Self {
+        assert!(trb_count >= 2, "transfer ring requires space for at least one link TRB");
+        let mut ring = Self {
             buffer,
             enqueue_index: 0,
             cycle: true,
             trb_count,
-        }
+            link_index: trb_count - 1,
+        };
+        ring.initialise_link_trb();
+        ring
     }
 
     /// Physical base of the underlying DMA buffer.
@@ -577,6 +591,11 @@ impl TransferRing {
 
     /// Total number of TRBs the ring can hold.
     fn capacity(&self) -> usize {
+        self.link_index
+    }
+
+    /// Total TRBs including the reserved link entry.
+    fn total_trbs(&self) -> usize {
         self.trb_count
     }
 
@@ -589,13 +608,19 @@ impl TransferRing {
     fn reset(&mut self) {
         self.enqueue_index = 0;
         self.cycle = true;
+        self.initialise_link_trb();
     }
 
     /// Append a TRB and advance the producer index, flipping the cycle on wrap.
     #[allow(dead_code)]
     fn enqueue(&mut self, parameter: u64, status: u32, control: u32) {
-        let trb_ptr =
-            (self.buffer.virt_addr() + (self.enqueue_index * TRB_SIZE) as u64) as *mut u32;
+        if self.enqueue_index >= self.link_index {
+            self.enqueue_index = 0;
+            self.cycle = !self.cycle;
+            self.initialise_link_trb();
+        }
+
+        let trb_ptr = self.trb_ptr(self.enqueue_index);
         unsafe {
             core::ptr::write_volatile(trb_ptr, parameter as u32);
             core::ptr::write_volatile(trb_ptr.add(1), (parameter >> 32) as u32);
@@ -606,11 +631,33 @@ impl TransferRing {
             );
         }
 
-        self.enqueue_index = (self.enqueue_index + 1) % self.trb_count;
-        // Every time the producer wraps, flip the cycle bit so the
-        // controller can distinguish newly written entries.
-        if self.enqueue_index == 0 {
+        self.enqueue_index += 1;
+
+        if self.enqueue_index >= self.link_index {
+            self.enqueue_index = 0;
             self.cycle = !self.cycle;
+            self.initialise_link_trb();
+        }
+    }
+
+    /// Pointer to a TRB slot by index.
+    fn trb_ptr(&self, index: usize) -> *mut u32 {
+        (self.buffer.virt_addr() + (index * TRB_SIZE) as u64) as *mut u32
+    }
+
+    /// Program the reserved link TRB so hardware wraps back to the ring base.
+    fn initialise_link_trb(&mut self) {
+        let link_ptr = self.trb_ptr(self.link_index);
+        let target = self.buffer.phys_addr() & !0xF;
+        unsafe {
+            core::ptr::write_volatile(link_ptr, target as u32);
+            core::ptr::write_volatile(link_ptr.add(1), (target >> 32) as u32);
+            core::ptr::write_volatile(link_ptr.add(2), 0);
+            let mut control = (TRB_TYPE_LINK << 10) | TRB_LINK_TOGGLE_CYCLE;
+            if self.cycle {
+                control |= TRB_CYCLE_BIT;
+            }
+            core::ptr::write_volatile(link_ptr.add(3), control);
         }
     }
 }
@@ -1016,9 +1063,25 @@ impl XhciDriver {
                 }
                 Err(err) => log_warn!("xHCI {}: run-state transition failed: {}", ident, err),
             }
-            controller_ref.attached_port = first_connected_port.map(|state| state.index as u8);
-            controller_ref.attached_speed = first_connected_port.map(|state| state.speed);
-            if let Some(port_state) = first_connected_port {
+            if let Some(mut port_state) = first_connected_port {
+                match self.reset_port(controller_ref, &ident, port_state) {
+                    Ok(updated) => {
+                        port_state = updated;
+                        controller_ref.attached_port = Some(port_state.index as u8);
+                        controller_ref.attached_speed = Some(port_state.speed);
+                    }
+                    Err(err) => {
+                        log_warn!(
+                            "xHCI {}: port{} reset failed: {}",
+                            ident,
+                            port_state.index,
+                            err
+                        );
+                        controller_ref.attached_port = Some(port_state.index as u8);
+                        controller_ref.attached_speed = Some(port_state.speed);
+                    }
+                }
+
                 match self.prepare_default_control_context(controller_ref, &ident, port_state) {
                     Ok(()) => {
                         if let Err(err) = self.enable_device_slot(controller_ref, &ident) {
@@ -1667,11 +1730,51 @@ impl XhciDriver {
         Ok(())
     }
 
+    fn set_tr_dequeue_pointer(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+        slot_id: u8,
+        endpoint_id: u8,
+        dequeue: u64,
+        dcs: bool,
+    ) -> Result<(), &'static str> {
+        let parameter = dequeue & !0xF;
+        let status = if dcs { 1 } else { 0 };
+        let control =
+            (TRB_TYPE_SET_TR_DEQUEUE_POINTER << 10) | ((endpoint_id as u32) << 16) | ((slot_id as u32) << 24);
+        let trb = RawCommandTrb {
+            parameter,
+            status,
+            control,
+        };
+        let (completion, index) = self.issue_command(controller, ident, trb)?;
+        if completion.code != TRB_COMPLETION_SUCCESS {
+            log_warn!(
+                "xHCI {} set-tr-dequeue-pointer slot {} ep {} returned code {}",
+                ident,
+                slot_id,
+                endpoint_id,
+                completion.code
+            );
+        } else {
+            log_debug!(
+                "xHCI {} set-tr-dequeue-pointer slot {} ep {} (index={})",
+                ident,
+                slot_id,
+                endpoint_id,
+                index
+            );
+        }
+        Ok(())
+    }
+
     /// Consume the next TRB from the event ring without interpreting it.
     fn fetch_event_trb(
         &self,
         controller: &mut XhciController,
         ident: &str,
+        timeout: usize,
     ) -> Result<RawEventTrb, &'static str> {
         let Some(event_ring) = controller.event_ring.as_mut() else {
             return Err("event ring missing");
@@ -1684,64 +1787,59 @@ impl XhciDriver {
 
             if !self.poll_with_timeout(
                 || (core::ptr::read_volatile(iman_ptr) & IMAN_IP) != 0,
-                RUN_STOP_TIMEOUT,
+                timeout,
             ) {
                 return Err("event ring timeout");
             }
 
-            let mut spins = 0usize;
             let expected_cycle = event_ring.cycle as u32;
-            let trb_ptr = loop {
-                let trb_ptr = event_ring.current_trb();
+            let trb_ptr = event_ring.current_trb();
+            if !self.poll_with_timeout(
+                || (core::ptr::read_volatile(trb_ptr.add(3)) & TRB_CYCLE_BIT) == expected_cycle,
+                timeout,
+            ) {
                 let control = core::ptr::read_volatile(trb_ptr.add(3));
-                if (control & TRB_CYCLE_BIT) == expected_cycle {
-                    break trb_ptr;
-                }
-                if spins >= RUN_STOP_TIMEOUT {
-                    let iman_snapshot = core::ptr::read_volatile(iman_ptr);
-                    let op_base =
-                        (controller.virt_base + controller.operational_offset as u64) as *const u32;
-                    let usbsts = core::ptr::read_volatile(op_base.add((0x04 / 4) as usize));
-                    let parameter_lo = core::ptr::read_volatile(trb_ptr);
-                    let parameter_hi = core::ptr::read_volatile(trb_ptr.add(1));
-                    let parameter =
-                        ((parameter_hi as u64) << 32) | (parameter_lo as u64 & 0xFFFF_FFFF);
-                    let status_snapshot = core::ptr::read_volatile(trb_ptr.add(2));
+                let iman_snapshot = core::ptr::read_volatile(iman_ptr);
+                let op_base =
+                    (controller.virt_base + controller.operational_offset as u64) as *const u32;
+                let usbsts = core::ptr::read_volatile(op_base.add((0x04 / 4) as usize));
+                let parameter_lo = core::ptr::read_volatile(trb_ptr);
+                let parameter_hi = core::ptr::read_volatile(trb_ptr.add(1));
+                let parameter =
+                    ((parameter_hi as u64) << 32) | (parameter_lo as u64 & 0xFFFF_FFFF);
+                let status_snapshot = core::ptr::read_volatile(trb_ptr.add(2));
+                log_warn!(
+                    "xHCI {} event ring cycle mismatch (expected={} observed={:#x} index={} cycle={} iman={:#x} param={:#x} status={:#x})",
+                    ident,
+                    expected_cycle,
+                    control,
+                    event_ring.index,
+                    event_ring.cycle,
+                    iman_snapshot,
+                    parameter,
+                    status_snapshot
+                );
+                log_warn!("xHCI {} USBSTS snapshot during mismatch: {:#010x}", ident, usbsts);
+                for sample in 0..4 {
+                    let sample_ptr = (event_ring.buffer.virt_addr()
+                        + (sample * TRB_SIZE) as u64) as *const u32;
+                    let sample_parameter_lo = core::ptr::read_volatile(sample_ptr);
+                    let sample_parameter_hi = core::ptr::read_volatile(sample_ptr.add(1));
+                    let sample_status = core::ptr::read_volatile(sample_ptr.add(2));
+                    let sample_control = core::ptr::read_volatile(sample_ptr.add(3));
+                    let sample_parameter = ((sample_parameter_hi as u64) << 32)
+                        | (sample_parameter_lo as u64 & 0xFFFF_FFFF);
                     log_warn!(
-                        "xHCI {} event ring cycle mismatch (expected={} observed={:#x} index={} cycle={} iman={:#x} param={:#x} status={:#x})",
+                        "xHCI {} event ring entry {} snapshot: control={:#x} status={:#x} parameter={:#x}",
                         ident,
-                        expected_cycle,
-                        control,
-                        event_ring.index,
-                        event_ring.cycle,
-                        iman_snapshot,
-                        parameter,
-                        status_snapshot
+                        sample,
+                        sample_control,
+                        sample_status,
+                        sample_parameter
                     );
-                    log_warn!("xHCI {} USBSTS snapshot during mismatch: {:#010x}", ident, usbsts);
-                    for sample in 0..4 {
-                        let sample_ptr = (event_ring.buffer.virt_addr()
-                            + (sample * TRB_SIZE) as u64) as *const u32;
-                        let sample_parameter_lo = core::ptr::read_volatile(sample_ptr);
-                        let sample_parameter_hi = core::ptr::read_volatile(sample_ptr.add(1));
-                        let sample_status = core::ptr::read_volatile(sample_ptr.add(2));
-                        let sample_control = core::ptr::read_volatile(sample_ptr.add(3));
-                        let sample_parameter = ((sample_parameter_hi as u64) << 32)
-                            | (sample_parameter_lo as u64 & 0xFFFF_FFFF);
-                        log_warn!(
-                            "xHCI {} event ring entry {} snapshot: control={:#x} status={:#x} parameter={:#x}",
-                            ident,
-                            sample,
-                            sample_control,
-                            sample_status,
-                            sample_parameter
-                        );
-                    }
-                    return Err("event ring desync");
                 }
-                spins += 1;
-                spin_loop();
-            };
+                return Err("event ring desync");
+            }
 
             let parameter_lo = core::ptr::read_volatile(trb_ptr);
             let parameter_hi = core::ptr::read_volatile(trb_ptr.add(1));
@@ -1753,10 +1851,10 @@ impl XhciDriver {
 
             let iman = core::ptr::read_volatile(iman_ptr);
             core::ptr::write_volatile(iman_ptr, iman & !IMAN_IP);
-            core::ptr::write_volatile(
-                erdp_ptr,
-                (event_ring.phys_addr() + (event_ring.index * TRB_SIZE) as u64) & !0xF,
-            );
+            let erdp = (event_ring.phys_addr() + (event_ring.index * TRB_SIZE) as u64) & !0xF;
+            // Per xHCI §4.9.4 software must set the Event Handler Busy (EHB) bit
+            // whenever it advances ERDP so the controller can post new events.
+            core::ptr::write_volatile(erdp_ptr, erdp | (1 << 3));
 
             (parameter, status, control)
         };
@@ -1843,7 +1941,7 @@ impl XhciDriver {
         ident: &str,
     ) -> Result<CommandCompletion, &'static str> {
         loop {
-            let event = self.fetch_event_trb(controller, ident)?;
+            let event = self.fetch_event_trb(controller, ident, RUN_STOP_TIMEOUT)?;
             let trb_type = event.trb_type();
             let code = event.completion_code();
 
@@ -1901,7 +1999,7 @@ impl XhciDriver {
                 return Ok(event);
             }
 
-            let event = self.fetch_event_trb(controller, ident)?;
+            let event = self.fetch_event_trb(controller, ident, RUN_STOP_TIMEOUT * 3)?;
             let trb_type = event.trb_type();
             let code = event.completion_code();
 
@@ -2006,6 +2104,60 @@ impl XhciDriver {
         first_connected
     }
 
+    /// Issue a port reset to transition the link into U0 and enable the port.
+    fn reset_port(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+        port: PortState,
+    ) -> Result<PortState, &'static str> {
+        unsafe {
+            let op_base = (controller.virt_base + controller.operational_offset as u64) as *mut u8;
+            let offset =
+                PORTSC_REGISTER_OFFSET + ((port.index.saturating_sub(1)) * PORT_REGISTER_STRIDE);
+            let portsc_ptr = op_base.add(offset) as *mut u32;
+
+            core::ptr::write_volatile(portsc_ptr, PORTSC_POWER | PORTSC_PR);
+
+            if !self.poll_with_timeout(
+                || (core::ptr::read_volatile(portsc_ptr) & PORTSC_PR) == 0,
+                RUN_STOP_TIMEOUT,
+            ) {
+                return Err("port reset timed out (PR bit stuck)");
+            }
+
+            if !self.poll_with_timeout(
+                || {
+                    let value = core::ptr::read_volatile(portsc_ptr);
+                    let enabled = (value & PORTSC_PED) != 0;
+                    let link_bits = (value & PORTSC_LINK_STATE_MASK) >> PORTSC_LINK_STATE_SHIFT;
+                    enabled && matches!(PortLinkState::from_raw(link_bits), PortLinkState::U0)
+                },
+                RUN_STOP_TIMEOUT,
+            ) {
+                log_warn!(
+                    "xHCI {} port{:02} reset completed without enabling link state U0",
+                    ident,
+                    port.index
+                );
+            }
+
+            let updated = core::ptr::read_volatile(portsc_ptr);
+            let state = PortState::from_register(port.index, updated);
+            let clear_mask =
+                PORTSC_CSC | PORTSC_PEC | PORTSC_WRC | PORTSC_OCC | PORTSC_PRC | PORTSC_PLC
+                    | PORTSC_CEC;
+            core::ptr::write_volatile(portsc_ptr, PORTSC_POWER | clear_mask);
+            log_info!(
+                "xHCI {} port{:02} reset -> {}",
+                ident,
+                state.index,
+                state.summary()
+            );
+            Ok(state)
+        }
+    }
+
     /// Prepare the input context for the default control endpoint on the selected port.
     fn prepare_default_control_context(
         &self,
@@ -2029,7 +2181,7 @@ impl XhciDriver {
         }
 
         let route_string = port.route_string();
-        let slot_context_entries = DEFAULT_CONTROL_ENDPOINT as u32;
+        let slot_context_entries = (DEFAULT_CONTROL_ENDPOINT as u32) + 1;
         let port_number = port.index as u32;
         let speed_code = port.speed.raw();
 
@@ -2045,10 +2197,11 @@ impl XhciDriver {
             controller.control_transfer_ring = Some(ring);
             let ring_ref = controller.control_transfer_ring.as_mut().unwrap();
             log_info!(
-                "xHCI {} control transfer ring allocated: phys={:#012x} trbs={}",
+                "xHCI {} control transfer ring allocated: phys={:#012x} usable_trbs={} total_trbs={}",
                 ident,
                 ring_ref.phys_addr(),
-                ring_ref.capacity()
+                ring_ref.capacity(),
+                ring_ref.total_trbs()
             );
             ring_ref
         };
@@ -2064,14 +2217,20 @@ impl XhciDriver {
             slot_words.fill(0);
             if !slot_words.is_empty() {
                 // ROUTE STRING (bits 0-19) + SPEED (bits 20-23)
-                slot_words[0] = route_string | (speed_code << 20);
+                let context_field = (slot_context_entries & 0x1F) << 27;
+                slot_words[0] = route_string | (speed_code << 20) | context_field;
             }
             if slot_words.len() > 1 {
-                // CONTEXT ENTRIES (bits 27-31) + ROOT HUB PORT (bits 16-23)
-                let context_entry = (slot_context_entries & 0x1F) << 27;
+                // ROOT HUB PORT (bits 16-23)
                 let port_field = (port_number & 0xFF) << 16;
-                slot_words[1] = context_entry | port_field;
+                slot_words[1] = port_field;
             }
+            log_debug!(
+                "xHCI {} slot context template: d0={:#010x} d1={:#010x}",
+                ident,
+                slot_words.get(0).copied().unwrap_or(0),
+                slot_words.get(1).copied().unwrap_or(0)
+            );
         }
 
         {
@@ -2083,6 +2242,13 @@ impl XhciDriver {
                 port.speed,
                 transfer_ring.dequeue_pointer(),
                 transfer_ring.cycle_state(),
+            );
+            log_debug!(
+                "xHCI {} EP0 context template: d1={:#010x} d2={:#010x} d3={:#010x}",
+                ident,
+                ep0_words.get(1).copied().unwrap_or(0),
+                ep0_words.get(2).copied().unwrap_or(0),
+                ep0_words.get(3).copied().unwrap_or(0)
             );
         }
 
@@ -2160,34 +2326,87 @@ impl XhciDriver {
         let slot_id = controller
             .active_slot
             .ok_or("cannot queue descriptor request without active slot")?;
-        let ring = controller
-            .control_transfer_ring
-            .as_mut()
-            .ok_or("control transfer ring missing")?;
-        let buffer = controller
-            .ep0_descriptor_buffer
-            .as_mut()
-            .ok_or("descriptor buffer missing")?;
+        let buffer_phys = {
+            let buffer = controller
+                .ep0_descriptor_buffer
+                .as_mut()
+                .ok_or("descriptor buffer missing")?;
 
-        ring.reset();
+            let slice = buffer.as_mut_slice();
+            let clear_len = DEVICE_DESCRIPTOR_LENGTH.min(slice.len());
+            slice[..clear_len].fill(0);
+            buffer.phys_addr()
+        };
 
-        let slice = buffer.as_mut_slice();
-        let clear_len = DEVICE_DESCRIPTOR_LENGTH.min(slice.len());
-        slice[..clear_len].fill(0);
+        let (dequeue_ptr, ring_cycle) = {
+            let ring = controller
+                .control_transfer_ring
+                .as_mut()
+                .ok_or("control transfer ring missing")?;
 
-        let setup = UsbControlSetup::device_descriptor();
-        self.enqueue_setup_stage(ring, setup, true);
-        // Data stage returns the descriptor body from the device (IN transfer).
-        self.enqueue_data_stage(
-            ring,
-            buffer.phys_addr(),
-            DEVICE_DESCRIPTOR_LENGTH,
-            TransferDir::In,
-            true,
-            false,
-        );
-        // Status stage toggles direction back OUT to complete the control transfer.
-        self.enqueue_status_stage(ring, TransferDir::Out, true);
+            ring.reset();
+
+            let setup = UsbControlSetup::device_descriptor();
+            self.enqueue_setup_stage(ring, setup, true);
+            // Data stage returns the descriptor body from the device (IN transfer).
+            self.enqueue_data_stage(
+                ring,
+                buffer_phys,
+                DEVICE_DESCRIPTOR_LENGTH,
+                TransferDir::In,
+                false,
+                true,
+            );
+            // Status stage toggles direction back OUT to complete the control transfer.
+            self.enqueue_status_stage(ring, TransferDir::Out, true);
+
+            for index in 0..3 {
+                let trb_ptr = ring.trb_ptr(index);
+                unsafe {
+                    let parameter_lo = core::ptr::read_volatile(trb_ptr);
+                    let parameter_hi = core::ptr::read_volatile(trb_ptr.add(1));
+                    let status_dword = core::ptr::read_volatile(trb_ptr.add(2));
+                    let control_dword = core::ptr::read_volatile(trb_ptr.add(3));
+                    let parameter =
+                        ((parameter_hi as u64) << 32) | (parameter_lo as u64 & 0xFFFF_FFFF);
+                    log_debug!(
+                        "xHCI {} EP0 TRB[{}]: parameter={:#x} status={:#010x} control={:#08x}",
+                        ident,
+                        index,
+                        parameter,
+                        status_dword,
+                        control_dword
+                    );
+                }
+            }
+
+            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+            log_debug!(
+                "xHCI {} EP0 ring state after queue: enqueue_index={} cycle={}",
+                ident,
+                ring.enqueue_index,
+                if ring.cycle { 1 } else { 0 }
+            );
+
+            (ring.dequeue_pointer(), ring.cycle)
+        };
+
+        if let Err(err) = self.set_tr_dequeue_pointer(
+            controller,
+            ident,
+            slot_id,
+            DEFAULT_CONTROL_ENDPOINT as u8,
+            dequeue_ptr,
+            ring_cycle,
+        ) {
+            log_warn!(
+                "xHCI {} failed to set TR dequeue pointer for slot {}: {}",
+                ident,
+                slot_id,
+                err
+            );
+        }
 
         unsafe {
             let doorbell_base =
@@ -2202,7 +2421,7 @@ impl XhciDriver {
             "xHCI {} queued GET_DESCRIPTOR(Device) on slot {} buffer={:#x}",
             ident,
             slot_id,
-            buffer.phys_addr()
+            buffer_phys
         );
 
         Ok(())
@@ -2249,7 +2468,7 @@ impl XhciDriver {
             .ok_or("control transfer ring missing")?;
 
         let base = ring.phys_addr();
-        let span = (ring.capacity() * TRB_SIZE) as u64;
+        let span = (ring.total_trbs() * TRB_SIZE) as u64;
         if event.parameter < base || event.parameter >= base + span {
             log_warn!(
                 "xHCI {} device descriptor event pointer {:#x} outside EP0 ring [{:#x}, {:#x})",
@@ -2386,6 +2605,10 @@ impl XhciDriver {
         let error_recovery_count: u32 = 3;
         let max_packet = Self::control_max_packet_size(speed);
 
+        if !endpoint_words.is_empty() {
+            // Set EP state to Running (1) so the controller treats the ring as ready.
+            endpoint_words[0] = 1;
+        }
         if endpoint_words.len() > 1 {
             endpoint_words[1] =
                 (ENDPOINT_TYPE_CONTROL << 3) | (error_recovery_count << 1) | (max_packet << 16);
@@ -2471,6 +2694,31 @@ impl XhciDriver {
             return Err("control transfer ring not initialised");
         }
 
+        let entry_size = controller.context_entry_size;
+        let dev_ctx = controller
+            .slot_contexts
+            .get_mut(slot_id as usize - 1)
+            .ok_or("device context missing")?;
+
+        unsafe {
+            let input_base = ctx.buffer.virt_addr();
+            // Slot context resides at index 1 in the input context.
+            let slot_src = (input_base + entry_size as u64) as *const u8;
+            let slot_dst = dev_ctx.virt_addr() as *mut u8;
+            if entry_size <= dev_ctx.len() {
+                core::ptr::copy_nonoverlapping(slot_src, slot_dst, entry_size);
+            }
+
+            // Endpoint contexts start after the slot context; EP0 is index 1 in the device context.
+            let ep_src = (input_base + (entry_size * (1 + DEFAULT_CONTROL_ENDPOINT)) as u64)
+                as *const u8;
+            let ep_offset = entry_size * DEFAULT_CONTROL_ENDPOINT;
+            if ep_offset + entry_size <= dev_ctx.len() {
+                let ep_dst = (dev_ctx.virt_addr() + ep_offset as u64) as *mut u8;
+                core::ptr::copy_nonoverlapping(ep_src, ep_dst, entry_size);
+            }
+        }
+
         let ics_flag = if controller.context_entry_size == 64 {
             1
         } else {
@@ -2499,6 +2747,54 @@ impl XhciDriver {
                 index
             );
 
+            if let Some(ctx_buffer) = controller.slot_contexts.get(slot_id as usize - 1) {
+                log_debug!(
+                    "xHCI {} device context phys={:#012x} len={}",
+                    ident,
+                    ctx_buffer.phys_addr(),
+                    ctx_buffer.len()
+                );
+            }
+
+            if let Some(buffer) = controller.slot_contexts.get(slot_id as usize - 1) {
+                unsafe {
+                    let base = buffer.virt_addr() as *const u32;
+                    let s0 = core::ptr::read_volatile(base);
+                    let s1 = if buffer.len() >= controller.context_entry_size && controller.context_entry_size >= 8 {
+                        core::ptr::read_volatile(base.add(1))
+                    } else {
+                        0
+                    };
+                    log_debug!(
+                        "xHCI {} slot context after address: d0={:#010x} d1={:#010x}",
+                        ident,
+                        s0,
+                        s1
+                    );
+                }
+            }
+
+            if let Some(buffer) = controller.slot_contexts.get(slot_id as usize - 1) {
+                unsafe {
+                    let ep_offset = controller.context_entry_size * DEFAULT_CONTROL_ENDPOINT;
+                    if ep_offset + controller.context_entry_size <= buffer.len() {
+                        let base = (buffer.virt_addr() + ep_offset as u64) as *const u32;
+                        let d0 = core::ptr::read_volatile(base);
+                        let d1 = core::ptr::read_volatile(base.add(1));
+                        let d2 = core::ptr::read_volatile(base.add(2));
+                        let d3 = core::ptr::read_volatile(base.add(3));
+                        log_debug!(
+                            "xHCI {} EP0 context after address: d0={:#010x} d1={:#010x} d2={:#010x} d3={:#010x}",
+                            ident,
+                            d0,
+                            d1,
+                            d2,
+                            d3
+                        );
+                    }
+                }
+            }
+
             if let Err(err) = self.queue_device_descriptor_request(controller, ident) {
                 log_warn!(
                     "xHCI {} failed to queue device descriptor request: {}",
@@ -2508,6 +2804,65 @@ impl XhciDriver {
             } else if let Err(err) =
                 self.finalize_device_descriptor_transfer(controller, ident)
             {
+                if let Some(buffer) = controller.ep0_descriptor_buffer.as_ref() {
+                    let slice = unsafe {
+                        core::slice::from_raw_parts(buffer.virt_addr() as *const u8, buffer.len())
+                    };
+                    let preview_len = DEVICE_DESCRIPTOR_LENGTH.min(slice.len());
+                    let bytes = slice[..preview_len]
+                        .iter()
+                        .map(|byte| format!("{:02x}", byte))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    log_debug!(
+                        "xHCI {} EP0 descriptor buffer snapshot ({} bytes): {}",
+                        ident,
+                        preview_len,
+                        bytes
+                    );
+                }
+                if let Some(ring) = controller.control_transfer_ring.as_ref() {
+                    for index in 0..3 {
+                        let trb_ptr = ring.trb_ptr(index);
+                        unsafe {
+                            let parameter_lo = core::ptr::read_volatile(trb_ptr);
+                            let parameter_hi = core::ptr::read_volatile(trb_ptr.add(1));
+                            let status = core::ptr::read_volatile(trb_ptr.add(2));
+                            let control = core::ptr::read_volatile(trb_ptr.add(3));
+                            let parameter = ((parameter_hi as u64) << 32)
+                                | (parameter_lo as u64 & 0xFFFF_FFFF);
+                            log_debug!(
+                                "xHCI {} EP0 TRB[{}] post-failure: parameter={:#x} status={:#010x} control={:#08x}",
+                                ident,
+                                index,
+                                parameter,
+                                status,
+                                control
+                            );
+                        }
+                    }
+                }
+                if let Some(dev_ctx) = controller.slot_contexts.get(slot_id as usize - 1) {
+                    unsafe {
+                        let ep_offset = controller.context_entry_size * DEFAULT_CONTROL_ENDPOINT;
+                        if ep_offset + controller.context_entry_size <= dev_ctx.len() {
+                            let base =
+                                (dev_ctx.virt_addr() + ep_offset as u64) as *const u32;
+                            let d0 = core::ptr::read_volatile(base);
+                            let d1 = core::ptr::read_volatile(base.add(1));
+                            let d2 = core::ptr::read_volatile(base.add(2));
+                            let d3 = core::ptr::read_volatile(base.add(3));
+                            log_debug!(
+                                "xHCI {} EP0 context after failure: d0={:#010x} d1={:#010x} d2={:#010x} d3={:#010x}",
+                                ident,
+                                d0,
+                                d1,
+                                d2,
+                                d3
+                            );
+                        }
+                    }
+                }
                 log_warn!(
                     "xHCI {} device descriptor transfer failed: {}",
                     ident,
