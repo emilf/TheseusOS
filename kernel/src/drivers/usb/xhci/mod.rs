@@ -51,7 +51,6 @@ const TRB_TYPE_NOOP_COMMAND: u32 = 0x17;
 const TRB_TYPE_SETUP_STAGE: u32 = 0x02;
 const TRB_TYPE_DATA_STAGE: u32 = 0x03;
 const TRB_TYPE_STATUS_STAGE: u32 = 0x04;
-#[allow(dead_code)]
 const TRB_TYPE_TRANSFER_EVENT: u32 = 0x20;
 const TRB_COMPLETION_CODE_MASK: u32 = 0xFF << 24;
 const TRB_TYPE_MASK: u32 = 0x3F << 10;
@@ -127,6 +126,8 @@ struct XhciController {
     /// Transfer ring backing the default control endpoint (EP0).
     control_transfer_ring: Option<TransferRing>,
     ep0_descriptor_buffer: Option<DmaBuffer>,
+    /// Cached transfer event for the default control endpoint while we wait for completion handling.
+    pending_ep0_event: Option<RawEventTrb>,
 }
 
 struct CommandRing {
@@ -251,6 +252,44 @@ struct RawCommandTrb {
     status: u32,
     /// Control dword (type bits, interrupter toggle, etc.).
     control: u32,
+}
+
+/// Raw representation of an event TRB consumed from the event ring.
+#[derive(Debug, Clone, Copy)]
+struct RawEventTrb {
+    /// Combined parameter payload, frequently a pointer back to the source TRB.
+    parameter: u64,
+    /// Event status dword containing residual length or contextual flags.
+    status: u32,
+    /// Control dword encoding cycle, completion code, TRB type, and routing IDs.
+    control: u32,
+}
+
+impl RawEventTrb {
+    /// Extract the TRB type field from the control dword.
+    fn trb_type(&self) -> u32 {
+        (self.control & TRB_TYPE_MASK) >> 10
+    }
+
+    /// Extract the completion code reported by hardware.
+    fn completion_code(&self) -> u32 {
+        (self.control & TRB_COMPLETION_CODE_MASK) >> 24
+    }
+
+    /// Slot identifier reported alongside the event (lower 8 bits of the control dword).
+    fn slot_id(&self) -> u8 {
+        (self.control & 0xFF) as u8
+    }
+
+    /// Endpoint identifier associated with the event.
+    fn endpoint_id(&self) -> u8 {
+        ((self.control >> 16) & 0xFF) as u8
+    }
+
+    /// Remaining bytes reported in the status dword for transfer events.
+    fn residual_length(&self) -> u32 {
+        self.status & 0x00FF_FFFF
+    }
 }
 
 /// Summary of information extracted from a command completion event.
@@ -947,6 +986,7 @@ impl XhciDriver {
                 active_slot: None,
                 control_transfer_ring: None,
                 ep0_descriptor_buffer: None,
+                pending_ep0_event: None,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -1627,6 +1667,166 @@ impl XhciDriver {
         Ok(())
     }
 
+    /// Consume the next TRB from the event ring without interpreting it.
+    fn fetch_event_trb(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<RawEventTrb, &'static str> {
+        let Some(event_ring) = controller.event_ring.as_mut() else {
+            return Err("event ring missing");
+        };
+        let runtime_base = (controller.virt_base + controller.runtime_offset as u64) as *mut u8;
+        let (parameter, status, control) = unsafe {
+            let interrupter0 = runtime_base.add(INTERRUPTER_STRIDE as usize);
+            let iman_ptr = interrupter0.add(0x00) as *mut u32;
+            let erdp_ptr = interrupter0.add(0x18) as *mut u64;
+
+            if !self.poll_with_timeout(
+                || (core::ptr::read_volatile(iman_ptr) & IMAN_IP) != 0,
+                RUN_STOP_TIMEOUT,
+            ) {
+                return Err("event ring timeout");
+            }
+
+            let mut spins = 0usize;
+            let expected_cycle = event_ring.cycle as u32;
+            let trb_ptr = loop {
+                let trb_ptr = event_ring.current_trb();
+                let control = core::ptr::read_volatile(trb_ptr.add(3));
+                if (control & TRB_CYCLE_BIT) == expected_cycle {
+                    break trb_ptr;
+                }
+                if spins >= RUN_STOP_TIMEOUT {
+                    let iman_snapshot = core::ptr::read_volatile(iman_ptr);
+                    let op_base =
+                        (controller.virt_base + controller.operational_offset as u64) as *const u32;
+                    let usbsts = core::ptr::read_volatile(op_base.add((0x04 / 4) as usize));
+                    let parameter_lo = core::ptr::read_volatile(trb_ptr);
+                    let parameter_hi = core::ptr::read_volatile(trb_ptr.add(1));
+                    let parameter =
+                        ((parameter_hi as u64) << 32) | (parameter_lo as u64 & 0xFFFF_FFFF);
+                    let status_snapshot = core::ptr::read_volatile(trb_ptr.add(2));
+                    log_warn!(
+                        "xHCI {} event ring cycle mismatch (expected={} observed={:#x} index={} cycle={} iman={:#x} param={:#x} status={:#x})",
+                        ident,
+                        expected_cycle,
+                        control,
+                        event_ring.index,
+                        event_ring.cycle,
+                        iman_snapshot,
+                        parameter,
+                        status_snapshot
+                    );
+                    log_warn!("xHCI {} USBSTS snapshot during mismatch: {:#010x}", ident, usbsts);
+                    for sample in 0..4 {
+                        let sample_ptr = (event_ring.buffer.virt_addr()
+                            + (sample * TRB_SIZE) as u64) as *const u32;
+                        let sample_parameter_lo = core::ptr::read_volatile(sample_ptr);
+                        let sample_parameter_hi = core::ptr::read_volatile(sample_ptr.add(1));
+                        let sample_status = core::ptr::read_volatile(sample_ptr.add(2));
+                        let sample_control = core::ptr::read_volatile(sample_ptr.add(3));
+                        let sample_parameter = ((sample_parameter_hi as u64) << 32)
+                            | (sample_parameter_lo as u64 & 0xFFFF_FFFF);
+                        log_warn!(
+                            "xHCI {} event ring entry {} snapshot: control={:#x} status={:#x} parameter={:#x}",
+                            ident,
+                            sample,
+                            sample_control,
+                            sample_status,
+                            sample_parameter
+                        );
+                    }
+                    return Err("event ring desync");
+                }
+                spins += 1;
+                spin_loop();
+            };
+
+            let parameter_lo = core::ptr::read_volatile(trb_ptr);
+            let parameter_hi = core::ptr::read_volatile(trb_ptr.add(1));
+            let status = core::ptr::read_volatile(trb_ptr.add(2));
+            let control = core::ptr::read_volatile(trb_ptr.add(3));
+            let parameter = ((parameter_hi as u64) << 32) | parameter_lo as u64;
+
+            event_ring.advance();
+
+            let iman = core::ptr::read_volatile(iman_ptr);
+            core::ptr::write_volatile(iman_ptr, iman & !IMAN_IP);
+            core::ptr::write_volatile(
+                erdp_ptr,
+                (event_ring.phys_addr() + (event_ring.index * TRB_SIZE) as u64) & !0xF,
+            );
+
+            (parameter, status, control)
+        };
+
+        Ok(RawEventTrb {
+            parameter,
+            status,
+            control,
+        })
+    }
+
+    /// Handle a transfer event by caching EP0 completions for synchronous consumers.
+    fn handle_transfer_event(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+        event: &RawEventTrb,
+    ) {
+        let slot_id = event.slot_id();
+        let endpoint_id = event.endpoint_id();
+        let code = event.completion_code();
+        let residual = event.residual_length();
+
+        log_info!(
+            "xHCI {} transfer event: slot={} ep={} code={} residual={}",
+            ident,
+            slot_id,
+            endpoint_id,
+            code,
+            residual
+        );
+
+        let Some(active_slot) = controller.active_slot else {
+            log_warn!(
+                "xHCI {} transfer event dropped (no active slot) parameter={:#x}",
+                ident,
+                event.parameter
+            );
+            return;
+        };
+
+        if slot_id != active_slot {
+            log_debug!(
+                "xHCI {} transfer event for slot {} ignored while active slot is {}",
+                ident,
+                slot_id,
+                active_slot
+            );
+            return;
+        }
+
+        if endpoint_id != DEFAULT_CONTROL_ENDPOINT as u8 {
+            log_debug!(
+                "xHCI {} transfer event for endpoint {} ignored (awaiting EP0)",
+                ident,
+                endpoint_id
+            );
+            return;
+        }
+
+        if controller.pending_ep0_event.is_some() {
+            log_warn!(
+                "xHCI {} overriding pending EP0 event; previous completion will be dropped",
+                ident
+            );
+        }
+
+        controller.pending_ep0_event = Some(*event);
+    }
+
     /// Consume the next entry from the event ring waiting for a command
     /// completion TRB.
     ///
@@ -1642,95 +1842,114 @@ impl XhciDriver {
         controller: &mut XhciController,
         ident: &str,
     ) -> Result<CommandCompletion, &'static str> {
-        let Some(event_ring) = controller.event_ring.as_mut() else {
-            return Err("event ring missing");
-        };
+        loop {
+            let event = self.fetch_event_trb(controller, ident)?;
+            let trb_type = event.trb_type();
+            let code = event.completion_code();
 
-        let runtime_base = (controller.virt_base + controller.runtime_offset as u64) as *mut u8;
-        unsafe {
-            let interrupter0 = runtime_base.add(INTERRUPTER_STRIDE as usize);
-            let iman_ptr = interrupter0.add(0x00) as *mut u32;
-            let erdp_ptr = interrupter0.add(0x18) as *mut u64;
+            if trb_type == TRB_TYPE_COMMAND_COMPLETION {
+                controller.pending_commands = controller.pending_commands.saturating_sub(1);
 
-            if !self.poll_with_timeout(
-                || (core::ptr::read_volatile(iman_ptr) & IMAN_IP) != 0,
-                RUN_STOP_TIMEOUT,
-            ) {
-                return Err("command completion timeout");
-            }
-
-            let mut spins = 0usize;
-            // Spin until the controller flips the cycle bit indicating a fresh
-            // event TRB is ready. The RUN_STOP_TIMEOUT is re-used to avoid
-            // hanging forever if the controller becomes unresponsive.
-            let mut trb_ptr;
-            let expected_cycle = event_ring.cycle as u32;
-            loop {
-                trb_ptr = event_ring.current_trb();
-                let control = core::ptr::read_volatile(trb_ptr.add(3));
-                let cycle = control & TRB_CYCLE_BIT;
-                if cycle == expected_cycle {
-                    break;
-                }
-                if spins >= RUN_STOP_TIMEOUT {
-                    return Err("event ring desync");
-                }
-                spins += 1;
-                spin_loop();
-            }
-
-            // The payload is split across consecutive dwords; rebuild the 64-bit pointer.
-            let parameter_lo = core::ptr::read_volatile(trb_ptr);
-            let parameter_hi = core::ptr::read_volatile(trb_ptr.add(1));
-            let parameter = ((parameter_hi as u64) << 32) | parameter_lo as u64;
-            let status = core::ptr::read_volatile(trb_ptr.add(2));
-            let control = core::ptr::read_volatile(trb_ptr.add(3));
-            let code = (control & TRB_COMPLETION_CODE_MASK) >> 24;
-            let trb_type = (control & TRB_TYPE_MASK) >> 10;
-
-            event_ring.advance();
-
-            controller.pending_commands = controller.pending_commands.saturating_sub(1);
-
-            core::ptr::write_volatile(iman_ptr, core::ptr::read_volatile(iman_ptr) & !IMAN_IP);
-            core::ptr::write_volatile(
-                erdp_ptr,
-                (event_ring.phys_addr() + (event_ring.index * TRB_SIZE) as u64) & !0xF,
-            );
-
-            log_info!(
-                "xHCI {} completion: code={} type={} parameter={:#x}",
-                ident,
-                code,
-                trb_type,
-                parameter
-            );
-
-            if trb_type != TRB_TYPE_COMMAND_COMPLETION {
-                log_warn!(
-                    "xHCI {} unexpected event type {} while awaiting command completion",
+                log_info!(
+                    "xHCI {} completion: code={} type={} parameter={:#x}",
                     ident,
-                    trb_type
+                    code,
+                    trb_type,
+                    event.parameter
                 );
+
+                if code != TRB_COMPLETION_SUCCESS {
+                    log_warn!("xHCI {} command completed with status code {}", ident, code);
+                }
+
+                let slot_id = match event.slot_id() {
+                    0 => None,
+                    value => Some(value),
+                };
+
+                return Ok(CommandCompletion {
+                    code,
+                    trb_type,
+                    parameter: event.parameter,
+                    status: event.status,
+                    control: event.control,
+                    slot_id,
+                });
             }
 
-            if code != TRB_COMPLETION_SUCCESS {
-                log_warn!("xHCI {} command completed with status code {}", ident, code);
+            if trb_type == TRB_TYPE_TRANSFER_EVENT {
+                self.handle_transfer_event(controller, ident, &event);
+                continue;
             }
 
-            let slot_id = match ((control >> 24) & 0xFF) as u8 {
-                0 => None,
-                value => Some(value),
-            };
+            log_warn!(
+                "xHCI {} unexpected event type {} while awaiting command completion",
+                ident,
+                trb_type
+            );
+        }
+    }
 
-            Ok(CommandCompletion {
-                code,
-                trb_type,
-                parameter,
-                status,
-                control,
-                slot_id,
-            })
+    /// Block until a queued EP0 transfer reports completion, caching unrelated events.
+    fn wait_for_ep0_transfer_event(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<RawEventTrb, &'static str> {
+        loop {
+            if let Some(event) = controller.pending_ep0_event.take() {
+                return Ok(event);
+            }
+
+            let event = self.fetch_event_trb(controller, ident)?;
+            let trb_type = event.trb_type();
+            let code = event.completion_code();
+
+            if trb_type == TRB_TYPE_TRANSFER_EVENT {
+                self.handle_transfer_event(controller, ident, &event);
+                continue;
+            }
+
+            if trb_type == TRB_TYPE_COMMAND_COMPLETION {
+                controller.pending_commands = controller.pending_commands.saturating_sub(1);
+                let slot_id = match event.slot_id() {
+                    0 => None,
+                    value => Some(value),
+                };
+
+                let completion = CommandCompletion {
+                    code,
+                    trb_type,
+                    parameter: event.parameter,
+                    status: event.status,
+                    control: event.control,
+                    slot_id,
+                };
+                controller.last_command_status = Some(completion);
+
+                log_info!(
+                    "xHCI {} command completion observed while awaiting EP0 transfer: code={} parameter={:#x}",
+                    ident,
+                    code,
+                    event.parameter
+                );
+
+                if code != TRB_COMPLETION_SUCCESS {
+                    log_warn!(
+                        "xHCI {} command completion reported status code {}",
+                        ident,
+                        code
+                    );
+                }
+
+                continue;
+            }
+
+            log_warn!(
+                "xHCI {} unexpected event type {} while awaiting EP0 transfer",
+                ident,
+                trb_type
+            );
         }
     }
 
@@ -1989,6 +2208,167 @@ impl XhciDriver {
         Ok(())
     }
 
+    /// Await completion of the EP0 GET_DESCRIPTOR(Device) request and log the results.
+    fn finalize_device_descriptor_transfer(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<(), &'static str> {
+        let event = self.wait_for_ep0_transfer_event(controller, ident)?;
+        self.process_device_descriptor(controller, ident, &event)
+    }
+
+    /// Interpret and log the device descriptor returned by the control transfer.
+    fn process_device_descriptor(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+        event: &RawEventTrb,
+    ) -> Result<(), &'static str> {
+        let code = event.completion_code();
+        if code != TRB_COMPLETION_SUCCESS {
+            log_warn!(
+                "xHCI {} device descriptor transfer failed with completion code {}",
+                ident,
+                code
+            );
+            return Err("device descriptor transfer failed");
+        }
+
+        if event.residual_length() != 0 {
+            log_warn!(
+                "xHCI {} device descriptor transfer reported residual length {}",
+                ident,
+                event.residual_length()
+            );
+        }
+
+        let ring = controller
+            .control_transfer_ring
+            .as_ref()
+            .ok_or("control transfer ring missing")?;
+
+        let base = ring.phys_addr();
+        let span = (ring.capacity() * TRB_SIZE) as u64;
+        if event.parameter < base || event.parameter >= base + span {
+            log_warn!(
+                "xHCI {} device descriptor event pointer {:#x} outside EP0 ring [{:#x}, {:#x})",
+                ident,
+                event.parameter,
+                base,
+                base + span
+            );
+        } else {
+            let offset = event.parameter - base;
+            if offset % TRB_SIZE as u64 != 0 {
+                log_warn!(
+                    "xHCI {} device descriptor event pointer misaligned: offset={:#x}",
+                    ident,
+                    offset
+                );
+            } else {
+                let index = (offset / TRB_SIZE as u64) as usize;
+                let stage = match index {
+                    0 => "setup",
+                    1 => "data",
+                    2 => "status",
+                    other => {
+                        log_warn!(
+                            "xHCI {} device descriptor transfer completed on unexpected TRB index {}",
+                            ident,
+                            other
+                        );
+                        "unknown"
+                    }
+                };
+                log_info!(
+                    "xHCI {} device descriptor completion landed on {} stage (TRB index {})",
+                    ident,
+                    stage,
+                    index
+                );
+            }
+        }
+
+        let buffer = controller
+            .ep0_descriptor_buffer
+            .as_mut()
+            .ok_or("descriptor buffer missing")?;
+        let slice = buffer.as_mut_slice();
+        if slice.len() < DEVICE_DESCRIPTOR_LENGTH {
+            return Err("descriptor buffer too small");
+        }
+        let descriptor = &slice[..DEVICE_DESCRIPTOR_LENGTH];
+
+        let length = descriptor[0];
+        let descriptor_type = descriptor[1];
+        let bcd_usb = u16::from_le_bytes([descriptor[2], descriptor[3]]);
+        let device_class = descriptor[4];
+        let device_subclass = descriptor[5];
+        let device_protocol = descriptor[6];
+        let max_packet_size = descriptor[7];
+        let vendor_id = u16::from_le_bytes([descriptor[8], descriptor[9]]);
+        let product_id = u16::from_le_bytes([descriptor[10], descriptor[11]]);
+        let device_release = u16::from_le_bytes([descriptor[12], descriptor[13]]);
+        let manufacturer_index = descriptor[14];
+        let product_index = descriptor[15];
+        let serial_index = descriptor[16];
+        let configuration_count = descriptor[17];
+
+        if length as usize != DEVICE_DESCRIPTOR_LENGTH {
+            log_warn!(
+                "xHCI {} device descriptor length {} differs from expected {}",
+                ident,
+                length,
+                DEVICE_DESCRIPTOR_LENGTH
+            );
+        }
+        if descriptor_type != 1 {
+            log_warn!(
+                "xHCI {} unexpected descriptor type {} while reading device descriptor",
+                ident,
+                descriptor_type
+            );
+        }
+
+        log_info!(
+            "xHCI {} device descriptor: usb={:#06x} vid={:#06x} pid={:#06x} release={:#06x}",
+            ident,
+            bcd_usb,
+            vendor_id,
+            product_id,
+            device_release
+        );
+        log_info!(
+            "xHCI {} class={:#04x} subclass={:#04x} protocol={:#04x} max_packet_ep0={}",
+            ident,
+            device_class,
+            device_subclass,
+            device_protocol,
+            max_packet_size
+        );
+        log_info!(
+            "xHCI {} strings: manufacturer={} product={} serial={} configurations={}",
+            ident,
+            manufacturer_index,
+            product_index,
+            serial_index,
+            configuration_count
+        );
+        let byte_dump = descriptor
+            .iter()
+            .map(|byte| format!("{:02x}", byte))
+            .collect::<Vec<_>>()
+            .join(" ");
+        log_debug!(
+            "xHCI {} raw device descriptor bytes: {}",
+            ident,
+            byte_dump
+        );
+
+        Ok(())
+    }
+
     /// Initialise the default control endpoint context template used during address assignment.
     ///
     /// `dequeue_pointer` should match the TR dequeue pointer field programmed in
@@ -2122,6 +2502,14 @@ impl XhciDriver {
             if let Err(err) = self.queue_device_descriptor_request(controller, ident) {
                 log_warn!(
                     "xHCI {} failed to queue device descriptor request: {}",
+                    ident,
+                    err
+                );
+            } else if let Err(err) =
+                self.finalize_device_descriptor_transfer(controller, ident)
+            {
+                log_warn!(
+                    "xHCI {} device descriptor transfer failed: {}",
                     ident,
                     err
                 );

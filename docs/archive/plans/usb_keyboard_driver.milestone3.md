@@ -8,13 +8,14 @@ Milestone 3 focuses on bringing the xHCI host controller online with modern prac
 - **Port diagnostics**: After RUN is asserted the driver walks each root port, emitting a structured summary (link state, speed, power, reset) and highlighting the first connected port to seed enumeration decisions (`kernel/src/drivers/usb/xhci/mod.rs:1569`).
 - **Context scaffolding**: Device-context allocations now respect the controller's advertised context size, record the stride once per controller, expose slice-based helpers for slot/endpoint access, prime the input context for the default control endpoint using the first connected port, and immediately issue Enable Slot/Address Device commands to capture the assigned slot ID (`kernel/src/drivers/usb/xhci/mod.rs:1621`).
 - **Documentation coverage**: Every helper added for scratchpads and port introspection carries Rustdoc comments so new contributors can follow the flow without cross-referencing the xHCI spec.
+- **EP0 event handling**: Command-completion polling now delegates to a shared event-ring reader that recognises transfer events, caches EP0 completions, and attempts the synchronous GET_DESCRIPTOR(Device) transfer immediately after `ADDRESS_DEVICE`. Descriptor bytes are still pending—the QEMU run reports a cycle-bit mismatch before the transfer TRB is written—so the driver logs ring/USBSTS snapshots to guide the follow-up investigation.
 
 ## Observations from QEMU (`./startQemu.sh headless 10`)
 - Controller capabilities report `scratchpads=0` on QEMU’s `qemu-xhci`, confirming the scratchpad path is dormant yet safe for hardware that requires it.
 - Port summaries show ports 5 and 6 connected at high-speed in `Polling`, aligning with the virtual keyboard and mouse topology.
-- The run still exits via the environment guard after timer activity; no new regressions were observed relative to prior bring-up runs.
+- The EP0 descriptor request currently triggers an event-ring cycle mismatch (cycle bit remains 0 while `USBSTS.TRANSFER_EVENT` is asserted). The driver now dumps the relevant TRBs to the log, and later milestones must resolve the desynchronisation so enumeration can continue.
 
 ## Next Steps
-1. Allocate and program a transfer ring for the default control endpoint so control transfers can be issued post-address assignment.
+1. Investigate the EP0 transfer ring mismatch in QEMU (verify the deque pointer/DCS handshake and TRB layout) so the device descriptor transfer produces a valid event.
 2. Wire the MSI helper into the controller once interrupt allocator plumbing lands; until then the legacy timer vector remains the only actively serviced interrupt.
 3. Start decoding port status change interrupts to automatically kick off enumeration when devices arrive.
