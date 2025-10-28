@@ -142,12 +142,22 @@ struct XhciController {
     pending_ep0_event: Option<RawEventTrb>,
 }
 
+/// Software producer view of the command ring shared with the controller.
+///
+/// The driver writes TRBs into this ring and rings the host doorbell so the
+/// controller can consume the entries. The controller toggles the cycle bit
+/// when it wraps, so we track both the current index and producer cycle.
 struct CommandRing {
     buffer: DmaBuffer,
     index: usize,
     cycle: bool,
 }
 
+/// Consumer-side mirror of interrupter 0's event ring.
+///
+/// Hardware appends completion, transfer, and port-status events into this
+/// buffer. The driver advances the consumer pointer, clears interrupt-pending
+/// bits and updates ERDP so the controller can post additional events.
 struct EventRing {
     buffer: DmaBuffer,
     table: DmaBuffer,
@@ -161,6 +171,10 @@ struct InputContext {
 }
 
 /// Transfer ring backing storage for a device endpoint.
+///
+/// Each endpoint has its own producer queue of TRBs. We maintain the enqueue
+/// pointer, track the producer cycle state, and keep the reserved link TRB up
+/// to date so the controller can treat the ring as circular.
 struct TransferRing {
     buffer: DmaBuffer,
     enqueue_index: usize,
@@ -504,11 +518,11 @@ impl PortState {
         parts.join(" ")
     }
 
-    /// Route string to be programmed into the slot context.
+    /// Compute the `ROUTE_STRING` field that will be written into a slot context.
     ///
-    /// For devices attached directly to the root hub, all five 4-bit routing
-    /// fields must be zero per xHCI §6.2.2.1. Hub-attached devices will fill
-    /// this in with their downstream path during enumeration.
+    /// Downstream hubs populate the five 4-bit nibbles with the traversed port
+    /// path. Root ports sit directly beneath the host controller, so the field
+    /// must be zeroed per xHCI §6.2.2.1.
     fn route_string(&self) -> u32 {
         0
     }
@@ -568,7 +582,7 @@ impl CommandRing {
 /// (producer). We track the next enqueue slot and toggle the cycle bit whenever
 /// the producer wraps back to the beginning.
 impl TransferRing {
-    /// Construct a transfer ring over the provided buffer.
+    /// Construct a transfer ring over the provided buffer and seed the mandatory link TRB.
     fn new(buffer: DmaBuffer, trb_count: usize) -> Self {
         assert!(trb_count >= 2, "transfer ring requires space for at least one link TRB");
         let mut ring = Self {
@@ -646,6 +660,8 @@ impl TransferRing {
         let link_ptr = self.trb_ptr(self.link_index);
         let target = self.buffer.phys_addr() & !0xF;
         unsafe {
+            // Link TRB points back to the start of the ring and advertises the
+            // producer cycle so the controller can detect wrap-around.
             core::ptr::write_volatile(link_ptr, target as u32);
             core::ptr::write_volatile(link_ptr.add(1), (target >> 32) as u32);
             core::ptr::write_volatile(link_ptr.add(2), 0);
@@ -1679,6 +1695,8 @@ impl XhciDriver {
         };
 
         let index = ring.index % COMMAND_RING_TRBS;
+        // Program the next slot in the command ring with the raw TRB payload
+        // before toggling the producer cycle (xHCI §4.5.1).
         let trb_ptr = ring.current_trb();
         unsafe {
             core::ptr::write_volatile(trb_ptr, trb.parameter as u32);
@@ -1690,6 +1708,7 @@ impl XhciDriver {
 
         ring.advance();
 
+        // Ring the host controller doorbell so it notices the newly produced TRB.
         unsafe {
             let doorbell_base =
                 (controller.virt_base + controller.doorbell_offset as u64) as *mut u32;
@@ -1697,6 +1716,8 @@ impl XhciDriver {
         }
 
         controller.pending_commands += 1;
+        // Block until the matching command-completion event arrives and cache
+        // the last completion for higher-level diagnostics.
         let completion = self.poll_command_completion(controller, ident)?;
         controller.last_command_status = Some(completion);
         Ok((completion, index))
@@ -1726,6 +1747,11 @@ impl XhciDriver {
         Ok(())
     }
 
+    /// Update an endpoint's dequeue pointer via the `SET_TR_DEQUEUE_POINTER` command.
+    ///
+    /// This helper is primarily useful while debugging ring desynchronisation issues
+    /// and mirrors the sequence described in xHCI §4.6.9. The target endpoint must be
+    /// stopped before issuing the command.
     #[allow(dead_code)]
     fn set_tr_dequeue_pointer(
         &self,
@@ -1768,6 +1794,10 @@ impl XhciDriver {
     }
 
     /// Issue a Configure Endpoint command for the active slot using the current input context.
+    ///
+    /// The Input Control Context's Add/Drop masks must be primed by the caller.
+    /// On success the controller copies the queued endpoint contexts into the
+    /// operational device context and transitions the slot into the configured state.
     fn configure_endpoint_command(
         &self,
         controller: &mut XhciController,
@@ -1825,6 +1855,8 @@ impl XhciDriver {
             let iman_ptr = interrupter0.add(0x00) as *mut u32;
             let erdp_ptr = interrupter0.add(0x18) as *mut u64;
 
+            // Wait for the controller to flag an interrupt-pending condition
+            // before attempting to consume a TRB from the event ring.
             if !self.poll_with_timeout(
                 || (core::ptr::read_volatile(iman_ptr) & IMAN_IP) != 0,
                 timeout,
@@ -1914,6 +1946,10 @@ impl XhciDriver {
     }
 
     /// Handle a transfer event by caching EP0 completions for synchronous consumers.
+    ///
+    /// The default control pipe is driven synchronously during early bring-up, so
+    /// we stash the latest completion and let the waiting code pull it once the
+    /// status stage has been observed.
     fn handle_transfer_event(
         &self,
         controller: &mut XhciController,
@@ -2241,6 +2277,8 @@ impl XhciDriver {
         let speed_code = port.speed.raw();
 
         let transfer_ring = if let Some(ring) = controller.control_transfer_ring.as_mut() {
+            // The transfer ring already exists; reuse it so hardware retains
+            // ownership of the same dequeue pointer and cycle state.
             ring
         } else {
             // Allocate the transfer ring on first use so that EP0 has space for
@@ -2271,7 +2309,9 @@ impl XhciDriver {
             let slot_words = ctx.slot_words_mut(controller.context_entry_size);
             slot_words.fill(0);
             if !slot_words.is_empty() {
-                // ROUTE STRING (bits 0-19) + SPEED (bits 20-23)
+                // ROUTE STRING (bits 0-19) + SPEED (bits 20-23).
+                // Root ports report a zeroed route string while the speed field
+                // captures the negotiated link rate.
                 slot_words[0] = route_string | (speed_code << 20);
             }
             if slot_words.len() > 1 {
@@ -2370,11 +2410,12 @@ impl XhciDriver {
         ring.enqueue(0, 0, control);
     }
 
-    /// Populate the EP0 transfer ring with a GET_DESCRIPTOR(Device) request.
+    /// Populate the EP0 transfer ring with a `GET_DESCRIPTOR(Device)` TD.
     ///
-    /// This is the first step towards full enumeration: once the device
-    /// descriptor arrives we can confirm vendor/product IDs and verify that the
-    /// control pipe works before tackling configuration parsing.
+    /// Once the descriptor lands we can confirm the controller/slot wiring and
+    /// learn the initial max packet size before moving on to configuration parsing.
+    /// The ring is reused across transfers, so we log whichever TRB slots were
+    /// touched rather than assuming we always start at index zero.
     fn queue_device_descriptor_request(
         &self,
         controller: &mut XhciController,
@@ -2422,6 +2463,8 @@ impl XhciDriver {
             // Status stage toggles direction back OUT to complete the control transfer.
             self.enqueue_status_stage(ring, TransferDir::Out, true);
 
+            // The ring is circular; note which indices were actually touched so
+            // the debug output mirrors the slots hardware will consume.
             let queued_indices = [
                 start_index % capacity,
                 (start_index + 1) % capacity,
@@ -2659,6 +2702,11 @@ impl XhciDriver {
     }
 
     /// Update the EP0 context with a new maximum packet size via Evaluate Context.
+    ///
+    /// After the initial 8-byte descriptor read the BSR flow requires us to patch
+    /// the device context with the true max packet size the device reports. This
+    /// helper flips the Input Control Context masks, re-seeds the endpoint context,
+    /// and then issues the Evaluate Context command.
     fn update_ep0_max_packet(
         &self,
         controller: &mut XhciController,
@@ -2964,6 +3012,12 @@ impl XhciDriver {
     }
 
     /// Execute the enumeration sequence for the default control endpoint following xHCI §4.3.4.
+    ///
+    /// The flow matches the template recommended by the spec and by the Linux and
+    /// FreeBSD stacks: block-set-address (BSR) address assignment, an 8-byte
+    /// descriptor prefix read, port reset, max-packet update via Evaluate Context,
+    /// permanent Address Device, Configure Endpoint, and finally a full 18-byte
+    /// descriptor fetch.
     fn enumerate_default_control_endpoint(
         &self,
         controller: &mut XhciController,
@@ -3003,6 +3057,8 @@ impl XhciDriver {
         }
 
         if let Some(port_state) = refreshed_port {
+            // Rebuild the control endpoint template now that the port is in U0 with
+            // the newly negotiated speed.
             self.prepare_default_control_context(controller, ident, port_state)?;
         }
 
