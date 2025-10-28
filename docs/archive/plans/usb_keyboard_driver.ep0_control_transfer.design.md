@@ -89,7 +89,22 @@ No new feature flags required. The design assumes the control transfer runs unco
 3. **Error recovery.** This design logs failures but does not retry. That is acceptable for the teaching kernel; production-quality code would handle stalls and requeue requests.
 4. **Unit tests.** Descriptor parsing logic is straightforward and can be unit-tested in Rust once the synchronous fetch path delivers bytes. This note does not cover parsing yet.
 
+## Lessons From Earlier Attempts
+
+Implementing a proof-of-concept before writing this document surfaced several pitfalls that now shape the design:
+
+1. **Endpoint context DCS matters.** Leaving the dequeue pointer’s cycle bit at `0` while the software producer started with cycle `1` caused `ADDRESS_DEVICE` to complete with code `5` (`TRB_ERROR_SLOT_NOT_ENABLED`). The controller simply ignored the transfer ring. The current plan explicitly sets both producer cycle and DCS to `1` when priming EP0.
+
+2. **TRB field confusion is easy.** Our first script attempted to build setup/data/status TRBs but left large chunks implicit. As a result, the TRB type defaults were wrong, IOC wasn’t set, and the controller never generated the expected transfer event. Recording the exact field map (Table 4‑7, 4‑17) in this doc prevents guessing when we write the real helpers.
+
+3. **Event ring handling must be shared.** Extending `poll_command_completion` to “just” look for transfer events muddied the logic and risked double-borrow panics. The revised design introduces separate helpers (`fetch_event`, `handle_transfer_event`, `wait_for_transfer_event`) so command completions and transfer events stay distinct while sharing ring iteration code.
+
+4. **Logging gaps hinder debugging.** Earlier attempts only printed the failure code; debugging required manual inspection of raw buffers. The new plan mandates descriptive logs (vendor ID, product ID, completion codes) so regressions are self-explanatory.
+
+5. **Small, reversible steps beat large jumps.** Rolling back the entire implementation after hitting code `5` wasted time. The verification plan now contains incremental `startQemu` checkpoints so we can stop at the last good state instead of unwinding everything.
+
+These lessons are now baked into the design roadmap, reducing risk when we reattempt the implementation.
+
 ## Summary
 
 This plan advances Milestone 3 to a verifiable end-state: EP0 can complete a standard USB control transfer and extract the device descriptor. The work is structured so every step is observable and reversible without large rewrites, priming the codebase for the broader enumeration and HID milestones that follow.
-
