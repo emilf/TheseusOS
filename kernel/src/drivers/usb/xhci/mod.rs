@@ -74,6 +74,7 @@ const TRB_TYPE_ADDRESS_DEVICE: u32 = 0x0B;
 const ENDPOINT_TYPE_CONTROL: u32 = 4;
 const DEFAULT_EP0_RING_TRBS: usize = 64;
 const DEVICE_DESCRIPTOR_LENGTH: usize = 18;
+const CONFIG_DESCRIPTOR_LENGTH: usize = 9;
 const DEVICE_CONTEXT_ALIGN: usize = 64;
 const MAX_ENDPOINT_CONTEXTS: usize = 32;
 const DEVICE_CONTEXT_ENTRIES: usize = 1 + MAX_ENDPOINT_CONTEXTS;
@@ -140,6 +141,18 @@ struct XhciController {
     ep0_descriptor_buffer: Option<DmaBuffer>,
     /// Cached transfer event for the default control endpoint while we wait for completion handling.
     pending_ep0_event: Option<RawEventTrb>,
+    /// Cached interrupt endpoint discovered in the HID boot interface (if any).
+    hid_boot_keyboard: Option<HidEndpoint>,
+}
+
+/// Minimal description of the interrupt endpoint exposed by a HID boot keyboard.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug)]
+struct HidEndpoint {
+    interface_number: u8,
+    endpoint_address: u8,
+    max_packet_size: u16,
+    interval: u8,
 }
 
 /// Software producer view of the command ring shared with the controller.
@@ -197,13 +210,7 @@ impl UsbControlSetup {
     /// Construct the canonical GET_DESCRIPTOR(Device) setup packet.
     #[allow(dead_code)]
     fn device_descriptor() -> Self {
-        Self {
-            request_type: 0x80,
-            request: 6,
-            value: (1u16 << 8),
-            index: 0,
-            length: 18,
-        }
+        Self::get_descriptor(1, 0, DEVICE_DESCRIPTOR_LENGTH as u16)
     }
 
     /// Encode the packet as the immediate data payload used by setup TRBs.
@@ -213,6 +220,17 @@ impl UsbControlSetup {
             | ((self.value as u64) << 16)
             | ((self.index as u64) << 32)
             | ((self.length as u64) << 48)
+    }
+
+    /// Construct a GET_DESCRIPTOR request for the specified descriptor type and index.
+    fn get_descriptor(descriptor_type: u8, descriptor_index: u8, length: u16) -> Self {
+        Self {
+            request_type: 0x80,
+            request: 6,
+            value: ((descriptor_type as u16) << 8) | descriptor_index as u16,
+            index: 0,
+            length,
+        }
     }
 }
 
@@ -1046,6 +1064,7 @@ impl XhciDriver {
                 control_transfer_ring: None,
                 ep0_descriptor_buffer: None,
                 pending_ep0_event: None,
+                hid_boot_keyboard: None,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -2410,27 +2429,47 @@ impl XhciDriver {
         ring.enqueue(0, 0, control);
     }
 
-    /// Populate the EP0 transfer ring with a `GET_DESCRIPTOR(Device)` TD.
-    ///
-    /// Once the descriptor lands we can confirm the controller/slot wiring and
-    /// learn the initial max packet size before moving on to configuration parsing.
-    /// The ring is reused across transfers, so we log whichever TRB slots were
-    /// touched rather than assuming we always start at index zero.
-    fn queue_device_descriptor_request(
+    /// Ensure the shared EP0 descriptor buffer is large enough for the next transfer.
+    fn ensure_ep0_buffer<'a>(
+        &self,
+        controller: &'a mut XhciController,
+        required: usize,
+    ) -> Result<&'a mut DmaBuffer, &'static str> {
+        let current = controller
+            .ep0_descriptor_buffer
+            .as_ref()
+            .map(|buffer| buffer.len())
+            .unwrap_or(0);
+
+        if current < required {
+            let size = core::cmp::max(required, 64);
+            let buffer = DmaBuffer::allocate(size, RING_ALIGNMENT)
+                .map_err(|_| "failed to allocate descriptor buffer")?;
+            controller.ep0_descriptor_buffer = Some(buffer);
+        }
+
+        controller
+            .ep0_descriptor_buffer
+            .as_mut()
+            .ok_or("descriptor buffer missing")
+    }
+
+    /// Queue a generic GET_DESCRIPTOR control transfer on EP0.
+    fn queue_descriptor_transfer(
         &self,
         controller: &mut XhciController,
         ident: &str,
+        mut setup: UsbControlSetup,
         length: usize,
+        label: &str,
     ) -> Result<(), &'static str> {
         let slot_id = controller
             .active_slot
             .ok_or("cannot queue descriptor request without active slot")?;
-        let buffer_phys = {
-            let buffer = controller
-                .ep0_descriptor_buffer
-                .as_mut()
-                .ok_or("descriptor buffer missing")?;
+        setup.length = length.min(u16::MAX as usize) as u16;
 
+        let buffer_phys = {
+            let buffer = self.ensure_ep0_buffer(controller, length)?;
             let slice = buffer.as_mut_slice();
             let clear_len = length.min(slice.len());
             slice[..clear_len].fill(0);
@@ -2443,10 +2482,6 @@ impl XhciDriver {
                 .as_mut()
                 .ok_or("control transfer ring missing")?;
 
-            let mut setup = UsbControlSetup::device_descriptor();
-            // Program wLength to the exact transfer size so device-side emulation
-            // does not attempt to return more data than we have queued TRBs for.
-            setup.length = length.min(u16::MAX as usize) as u16;
             let start_index = ring.enqueue_index;
             let capacity = ring.capacity().max(1);
             self.enqueue_setup_stage(ring, setup, true);
@@ -2511,13 +2546,53 @@ impl XhciDriver {
         }
 
         log_info!(
-            "xHCI {} queued GET_DESCRIPTOR(Device) on slot {} buffer={:#x}",
+            "xHCI {} queued {} on slot {} buffer={:#x}",
             ident,
+            label,
             slot_id,
             buffer_phys
         );
 
         Ok(())
+    }
+
+    /// Populate the EP0 transfer ring with a `GET_DESCRIPTOR(Device)` TD.
+    ///
+    /// Once the descriptor lands we can confirm the controller/slot wiring and
+    /// learn the initial max packet size before moving on to configuration parsing.
+    /// The ring is reused across transfers, so we log whichever TRB slots were
+    /// touched rather than assuming we always start at index zero.
+    fn queue_device_descriptor_request(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+        length: usize,
+    ) -> Result<(), &'static str> {
+        let setup = UsbControlSetup::get_descriptor(1, 0, 0);
+        self.queue_descriptor_transfer(
+            controller,
+            ident,
+            setup,
+            length,
+            "GET_DESCRIPTOR(Device)",
+        )
+    }
+
+    /// Queue a `GET_DESCRIPTOR(Configuration)` request for the default configuration.
+    fn queue_configuration_descriptor_request(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+        length: usize,
+    ) -> Result<(), &'static str> {
+        let setup = UsbControlSetup::get_descriptor(2, 0, 0);
+        self.queue_descriptor_transfer(
+            controller,
+            ident,
+            setup,
+            length,
+            "GET_DESCRIPTOR(Configuration)",
+        )
     }
 
     fn fetch_device_descriptor_bytes(
@@ -2527,31 +2602,246 @@ impl XhciDriver {
         length: usize,
     ) -> Result<Vec<u8>, &'static str> {
         self.queue_device_descriptor_request(controller, ident, length)?;
-        self.finalize_device_descriptor_transfer(controller, ident, length)
+        self.finalize_ep0_transfer_data(controller, ident, length, "device descriptor")
     }
 
-    /// Await completion of the EP0 GET_DESCRIPTOR(Device) request and return the captured bytes.
-    fn finalize_device_descriptor_transfer(
+    fn fetch_configuration_descriptor_bytes(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+        length: usize,
+        label: &str,
+    ) -> Result<Vec<u8>, &'static str> {
+        self.queue_configuration_descriptor_request(controller, ident, length)?;
+        self.finalize_ep0_transfer_data(controller, ident, length, label)
+    }
+
+    fn retrieve_configuration_descriptor(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<Vec<u8>, &'static str> {
+        let prefix = self.fetch_configuration_descriptor_bytes(
+            controller,
+            ident,
+            CONFIG_DESCRIPTOR_LENGTH,
+            "configuration descriptor (prefix)",
+        )?;
+        if prefix.len() < CONFIG_DESCRIPTOR_LENGTH {
+            return Err("configuration descriptor prefix too short");
+        }
+
+        let total_length = u16::from_le_bytes([prefix[2], prefix[3]]) as usize;
+        if total_length <= prefix.len() {
+            Ok(prefix)
+        } else {
+            self.fetch_configuration_descriptor_bytes(
+                controller,
+                ident,
+                total_length,
+                "configuration descriptor",
+            )
+        }
+    }
+
+    fn parse_configuration_descriptor(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+        descriptor: &[u8],
+    ) {
+        if descriptor.len() < CONFIG_DESCRIPTOR_LENGTH {
+            log_warn!(
+                "xHCI {} configuration descriptor too short ({} bytes)",
+                ident,
+                descriptor.len()
+            );
+            return;
+        }
+
+        let total_length = u16::from_le_bytes([descriptor[2], descriptor[3]]) as usize;
+        let num_interfaces = descriptor[4];
+        let configuration_value = descriptor[5];
+        let attributes = descriptor[7];
+        let max_power_ma = (descriptor[8] as u16) * 2;
+
+        log_info!(
+            "xHCI {} configuration value={} total_length={} interfaces={} attributes={:#04x} max_power={}mA",
+            ident,
+            configuration_value,
+            total_length,
+            num_interfaces,
+            attributes,
+            max_power_ma
+        );
+        let raw_dump = descriptor
+            .iter()
+            .map(|byte| format!("{:02x}", byte))
+            .collect::<Vec<_>>()
+            .join(" ");
+        log_debug!(
+            "xHCI {} raw configuration descriptor bytes: {}",
+            ident,
+            raw_dump
+        );
+
+        let mut offset = CONFIG_DESCRIPTOR_LENGTH;
+        let mut active_boot_interface: Option<u8> = None;
+        let mut hid_endpoint: Option<HidEndpoint> = None;
+
+        while offset + 1 < descriptor.len() {
+            let length = descriptor[offset] as usize;
+            if length < 2 {
+                log_warn!(
+                    "xHCI {} descriptor with invalid length {} at offset {}",
+                    ident,
+                    length,
+                    offset
+                );
+                break;
+            }
+            if offset + length > descriptor.len() {
+                log_warn!(
+                    "xHCI {} descriptor overruns buffer: length {} offset {} total {}",
+                    ident,
+                    length,
+                    offset,
+                    descriptor.len()
+                );
+                break;
+            }
+
+            let dtype = descriptor[offset + 1];
+            match dtype {
+                0x04 => {
+                    if length >= 9 {
+                        let interface_number = descriptor[offset + 2];
+                        let alternate_setting = descriptor[offset + 3];
+                        let interface_class = descriptor[offset + 5];
+                        let interface_subclass = descriptor[offset + 6];
+                        let interface_protocol = descriptor[offset + 7];
+                        log_info!(
+                            "xHCI {} interface {} alt={} class={:#04x} subclass={:#04x} protocol={:#04x}",
+                            ident,
+                            interface_number,
+                            alternate_setting,
+                            interface_class,
+                            interface_subclass,
+                            interface_protocol
+                        );
+                        if interface_class == 0x03 && interface_subclass == 0x01 && interface_protocol == 0x01 {
+                            active_boot_interface = Some(interface_number);
+                            log_info!(
+                                "xHCI {} interface {} flagged as HID boot keyboard",
+                                ident,
+                                interface_number
+                            );
+                        } else {
+                            active_boot_interface = None;
+                        }
+                    } else {
+                        log_warn!(
+                            "xHCI {} interface descriptor too short ({} bytes)",
+                            ident,
+                            length
+                        );
+                        active_boot_interface = None;
+                    }
+                }
+                0x05 => {
+                    if length >= 7 {
+                        if let Some(interface_number) = active_boot_interface {
+                            let endpoint_address = descriptor[offset + 2];
+                            if (endpoint_address & 0x80) != 0 {
+                                let max_packet = u16::from_le_bytes([
+                                    descriptor[offset + 4],
+                                    descriptor[offset + 5],
+                                ]);
+                                let interval = descriptor[offset + 6];
+                                hid_endpoint = Some(HidEndpoint {
+                                    interface_number,
+                                    endpoint_address,
+                                    max_packet_size: max_packet,
+                                    interval,
+                                });
+                                log_info!(
+                                    "xHCI {} HID keyboard endpoint discovered: addr={:#04x} max_packet={} bInterval={}",
+                                    ident,
+                                    endpoint_address,
+                                    max_packet,
+                                    interval
+                                );
+                                // Avoid tracking additional endpoints for now; retain the first IN endpoint.
+                                active_boot_interface = None;
+                            }
+                        }
+                    } else {
+                        log_warn!(
+                            "xHCI {} endpoint descriptor too short ({} bytes)",
+                            ident,
+                            length
+                        );
+                    }
+                }
+                0x21 => {
+                    if length >= 6 {
+                        let hid_version = u16::from_le_bytes([
+                            descriptor[offset + 2],
+                            descriptor[offset + 3],
+                        ]);
+                        let country_code = descriptor[offset + 4];
+                        let descriptor_count = descriptor[offset + 5];
+                        log_info!(
+                            "xHCI {} HID descriptor: version={:#06x} country={} report_desc_count={}",
+                            ident,
+                            hid_version,
+                            country_code,
+                            descriptor_count
+                        );
+                    }
+                }
+                _ => {
+                    // Other descriptor types are ignored for now.
+                }
+            }
+
+            offset += length;
+        }
+
+        controller.hid_boot_keyboard = hid_endpoint;
+        if hid_endpoint.is_none() {
+            log_info!(
+                "xHCI {} HID boot keyboard endpoint not found in configuration",
+                ident
+            );
+        }
+    }
+
+    /// Await completion of an EP0 descriptor transfer and return the captured bytes.
+    fn finalize_ep0_transfer_data(
         &self,
         controller: &mut XhciController,
         ident: &str,
         expected_length: usize,
+        label: &str,
     ) -> Result<Vec<u8>, &'static str> {
         let event = self.wait_for_ep0_transfer_event(controller, ident)?;
         let code = event.completion_code();
         if code != TRB_COMPLETION_SUCCESS {
             log_warn!(
-                "xHCI {} device descriptor transfer failed with completion code {}",
+                "xHCI {} {} transfer failed with completion code {}",
                 ident,
+                label,
                 code
             );
-            return Err("device descriptor transfer failed");
+            return Err("control transfer failed");
         }
 
         if event.residual_length() != 0 {
             log_warn!(
-                "xHCI {} device descriptor transfer reported residual length {}",
+                "xHCI {} {} transfer reported residual length {}",
                 ident,
+                label,
                 event.residual_length()
             );
         }
@@ -2565,8 +2855,9 @@ impl XhciDriver {
         let span = (ring.total_trbs() * TRB_SIZE) as u64;
         if event.parameter < base || event.parameter >= base + span {
             log_warn!(
-                "xHCI {} device descriptor event pointer {:#x} outside EP0 ring [{:#x}, {:#x})",
+                "xHCI {} {} event pointer {:#x} outside EP0 ring [{:#x}, {:#x})",
                 ident,
+                label,
                 event.parameter,
                 base,
                 base + span
@@ -2587,16 +2878,18 @@ impl XhciDriver {
                     2 => "status",
                     other => {
                         log_warn!(
-                            "xHCI {} device descriptor transfer completed on unexpected TRB index {}",
+                            "xHCI {} {} transfer completed on unexpected TRB index {}",
                             ident,
+                            label,
                             other
                         );
                         "unknown"
                     }
                 };
                 log_info!(
-                    "xHCI {} device descriptor completion landed on {} stage (TRB index {})",
+                    "xHCI {} {} completion landed on {} stage (TRB index {})",
                     ident,
+                    label,
                     stage,
                     index
                 );
@@ -3102,6 +3395,15 @@ impl XhciDriver {
         let descriptor_full =
             self.fetch_device_descriptor_bytes(controller, ident, DEVICE_DESCRIPTOR_LENGTH)?;
         self.log_device_descriptor(ident, &descriptor_full);
+
+        match self.retrieve_configuration_descriptor(controller, ident) {
+            Ok(configuration) => self.parse_configuration_descriptor(controller, ident, &configuration),
+            Err(err) => log_warn!(
+                "xHCI {} failed to retrieve configuration descriptor: {}",
+                ident,
+                err
+            ),
+        }
 
         Ok(())
     }
