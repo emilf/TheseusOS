@@ -54,6 +54,7 @@ const TRB_TYPE_STATUS_STAGE: u32 = 0x04;
 const TRB_TYPE_LINK: u32 = 0x06;
 const TRB_TYPE_TRANSFER_EVENT: u32 = 0x20;
 const TRB_TYPE_SET_TR_DEQUEUE_POINTER: u32 = 0x0E;
+const TRB_TYPE_EVALUATE_CONTEXT: u32 = 0x0F;
 const TRB_TYPE_CONFIGURE_ENDPOINT: u32 = 0x0C;
 const TRB_COMPLETION_CODE_MASK: u32 = 0xFF << 24;
 const TRB_TYPE_MASK: u32 = 0x3F << 10;
@@ -1092,10 +1093,10 @@ impl XhciDriver {
                                 port_state.index,
                                 err
                             );
-                        }
-                        if let Err(err) = self.address_device_command(controller_ref, &ident) {
+                        } else if let Err(err) = self.enumerate_default_control_endpoint(controller_ref, &ident)
+                        {
                             log_warn!(
-                                "xHCI {}: address device failed in slot {}: {}",
+                                "xHCI {}: default control enumeration failed in slot {}: {}",
                                 ident,
                                 controller_ref.active_slot.unwrap_or_default(),
                                 err
@@ -2044,7 +2045,7 @@ impl XhciDriver {
                 return Ok(event);
             }
 
-            let event = self.fetch_event_trb(controller, ident, RUN_STOP_TIMEOUT * 100)?;
+            let event = self.fetch_event_trb(controller, ident, RUN_STOP_TIMEOUT * 3)?;
             let trb_type = event.trb_type();
             let code = event.completion_code();
 
@@ -2369,6 +2370,7 @@ impl XhciDriver {
         &self,
         controller: &mut XhciController,
         ident: &str,
+        length: usize,
     ) -> Result<(), &'static str> {
         let slot_id = controller
             .active_slot
@@ -2380,12 +2382,12 @@ impl XhciDriver {
                 .ok_or("descriptor buffer missing")?;
 
             let slice = buffer.as_mut_slice();
-            let clear_len = DEVICE_DESCRIPTOR_LENGTH.min(slice.len());
+            let clear_len = length.min(slice.len());
             slice[..clear_len].fill(0);
             buffer.phys_addr()
         };
 
-        let (dequeue_ptr, ring_cycle) = {
+        {
             let ring = controller
                 .control_transfer_ring
                 .as_mut()
@@ -2396,15 +2398,15 @@ impl XhciDriver {
             let setup = UsbControlSetup::device_descriptor();
             self.enqueue_setup_stage(ring, setup, true);
             // Data stage returns the descriptor body from the device (IN transfer).
-        self.enqueue_data_stage(
-            ring,
-            buffer_phys,
-            DEVICE_DESCRIPTOR_LENGTH,
-            TransferDir::In,
-            true,
-            true,
-            0,
-        );
+            self.enqueue_data_stage(
+                ring,
+                buffer_phys,
+                length,
+                TransferDir::In,
+                true,
+                true,
+                0,
+            );
             // Status stage toggles direction back OUT to complete the control transfer.
             self.enqueue_status_stage(ring, TransferDir::Out, true);
 
@@ -2437,11 +2439,7 @@ impl XhciDriver {
                 if ring.cycle { 1 } else { 0 }
             );
 
-            (ring.dequeue_pointer(), ring.cycle)
-        };
-
-        let _ = dequeue_ptr;
-        let _ = ring_cycle;
+        }
 
         unsafe {
             let doorbell_base =
@@ -2462,23 +2460,24 @@ impl XhciDriver {
         Ok(())
     }
 
-    /// Await completion of the EP0 GET_DESCRIPTOR(Device) request and log the results.
+    fn fetch_device_descriptor_bytes(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+        length: usize,
+    ) -> Result<Vec<u8>, &'static str> {
+        self.queue_device_descriptor_request(controller, ident, length)?;
+        self.finalize_device_descriptor_transfer(controller, ident, length)
+    }
+
+    /// Await completion of the EP0 GET_DESCRIPTOR(Device) request and return the captured bytes.
     fn finalize_device_descriptor_transfer(
         &self,
         controller: &mut XhciController,
         ident: &str,
-    ) -> Result<(), &'static str> {
+        expected_length: usize,
+    ) -> Result<Vec<u8>, &'static str> {
         let event = self.wait_for_ep0_transfer_event(controller, ident)?;
-        self.process_device_descriptor(controller, ident, &event)
-    }
-
-    /// Interpret and log the device descriptor returned by the control transfer.
-    fn process_device_descriptor(
-        &self,
-        controller: &mut XhciController,
-        ident: &str,
-        event: &RawEventTrb,
-    ) -> Result<(), &'static str> {
         let code = event.completion_code();
         if code != TRB_COMPLETION_SUCCESS {
             log_warn!(
@@ -2549,75 +2548,160 @@ impl XhciDriver {
             .as_mut()
             .ok_or("descriptor buffer missing")?;
         let slice = buffer.as_mut_slice();
-        if slice.len() < DEVICE_DESCRIPTOR_LENGTH {
+        if slice.len() < expected_length {
             return Err("descriptor buffer too small");
         }
-        let descriptor = &slice[..DEVICE_DESCRIPTOR_LENGTH];
+        Ok(slice[..expected_length].to_vec())
+    }
 
-        let length = descriptor[0];
-        let descriptor_type = descriptor[1];
-        let bcd_usb = u16::from_le_bytes([descriptor[2], descriptor[3]]);
-        let device_class = descriptor[4];
-        let device_subclass = descriptor[5];
-        let device_protocol = descriptor[6];
-        let max_packet_size = descriptor[7];
-        let vendor_id = u16::from_le_bytes([descriptor[8], descriptor[9]]);
-        let product_id = u16::from_le_bytes([descriptor[10], descriptor[11]]);
-        let device_release = u16::from_le_bytes([descriptor[12], descriptor[13]]);
-        let manufacturer_index = descriptor[14];
-        let product_index = descriptor[15];
-        let serial_index = descriptor[16];
-        let configuration_count = descriptor[17];
+    /// Emit a structured log for the retrieved device descriptor bytes.
+    fn log_device_descriptor(&self, ident: &str, descriptor: &[u8]) {
+        if descriptor.len() >= DEVICE_DESCRIPTOR_LENGTH {
+            let length = descriptor[0];
+            let descriptor_type = descriptor[1];
+            let bcd_usb = u16::from_le_bytes([descriptor[2], descriptor[3]]);
+            let device_class = descriptor[4];
+            let device_subclass = descriptor[5];
+            let device_protocol = descriptor[6];
+            let max_packet_size = descriptor[7];
+            let vendor_id = u16::from_le_bytes([descriptor[8], descriptor[9]]);
+            let product_id = u16::from_le_bytes([descriptor[10], descriptor[11]]);
+            let device_release = u16::from_le_bytes([descriptor[12], descriptor[13]]);
+            let manufacturer_index = descriptor[14];
+            let product_index = descriptor[15];
+            let serial_index = descriptor[16];
+            let configuration_count = descriptor[17];
 
-        if length as usize != DEVICE_DESCRIPTOR_LENGTH {
-            log_warn!(
-                "xHCI {} device descriptor length {} differs from expected {}",
+            if length as usize != DEVICE_DESCRIPTOR_LENGTH {
+                log_warn!(
+                    "xHCI {} device descriptor length {} differs from expected {}",
+                    ident,
+                    length,
+                    DEVICE_DESCRIPTOR_LENGTH
+                );
+            }
+            if descriptor_type != 1 {
+                log_warn!(
+                    "xHCI {} unexpected descriptor type {} while reading device descriptor",
+                    ident,
+                    descriptor_type
+                );
+            }
+
+            log_info!(
+                "xHCI {} device descriptor: usb={:#06x} vid={:#06x} pid={:#06x} release={:#06x}",
                 ident,
-                length,
-                DEVICE_DESCRIPTOR_LENGTH
+                bcd_usb,
+                vendor_id,
+                product_id,
+                device_release
+            );
+            log_info!(
+                "xHCI {} class={:#04x} subclass={:#04x} protocol={:#04x} max_packet_ep0={}",
+                ident,
+                device_class,
+                device_subclass,
+                device_protocol,
+                max_packet_size
+            );
+            log_info!(
+                "xHCI {} strings: manufacturer={} product={} serial={} configurations={}",
+                ident,
+                manufacturer_index,
+                product_index,
+                serial_index,
+                configuration_count
+            );
+        } else if descriptor.len() >= 8 {
+            let partial = descriptor
+                .iter()
+                .map(|byte| format!("{:02x}", byte))
+                .collect::<Vec<_>>()
+                .join(" ");
+            log_info!(
+                "xHCI {} device descriptor (first {} bytes): {}",
+                ident,
+                descriptor.len(),
+                partial
+            );
+        } else {
+            log_info!(
+                "xHCI {} device descriptor returned {} byte(s): {:02x?}",
+                ident,
+                descriptor.len(),
+                descriptor
             );
         }
-        if descriptor_type != 1 {
-            log_warn!(
-                "xHCI {} unexpected descriptor type {} while reading device descriptor",
-                ident,
-                descriptor_type
-            );
-        }
 
-        log_info!(
-            "xHCI {} device descriptor: usb={:#06x} vid={:#06x} pid={:#06x} release={:#06x}",
-            ident,
-            bcd_usb,
-            vendor_id,
-            product_id,
-            device_release
-        );
-        log_info!(
-            "xHCI {} class={:#04x} subclass={:#04x} protocol={:#04x} max_packet_ep0={}",
-            ident,
-            device_class,
-            device_subclass,
-            device_protocol,
-            max_packet_size
-        );
-        log_info!(
-            "xHCI {} strings: manufacturer={} product={} serial={} configurations={}",
-            ident,
-            manufacturer_index,
-            product_index,
-            serial_index,
-            configuration_count
-        );
         let byte_dump = descriptor
             .iter()
             .map(|byte| format!("{:02x}", byte))
             .collect::<Vec<_>>()
             .join(" ");
-        log_debug!(
-            "xHCI {} raw device descriptor bytes: {}",
+        log_debug!("xHCI {} raw device descriptor bytes: {}", ident, byte_dump);
+    }
+
+    /// Update the EP0 context with a new maximum packet size via Evaluate Context.
+    fn update_ep0_max_packet(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+        max_packet: u8,
+    ) -> Result<(), &'static str> {
+        let ring = controller
+            .control_transfer_ring
+            .as_ref()
+            .ok_or("control transfer ring missing")?;
+        {
+            let ctx = controller
+                .input_context
+                .as_mut()
+                .ok_or("input context missing")?;
+
+            let control_words = ctx.control_words_mut(controller.context_entry_size);
+            control_words.fill(0);
+            if control_words.len() > 1 {
+                control_words[1] = 1 << DEFAULT_CONTROL_ENDPOINT;
+            }
+
+            if let Some(ep_words) = ctx.endpoint_words_mut(controller.context_entry_size, DEFAULT_CONTROL_ENDPOINT)
+            {
+                self.populate_endpoint_zero(
+                    ep_words,
+                    controller
+                        .attached_speed
+                        .unwrap_or(PortSpeed::Full),
+                    ring.dequeue_pointer(),
+                    ring.cycle_state(),
+                );
+                if ep_words.len() > 1 {
+                    ep_words[1] = (ENDPOINT_TYPE_CONTROL << 3)
+                        | (3 << 1)
+                        | ((max_packet as u32) << 16);
+                }
+            } else {
+                return Err("failed to access endpoint context while updating max packet");
+            }
+        }
+
+        self.evaluate_context_command(controller, ident)?;
+
+        {
+            let ctx = controller
+                .input_context
+                .as_mut()
+                .ok_or("input context missing")?;
+            let control_words = ctx.control_words_mut(controller.context_entry_size);
+            control_words.fill(0);
+            if control_words.len() > 1 {
+                control_words[1] = (1 << SLOT_CONTEXT_INDEX) | (1 << DEFAULT_CONTROL_ENDPOINT);
+            }
+        }
+
+        log_info!(
+            "xHCI {} EP0 max-packet updated to {} bytes",
             ident,
-            byte_dump
+            max_packet
         );
 
         Ok(())
@@ -2711,6 +2795,7 @@ impl XhciDriver {
         &self,
         controller: &mut XhciController,
         ident: &str,
+        block_set_address: bool,
     ) -> Result<(), &'static str> {
         let slot_id = controller
             .active_slot
@@ -2729,6 +2814,14 @@ impl XhciDriver {
                 .as_mut()
                 .ok_or("input context missing")?;
             let entry_size = controller.context_entry_size;
+            {
+                let control_words = ctx.control_words_mut(entry_size);
+                control_words.fill(0);
+                if control_words.len() > 1 {
+                    control_words[1] =
+                        (1 << SLOT_CONTEXT_INDEX) | (1 << DEFAULT_CONTROL_ENDPOINT);
+                }
+            }
             let dev_ctx = controller
                 .slot_contexts
                 .get_mut(slot_id as usize - 1)
@@ -2763,7 +2856,7 @@ impl XhciDriver {
         }; // ICS bit
         let trb = RawCommandTrb {
             parameter,
-            status: ics_flag,
+            status: ics_flag | if block_set_address { 1 << 9 } else { 0 },
             control: (TRB_TYPE_ADDRESS_DEVICE << 10) | ((slot_id as u32) << 24),
         };
 
@@ -2849,14 +2942,18 @@ impl XhciDriver {
                 );
             }
 
-            if let Err(err) = self.queue_device_descriptor_request(controller, ident) {
+            if let Err(err) = self.queue_device_descriptor_request(controller, ident, DEVICE_DESCRIPTOR_LENGTH) {
                 log_warn!(
                     "xHCI {} failed to queue device descriptor request: {}",
                     ident,
                     err
                 );
             } else if let Err(err) =
-                self.finalize_device_descriptor_transfer(controller, ident)
+                self.finalize_device_descriptor_transfer(
+                    controller,
+                    ident,
+                    DEVICE_DESCRIPTOR_LENGTH,
+                )
             {
                 if let Some(buffer) = controller.ep0_descriptor_buffer.as_ref() {
                     let slice = unsafe {
@@ -2933,6 +3030,86 @@ impl XhciDriver {
                 );
             }
         }
+
+        Ok(())
+    }
+
+    /// Execute the enumeration sequence for the default control endpoint following xHCI §4.3.4.
+    fn enumerate_default_control_endpoint(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<(), &'static str> {
+        // Step 1: Address Device with BSR=1 (device remains at address 0, EP0 enabled).
+        self.address_device_command(controller, ident, true)?;
+
+        // Step 2: Read the first 8 bytes of the device descriptor to learn bMaxPacketSize0.
+        let descriptor_prefix = self.fetch_device_descriptor_bytes(controller, ident, 8)?;
+        self.log_device_descriptor(ident, &descriptor_prefix);
+        if descriptor_prefix.len() < 8 {
+            log_warn!(
+                "xHCI {} device descriptor prefix shorter than expected ({} bytes)",
+                ident,
+                descriptor_prefix.len()
+            );
+        }
+        let max_packet = descriptor_prefix
+            .get(7)
+            .copied()
+            .unwrap_or(8)
+            .max(8u8);
+
+        // Step 3: Update EP0 with the true max packet size via Evaluate Context.
+        self.update_ep0_max_packet(controller, ident, max_packet)?;
+
+        // Step 4: Address Device with BSR=0 so the controller programmes the device address.
+        self.address_device_command(controller, ident, false)?;
+
+        // Step 5: Fetch the full device descriptor (18 bytes) for logging and later parsing.
+        let descriptor_full = self.fetch_device_descriptor_bytes(controller, ident, DEVICE_DESCRIPTOR_LENGTH)?;
+        self.log_device_descriptor(ident, &descriptor_full);
+
+        Ok(())
+    }
+
+    /// Issue an Evaluate Context command to apply updated context fields.
+    fn evaluate_context_command(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<(), &'static str> {
+        let slot_id = controller
+            .active_slot
+            .ok_or("evaluate context requested without slot")?;
+        let ctx = controller
+            .input_context
+            .as_ref()
+            .ok_or("input context missing for evaluate-context")?;
+
+        let parameter = ctx.phys_addr() & !0xF;
+        let trb = RawCommandTrb {
+            parameter,
+            status: 0,
+            control: (TRB_TYPE_EVALUATE_CONTEXT << 10) | ((slot_id as u32) << 24),
+        };
+
+        let (completion, index) = self.issue_command(controller, ident, trb)?;
+        if completion.code != TRB_COMPLETION_SUCCESS {
+            log_warn!(
+                "xHCI {} evaluate-context (slot {}) completion code {}",
+                ident,
+                slot_id,
+                completion.code
+            );
+            return Err("evaluate context failed");
+        }
+
+        log_info!(
+            "xHCI {} evaluate-context success (slot {} index={})",
+            ident,
+            slot_id,
+            index
+        );
 
         Ok(())
     }
