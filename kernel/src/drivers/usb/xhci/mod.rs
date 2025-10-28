@@ -1928,6 +1928,11 @@ impl XhciDriver {
         ring.enqueue(0, 0, control);
     }
 
+    /// Populate the EP0 transfer ring with a GET_DESCRIPTOR(Device) request.
+    ///
+    /// This is the first step towards full enumeration: once the device
+    /// descriptor arrives we can confirm vendor/product IDs and verify that the
+    /// control pipe works before tackling configuration parsing.
     fn queue_device_descriptor_request(
         &self,
         controller: &mut XhciController,
@@ -1953,6 +1958,7 @@ impl XhciDriver {
 
         let setup = UsbControlSetup::device_descriptor();
         self.enqueue_setup_stage(ring, setup, true);
+        // Data stage returns the descriptor body from the device (IN transfer).
         self.enqueue_data_stage(
             ring,
             buffer.phys_addr(),
@@ -1961,6 +1967,7 @@ impl XhciDriver {
             true,
             false,
         );
+        // Status stage toggles direction back OUT to complete the control transfer.
         self.enqueue_status_stage(ring, TransferDir::Out, true);
 
         unsafe {
