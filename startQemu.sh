@@ -40,7 +40,7 @@ if [[ "$HEADLESS" == "true" || "$HEADLESS" == "headless" ]]; then
 #  QEMU_MONITOR_ARGS=( -chardev pipe,id=mon0,path=/tmp/qemu-monitor -monitor chardev:mon0  -chardev pipe,id=serial0,path=/tmp/qemu-serial -serial chardev:serial0)
   QEMU_PAUSE_ARGS=()
   QEMU_DEBUG_ARGS=( -device isa-debugcon,chardev=debugcon )
-  QEMU_DEBUG_CHAR_ARGS=( -chardev stdio,id=debugcon -d int,guest_errors,cpu_reset )
+  QEMU_DEBUG_CHAR_ARGS=( -chardev stdio,id=debugcon -d int,guest_errors,cpu_reset,usb )
 else
   echo "Starting QEMU in headed mode..."
   echo "  QEMU Debug Driver output: debug.log"

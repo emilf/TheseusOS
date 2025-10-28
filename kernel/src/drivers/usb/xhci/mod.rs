@@ -2722,6 +2722,78 @@ impl XhciDriver {
         Ok(())
     }
 
+    /// Copy the output device context back into the input context template.
+    fn sync_input_context_from_device(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<(), &'static str> {
+        let slot_id = controller
+            .active_slot
+            .ok_or("sync requested without active slot")?;
+        let ctx = controller
+            .input_context
+            .as_mut()
+            .ok_or("input context missing during sync")?;
+        let dev_ctx = controller
+            .slot_contexts
+            .get(slot_id as usize - 1)
+            .ok_or("device context missing during sync")?;
+        let entry_words = controller.context_entry_size / core::mem::size_of::<u32>();
+
+        unsafe {
+            let src_slot =
+                core::slice::from_raw_parts(dev_ctx.virt_addr() as *const u32, entry_words);
+            let dst_slot = ctx.slot_words_mut(controller.context_entry_size);
+            dst_slot.copy_from_slice(src_slot);
+
+            if let Some(dst_ep0) =
+                ctx.endpoint_words_mut(controller.context_entry_size, DEFAULT_CONTROL_ENDPOINT)
+            {
+                let ep_src_ptr =
+                    (dev_ctx.virt_addr() + controller.context_entry_size as u64) as *const u32;
+                let src_ep0 =
+                    core::slice::from_raw_parts(ep_src_ptr, dst_ep0.len());
+                dst_ep0.copy_from_slice(src_ep0);
+            } else {
+                return Err("failed to sync endpoint context");
+            }
+        }
+
+        {
+            let control_words = ctx.control_words_mut(controller.context_entry_size);
+            control_words.fill(0);
+            if control_words.len() > 1 {
+                control_words[1] =
+                    (1 << SLOT_CONTEXT_INDEX) | (1 << DEFAULT_CONTROL_ENDPOINT);
+            }
+        }
+
+        log_debug!(
+            "xHCI {} input context synchronised from device context (slot={})",
+            ident,
+            slot_id
+        );
+
+        Ok(())
+    }
+
+    fn reset_attached_port(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<PortState, &'static str> {
+        let port_index = controller
+            .attached_port
+            .ok_or("no attached port recorded for reset")?;
+        let states = self.collect_port_states(controller);
+        let state = states
+            .into_iter()
+            .find(|p| p.index as u8 == port_index)
+            .ok_or("attached port state unavailable")?;
+        self.reset_port(controller, ident, state)
+    }
+
     /// Initialise the default control endpoint context template used during address assignment.
     ///
     /// `dequeue_pointer` should match the TR dequeue pointer field programmed in
@@ -3060,10 +3132,14 @@ impl XhciDriver {
         controller: &mut XhciController,
         ident: &str,
     ) -> Result<(), &'static str> {
-        // Step 1: Address Device with BSR=1 (device remains at address 0, EP0 enabled).
-        self.address_device_command(controller, ident, true)?;
+        self.sync_input_context_from_device(controller, ident)
+            .unwrap_or_else(|err| {
+                log_debug!("xHCI {} initial input sync skipped: {}", ident, err);
+            });
 
-        // Step 2: Read the first 8 bytes of the device descriptor to learn bMaxPacketSize0.
+        self.address_device_command(controller, ident, true)?;
+        self.sync_input_context_from_device(controller, ident)?;
+
         let descriptor_prefix = self.fetch_device_descriptor_bytes(controller, ident, 8)?;
         self.log_device_descriptor(ident, &descriptor_prefix);
         if descriptor_prefix.len() < 8 {
@@ -3079,14 +3155,29 @@ impl XhciDriver {
             .unwrap_or(8)
             .max(8u8);
 
-        // Step 3: Update EP0 with the true max packet size via Evaluate Context.
+        if let Ok(new_port_state) = self.reset_attached_port(controller, ident) {
+            controller.attached_speed = Some(new_port_state.speed);
+            controller.attached_port = Some(new_port_state.index as u8);
+            log_info!(
+                "xHCI {} port{:02} reset complete (speed={})",
+                ident,
+                new_port_state.index,
+                new_port_state.speed.as_str()
+            );
+        } else {
+            log_debug!("xHCI {} unable to reset attached port after prefix read", ident);
+        }
+
+        self.sync_input_context_from_device(controller, ident)?;
+
         self.update_ep0_max_packet(controller, ident, max_packet)?;
+        self.sync_input_context_from_device(controller, ident)?;
 
-        // Step 4: Address Device with BSR=0 so the controller programmes the device address.
         self.address_device_command(controller, ident, false)?;
+        self.sync_input_context_from_device(controller, ident)?;
 
-        // Step 5: Fetch the full device descriptor (18 bytes) for logging and later parsing.
-        let descriptor_full = self.fetch_device_descriptor_bytes(controller, ident, DEVICE_DESCRIPTOR_LENGTH)?;
+        let descriptor_full =
+            self.fetch_device_descriptor_bytes(controller, ident, DEVICE_DESCRIPTOR_LENGTH)?;
         self.log_device_descriptor(ident, &descriptor_full);
 
         Ok(())
