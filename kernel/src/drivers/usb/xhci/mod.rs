@@ -489,6 +489,11 @@ impl TransferRing {
         self.trb_count
     }
 
+    /// Current producer cycle state; used to seed the consumer's DCS bit.
+    fn cycle_state(&self) -> bool {
+        self.cycle
+    }
+
     /// Append a TRB and advance the producer index, flipping the cycle on wrap.
     #[allow(dead_code)]
     fn enqueue(&mut self, parameter: u64, status: u32, control: u32) {
@@ -1789,7 +1794,12 @@ impl XhciDriver {
             let ep0_words = ctx
                 .endpoint_words_mut(controller.context_entry_size, DEFAULT_CONTROL_ENDPOINT)
                 .ok_or("failed to map endpoint context")?;
-            self.populate_endpoint_zero(ep0_words, port.speed, transfer_ring.dequeue_pointer());
+            self.populate_endpoint_zero(
+                ep0_words,
+                port.speed,
+                transfer_ring.dequeue_pointer(),
+                transfer_ring.cycle_state(),
+            );
         }
 
         controller.control_context_ready = true;
@@ -1809,13 +1819,14 @@ impl XhciDriver {
     /// Initialise the default control endpoint context template used during address assignment.
     ///
     /// `dequeue_pointer` should match the TR dequeue pointer field programmed in
-    /// the endpoint context (dword 2 and 3). The cycle bit is tracked in the
-    /// context rather than encoded in this pointer.
+    /// the endpoint context (dword 2 and 3). `dequeue_cycle` encodes the desired
+    /// DCS bit, ensuring the consumer and producer agree on the initial cycle state.
     fn populate_endpoint_zero(
         &self,
         endpoint_words: &mut [u32],
         speed: PortSpeed,
         dequeue_pointer: u64,
+        dequeue_cycle: bool,
     ) {
         endpoint_words.fill(0);
 
@@ -1826,17 +1837,20 @@ impl XhciDriver {
             endpoint_words[1] =
                 (ENDPOINT_TYPE_CONTROL << 3) | (error_recovery_count << 1) | (max_packet << 16);
         }
+        let dequeue_masked = dequeue_pointer & !0xFu64;
+        let dequeue_low = (dequeue_masked as u32) | if dequeue_cycle { 1 } else { 0 };
+        let dequeue_high = (dequeue_masked >> 32) as u32;
         if endpoint_words.len() > 2 {
-            endpoint_words[2] = (dequeue_pointer & 0xFFFF_FFF0) as u32;
+            endpoint_words[2] = dequeue_low;
         }
         if endpoint_words.len() > 3 {
-            endpoint_words[3] = (dequeue_pointer >> 32) as u32;
+            endpoint_words[3] = dequeue_high;
         }
         if endpoint_words.len() > 4 {
-            endpoint_words[4] = endpoint_words[2];
+            endpoint_words[4] = 0;
         }
         if endpoint_words.len() > 5 {
-            endpoint_words[5] = endpoint_words[3];
+            endpoint_words[5] = 0;
         }
         if endpoint_words.len() > 7 {
             endpoint_words[7] = max_packet as u32;
