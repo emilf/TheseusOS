@@ -574,6 +574,10 @@ pub fn register_xhci_driver() {
 /// staging command/event rings, negotiating firmware ownership, and eventually
 /// handling device enumeration. All of its state lives in `XhciController`
 /// instances tracked within `CONTROLLERS`.
+/// Concrete implementation of the USB host-controller driver.
+///
+/// The `XhciDriver` registers itself with the driver manager and handles the
+/// PCI discovery/path for each xHCI controller that shows up during boot.
 struct XhciDriver;
 
 impl XhciDriver {
@@ -899,6 +903,8 @@ impl XhciDriver {
             if let Err(err) = self.enable_slots(controller_ref, &ident) {
                 log_warn!("xHCI {}: slot configuration failed: {}", ident, err);
             }
+            // With static resources staged we can bring the controller out of
+            // the halted state and exercise the command ring.
             let mut first_connected_port = None;
             match self.start_controller(controller_ref, &ident) {
                 Ok(()) => {
@@ -1606,6 +1612,7 @@ impl XhciDriver {
                 spin_loop();
             }
 
+            // The payload is split across consecutive dwords; rebuild the 64-bit pointer.
             let parameter_lo = core::ptr::read_volatile(trb_ptr);
             let parameter_hi = core::ptr::read_volatile(trb_ptr.add(1));
             let parameter = ((parameter_hi as u64) << 32) | parameter_lo as u64;
