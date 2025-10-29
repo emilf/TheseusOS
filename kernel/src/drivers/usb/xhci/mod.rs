@@ -104,6 +104,26 @@ const PORTSC_PLC: u32 = 1 << 22;
 const PORTSC_CEC: u32 = 1 << 23;
 const SCRATCHPAD_ENTRY_SIZE: usize = 8;
 const SCRATCHPAD_POINTER_ALIGN: usize = 64;
+const HID_MODIFIER_NAMES: [&str; 8] = [
+    "LeftCtrl",
+    "LeftShift",
+    "LeftAlt",
+    "LeftMeta",
+    "RightCtrl",
+    "RightShift",
+    "RightAlt",
+    "RightMeta",
+];
+const HID_LETTER_NAMES: [&str; 26] = [
+    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+    "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+];
+const HID_NUMBER_NAMES: [&str; 10] = [
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
+];
+const HID_FUNCTION_NAMES: [&str; 12] = [
+    "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+];
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
@@ -2168,6 +2188,11 @@ impl XhciDriver {
         event: &RawEventTrb,
         hid: HidEndpoint,
     ) -> bool {
+        let prev_len = controller.hid_last_report_len;
+        let mut prev_bytes = [0u8; 8];
+        let copy_prev = core::cmp::min(prev_len, prev_bytes.len());
+        prev_bytes[..copy_prev].copy_from_slice(&controller.hid_last_report[..copy_prev]);
+
         let code = event.completion_code();
         if code != TRB_COMPLETION_SUCCESS {
             log_warn!(
@@ -2211,22 +2236,28 @@ impl XhciDriver {
             core::cmp::min(event.residual_length(), requested),
         ) as usize;
         let slice = buffer.as_mut_slice();
-        let data = &slice[..core::cmp::min(actual_bytes, slice.len())];
-        let dump = if data.is_empty() {
+        let report_len = core::cmp::min(actual_bytes, slice.len()).min(8);
+        let mut report = [0u8; 8];
+        report[..report_len].copy_from_slice(&slice[..report_len]);
+
+        let copy_len = core::cmp::min(report_len, prev_len);
+        let changed = prev_len != report_len
+            || prev_bytes[..copy_len] != report[..copy_len]
+            || prev_len > report_len && prev_bytes[report_len..prev_len].iter().any(|&b| b != 0);
+
+        let dump = if report_len == 0 {
             "<empty>".to_string()
         } else {
-            data.iter()
+            report[..report_len]
+                .iter()
                 .map(|byte| format!("{:02x}", byte))
                 .collect::<Vec<_>>()
                 .join(" ")
         };
 
-        let copy_len = core::cmp::min(data.len(), controller.hid_last_report.len());
-        let changed = controller.hid_last_report_len != data.len()
-            || controller.hid_last_report[..copy_len] != data[..copy_len];
         controller.hid_last_report.fill(0);
-        controller.hid_last_report[..copy_len].copy_from_slice(&data[..copy_len]);
-        controller.hid_last_report_len = data.len();
+        controller.hid_last_report[..report_len].copy_from_slice(&report[..report_len]);
+        controller.hid_last_report_len = report_len;
 
         if changed {
             let sequence = controller.hid_reports_seen;
@@ -2235,14 +2266,15 @@ impl XhciDriver {
                 "xHCI {} HID report #{} ({} bytes): {}",
                 ident,
                 sequence,
-                data.len(),
+                report_len,
                 dump
             );
+            self.log_hid_keyboard_events(ident, &prev_bytes, prev_len, &report[..report_len]);
         } else {
             log_trace!(
                 "xHCI {} HID report unchanged ({} bytes)",
                 ident,
-                data.len()
+                report_len
             );
         }
 
@@ -2291,6 +2323,98 @@ impl XhciDriver {
         true
     }
 
+    /// Decode the delta between two HID boot protocol reports and emit key press/release logs.
+    fn log_hid_keyboard_events(
+        &self,
+        ident: &str,
+        previous: &[u8; 8],
+        previous_len: usize,
+        current: &[u8],
+    ) {
+        let prev_mod = if previous_len > 0 { previous[0] } else { 0 };
+        let curr_mod = current.get(0).copied().unwrap_or(0);
+        let changed_mod = prev_mod ^ curr_mod;
+        for bit in 0..8 {
+            if (changed_mod & (1 << bit)) != 0 {
+                let name = HID_MODIFIER_NAMES[bit as usize];
+                if (curr_mod & (1 << bit)) != 0 {
+                    log_info!("xHCI {} key pressed: {}", ident, name);
+                } else {
+                    log_info!("xHCI {} key released: {}", ident, name);
+                }
+            }
+        }
+
+        let prev_keys = Self::collect_usage_codes(previous, previous_len);
+        let curr_keys = Self::collect_usage_codes(current, current.len());
+
+        for usage in curr_keys.iter() {
+            if !prev_keys.contains(usage) {
+                log_info!(
+                    "xHCI {} key pressed: {}",
+                    ident,
+                    Self::hid_usage_to_name(*usage)
+                );
+            }
+        }
+
+        for usage in prev_keys.iter() {
+            if !curr_keys.contains(usage) {
+                log_info!(
+                    "xHCI {} key released: {}",
+                    ident,
+                    Self::hid_usage_to_name(*usage)
+                );
+            }
+        }
+    }
+
+    fn collect_usage_codes(report: &[u8], len: usize) -> Vec<u8> {
+        let mut keys = Vec::new();
+        let usable_len = core::cmp::min(len, report.len());
+        for &usage in report.iter().take(usable_len).skip(2) {
+            if usage != 0 && !keys.contains(&usage) {
+                keys.push(usage);
+            }
+        }
+        keys
+    }
+
+    fn hid_usage_to_name(usage: u8) -> &'static str {
+        match usage {
+            0x04..=0x1d => HID_LETTER_NAMES[(usage - 0x04) as usize],
+            0x1e..=0x27 => HID_NUMBER_NAMES[(usage - 0x1e) as usize],
+            0x28 => "Enter",
+            0x29 => "Escape",
+            0x2a => "Backspace",
+            0x2b => "Tab",
+            0x2c => "Space",
+            0x2d => "Minus",
+            0x2e => "Equals",
+            0x2f => "LeftBracket",
+            0x30 => "RightBracket",
+            0x31 => "Backslash",
+            0x33 => "Semicolon",
+            0x34 => "Apostrophe",
+            0x35 => "Grave",
+            0x36 => "Comma",
+            0x37 => "Period",
+            0x38 => "Slash",
+            0x39 => "CapsLock",
+            0x3a..=0x45 => HID_FUNCTION_NAMES[(usage - 0x3a) as usize],
+            0x49 => "Insert",
+            0x4a => "Home",
+            0x4b => "PageUp",
+            0x4c => "Delete",
+            0x4d => "End",
+            0x4e => "PageDown",
+            0x4f => "Right",
+            0x50 => "Left",
+            0x51 => "Down",
+            0x52 => "Up",
+            _ => "Unknown",
+        }
+    }
     /// Drain pending runtime events for a controller without blocking.
     fn poll_runtime_events_for_controller(&self, controller: &mut XhciController) {
         let ident = controller.ident.clone();

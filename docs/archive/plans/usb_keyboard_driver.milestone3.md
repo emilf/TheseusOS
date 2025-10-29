@@ -14,12 +14,12 @@ Milestone 3 focuses on bringing the xHCI host controller online with modern prac
 - **Interrupt endpoint bring-up**: The driver now updates the input control context, provisions a dedicated transfer ring, and issues a 64-byte `Configure Endpoint` (with ICS set) so the HID boot keyboard’s interrupt-IN pipe is live. The ring is primed with an initial normal TRB and the slot doorbell is rung to start polling (`kernel/src/drivers/usb/xhci/mod.rs:3437`).
 - **HID interrupt reports**: Transfer events for the boot keyboard now copy the DMA buffer, emit a hex dump for debugging, recycle the capture space, enqueue the next normal TRB, and ring the doorbell so polling continues indefinitely (`kernel/src/drivers/usb/xhci/mod.rs:2105`).
 - **HID idle configuration**: A class-specific `SET_IDLE` request keeps the keyboard quiet until its report actually changes, eliminating the stream of zero-filled completions while the system is idle (`kernel/src/drivers/usb/xhci/mod.rs:2050`).
+- **Boot report parsing**: The driver now decodes the 8-byte HID boot protocol reports into modifier and usage changes, emitting press/release logs for human-readable keys while tracking state to avoid duplicate events (`kernel/src/drivers/usb/xhci/mod.rs:2208`).
 
 ## Observations from QEMU (`./startQemu.sh headless 10`)
 - Controller capabilities report `scratchpads=0` on QEMU’s `qemu-xhci`, confirming the scratchpad path is dormant yet safe for hardware that requires it.
 - Port summaries show ports 5 and 6 connected at high-speed in `Polling`, aligning with the virtual keyboard and mouse topology.
 - With the corrected route string and TRB encodings the controller now posts transfer events for both descriptor TDs, `evaluate-context` returns completion code 1, `configure-endpoint` succeeds, and the logged device/configuration descriptors match QEMU’s virtual keyboard (device `usb=0x0200 vid=0x0627 pid=0x0001`, configuration exposes interface 0 as a HID boot keyboard with endpoint `0x81`).
-- The interrupt ring stays armed after each poll; QEMU only delivers HID reports when a key is pressed, so the current headless run shows the re-arm debug output without report dumps—handy confirmation that the recycling path is ready for real input.
 - The interrupt ring stays armed after each poll; QEMU only delivers HID reports when a key is pressed, so the current headless run shows the re-arm debug output without report dumps—handy confirmation that the recycling path is ready for real input.
 - Background polling now checks the IMAN interrupt-pending bit before touching runtime registers, so the QEMU trace is quiet unless hardware actually signals an event.
 
