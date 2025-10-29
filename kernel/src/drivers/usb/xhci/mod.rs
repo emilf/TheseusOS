@@ -1184,6 +1184,11 @@ impl XhciDriver {
         mmio_length: usize,
     ) -> Result<bool, &'static str> {
         let ident = Self::pci_display(dev);
+        log_info!(
+            "xHCI {} initialising controller (phys={:#x})",
+            ident,
+            phys_base
+        );
         let virt = self.map_mmio(phys_base, mmio_length);
         unsafe {
             let base = virt as *const u8;
@@ -1365,6 +1370,7 @@ impl XhciDriver {
     /// # Parameters
     /// * `dev` - Device descriptor representing the controller.
     fn try_enable_msi(&self, dev: &Device) {
+        log_info!("xHCI {} entering try_enable_msi", Self::pci_display(dev));
         let ident = Self::pci_display(dev);
         let DeviceId::Pci {
             segment,
@@ -1396,15 +1402,7 @@ impl XhciDriver {
             return;
         };
 
-        if !pci_info.capabilities.msi {
-            log_info!(
-                "xHCI {:02x}:{:02x}.{}: MSI not advertised, skipping setup",
-                bus,
-                device,
-                function
-            );
-            return;
-        }
+        log_info!("xHCI {} attempting MSI setup", ident);
 
         if let Some(irq) = pci_info.interrupt_line() {
             log_debug!(
@@ -1415,6 +1413,17 @@ impl XhciDriver {
                 irq
             );
         }
+
+        log_info!(
+            "xHCI {:02x}:{:02x}.{} capabilities: msi={} ptr={:?} msix={} ptr={:?}",
+            bus,
+            device,
+            function,
+            pci_info.capabilities.msi,
+            pci_info.capabilities.msi_pointer,
+            pci_info.capabilities.msix,
+            pci_info.capabilities.msix_pointer
+        );
 
         let mut controllers = CONTROLLERS.lock();
         let Some(controller) = controllers.iter_mut().find(|ctrl| ctrl.ident == ident) else {
@@ -1440,13 +1449,22 @@ impl XhciDriver {
                 );
             }
             Err(err) => {
-                log_warn!(
-                    "xHCI {:02x}:{:02x}.{}: enabling MSI failed: {}",
-                    bus,
-                    device,
-                    function,
-                    err
-                );
+                if err == "MSI capability not present" {
+                    log_info!(
+                        "xHCI {:02x}:{:02x}.{}: MSI not advertised, continuing with polling",
+                        bus,
+                        device,
+                        function
+                    );
+                } else {
+                    log_warn!(
+                        "xHCI {:02x}:{:02x}.{}: enabling MSI failed: {}",
+                        bus,
+                        device,
+                        function,
+                        err
+                    );
+                }
             }
         }
     }
@@ -4548,9 +4566,12 @@ impl XhciDriver {
     }
 
     /// Non-blocking poll hook used during the idle loop to service runtime events.
-    fn poll_runtime_events(&self) {
+    fn poll_runtime_events(&self, force: bool) {
         let mut controllers = CONTROLLERS.lock();
         for controller in controllers.iter_mut() {
+            if !force && controller.msi_enabled.load(Ordering::Acquire) {
+                continue;
+            }
             self.poll_runtime_events_for_controller(controller);
         }
     }
@@ -4578,8 +4599,8 @@ impl Driver for XhciDriver {
         }
 
         let newly_mapped = self.initialise_controller(dev, phys, length)?;
+        self.try_enable_msi(dev);
         if newly_mapped {
-            self.try_enable_msi(dev);
             log_debug!("xHCI controller initialised at phys={:#012x}", phys);
         }
 
@@ -4599,5 +4620,10 @@ pub fn diagnostics_snapshot() -> Vec<ControllerDiagnostics> {
 
 /// Poll all active xHCI controllers for pending events.
 pub fn poll_runtime_events() {
-    XHCI_DRIVER.poll_runtime_events();
+    XHCI_DRIVER.poll_runtime_events(true);
+}
+
+/// Poll only controllers that still rely on the fallback polling path.
+pub fn poll_runtime_events_fallback() {
+    XHCI_DRIVER.poll_runtime_events(false);
 }
