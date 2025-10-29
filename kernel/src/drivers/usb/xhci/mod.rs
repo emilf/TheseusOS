@@ -10,6 +10,8 @@
 
 use alloc::{format, string::String, vec::Vec};
 use alloc::string::ToString;
+use alloc::collections::VecDeque;
+use spin::Mutex as SpinMutex;
 use core::convert::TryFrom;
 use core::hint::spin_loop;
 use core::slice;
@@ -114,6 +116,7 @@ const HID_MODIFIER_NAMES: [&str; 8] = [
     "RightAlt",
     "RightMeta",
 ];
+const HID_MODIFIER_USAGE_BASE: u8 = 0xE0;
 const HID_LETTER_NAMES: [&str; 26] = [
     "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
     "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
@@ -127,6 +130,21 @@ const HID_FUNCTION_NAMES: [&str; 12] = [
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
+static HID_EVENTS: SpinMutex<VecDeque<KeyEvent>> = SpinMutex::new(VecDeque::new());
+const HID_EVENT_QUEUE_CAPACITY: usize = 64;
+
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+pub enum KeyTransition {
+    Pressed,
+    Released,
+}
+
+#[derive(Clone, Debug)]
+pub struct KeyEvent {
+    pub transition: KeyTransition,
+    pub usage: u8,
+    pub label: &'static str,
+}
 
 #[allow(dead_code)]
 /// Aggregated state for a discovered controller.
@@ -2339,8 +2357,18 @@ impl XhciDriver {
                 let name = HID_MODIFIER_NAMES[bit as usize];
                 if (curr_mod & (1 << bit)) != 0 {
                     log_info!("xHCI {} key pressed: {}", ident, name);
+                    Self::push_key_event(KeyEvent {
+                        transition: KeyTransition::Pressed,
+                        usage: HID_MODIFIER_USAGE_BASE + bit as u8,
+                        label: name,
+                    });
                 } else {
                     log_info!("xHCI {} key released: {}", ident, name);
+                    Self::push_key_event(KeyEvent {
+                        transition: KeyTransition::Released,
+                        usage: HID_MODIFIER_USAGE_BASE + bit as u8,
+                        label: name,
+                    });
                 }
             }
         }
@@ -2355,6 +2383,11 @@ impl XhciDriver {
                     ident,
                     Self::hid_usage_to_name(*usage)
                 );
+                Self::push_key_event(KeyEvent {
+                    transition: KeyTransition::Pressed,
+                    usage: *usage,
+                    label: Self::hid_usage_to_name(*usage),
+                });
             }
         }
 
@@ -2365,6 +2398,11 @@ impl XhciDriver {
                     ident,
                     Self::hid_usage_to_name(*usage)
                 );
+                Self::push_key_event(KeyEvent {
+                    transition: KeyTransition::Released,
+                    usage: *usage,
+                    label: Self::hid_usage_to_name(*usage),
+                });
             }
         }
     }
@@ -2415,6 +2453,15 @@ impl XhciDriver {
             _ => "Unknown",
         }
     }
+
+    fn push_key_event(event: KeyEvent) {
+        let mut queue = HID_EVENTS.lock();
+        if queue.len() >= HID_EVENT_QUEUE_CAPACITY {
+            queue.pop_front();
+        }
+        queue.push_back(event);
+    }
+
     /// Drain pending runtime events for a controller without blocking.
     fn poll_runtime_events_for_controller(&self, controller: &mut XhciController) {
         let ident = controller.ident.clone();
@@ -4444,4 +4491,9 @@ pub fn diagnostics_snapshot() -> Vec<ControllerDiagnostics> {
 /// Poll all active xHCI controllers for pending events.
 pub fn poll_runtime_events() {
     XHCI_DRIVER.poll_runtime_events();
+}
+
+/// Retrieve the next buffered HID keyboard event, if any.
+pub fn hidevent_pop() -> Option<KeyEvent> {
+    HID_EVENTS.lock().pop_front()
 }

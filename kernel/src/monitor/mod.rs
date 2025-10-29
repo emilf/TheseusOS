@@ -62,6 +62,7 @@ use crate::config;
 use crate::drivers::manager::driver_manager;
 use crate::drivers::serial;
 use crate::drivers::traits::DeviceClass;
+use crate::drivers::usb::{hidevent_pop, KeyTransition};
 
 use crate::log_debug;
 
@@ -376,6 +377,7 @@ impl Monitor {
             "halt" => self.cmd_halt(),
             "clear" | "cls" => self.cmd_clear(),
             "usb" => self.cmd_usb(&parts[1..]),
+            "kbd" => self.cmd_kbd(),
             _ => {
                 self.writeln(&format!("Unknown command: '{}'", parts[0]));
                 self.writeln("Type 'help' for available commands");
@@ -402,6 +404,7 @@ impl Monitor {
         self.writeln("  devices|dev         - List registered devices");
         self.writeln("  pci                 - Enumerate PCI functions and BARs");
         self.writeln("  usb [OPTIONS]       - USB/xHCI diagnostics (use 'usb help' for options)");
+        self.writeln("  kbd                 - Dump buffered keyboard events");
         self.writeln("");
         self.writeln("Tables & Maps:");
         self.writeln("  idt [VECTOR]        - Display IDT information");
@@ -425,5 +428,31 @@ impl Monitor {
         self.writeln("  halt                - Halt CPU");
         self.writeln("  clear|cls           - Clear screen");
         self.writeln("  help|?              - Show this help");
+    }
+
+    fn cmd_kbd(&mut self) {
+        let mut count = 0;
+        loop {
+            match hidevent_pop() {
+                Some(event) => {
+                    count += 1;
+                    let state = match event.transition {
+                        KeyTransition::Pressed => "press",
+                        KeyTransition::Released => "release",
+                    };
+                    self.writeln(&format!(
+                        "{:>7} usage=0x{:02x} label={}",
+                        state,
+                        event.usage,
+                        event.label
+                    ));
+                }
+                None => break,
+            }
+        }
+
+        if count == 0 {
+            self.writeln("(keyboard buffer empty)");
+        }
     }
 }
