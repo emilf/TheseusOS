@@ -14,6 +14,8 @@
 - Confirm interrupt delivery story: document current APIC/IOAPIC usage, available vectors, and whether MSI/MSI-X is viable for early use; define the fallback legacy IRQ path.
 - Inventory memory allocators: identify what is needed to hand out physically contiguous, cache-coherent buffers for xHCI rings (tie-in with the persistent frame allocator roadmap).
 - Review bootloader hardware inventory (`HardwareDevice` records) to ensure USB/XHCI handles are discoverable and feed that into kernel-side logging for debugging.
+- Tie the MSI helper into xHCI so controllers that advertise MSI immediately switch away from legacy routing (vector 0x50 with a simple runtime handler) while leaving logging in place for firmware that only offers IOAPIC paths.
+- Recycle DMA-backed command/event rings using the shared allocator so controller resets no longer churn the contiguous allocator.
 
 ## Milestone 1: PCI Discovery Baseline
 - Implement a minimal PCI config accessor (ports `0xCF8/0xCFC` and later MMCONFIG via ACPI MCFG) under `kernel/src/drivers/system` with safe wrappers.

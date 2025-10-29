@@ -30,6 +30,7 @@ use super::{DOUBLE_FAULT_CONTEXT, TIMER_TICKS};
 use super::get_handoff_for_timer;
 use super::{get_apic_base, write_apic_register};
 use super::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9}; // # TODO: Remove this and get framebuffer via driver subsystem
+use crate::drivers::usb;
 
 // ============================================================================
 // Exception Handlers
@@ -350,6 +351,20 @@ pub(super) extern "x86-interrupt" fn handler_serial_rx(_stack: InterruptStackFra
             print_str_0xe9("[serial] irq but no handler\n");
         }
     }
+}
+
+/// xHCI MSI interrupt handler (Vector 0x50)
+///
+/// This handler services message-signalled interrupts delivered by xHCI host controllers.
+/// It clears the LAPIC in-service state and forwards processing to the USB driver so
+/// controller completions are drained promptly.
+pub(super) extern "x86-interrupt" fn handler_usb_xhci(_stack: InterruptStackFrame) {
+    unsafe {
+        let apic_base = get_apic_base();
+        write_apic_register(apic_base, 0xB0, 0);
+    }
+
+    usb::poll_runtime_events();
 }
 
 /// Spurious interrupt handler (Vector 0xFF and APIC error vector 0xFE)

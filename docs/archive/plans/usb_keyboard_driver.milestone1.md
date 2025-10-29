@@ -22,7 +22,7 @@ Milestone 1 establishes a clean PCI discovery layer that future USB work can bui
 - **Ring staging**: The nascent xHCI driver allocates DMA-backed command/event rings, programs CRCR/ERST for interrupter 0, sets up the DCBAA, enables the slot count, brings the controller to RUN, and even pushes a NOOP command through the ring so later milestones can plug in TRB programming quickly (`kernel/src/drivers/usb/xhci/mod.rs:300`).
 
 ## Outstanding Tasks
-1. **Interrupt model upgrade**: Integrate the MSI helper with the interrupt allocator (vector reservation, masks, teardown) and provide IO-APIC fallback policies.
+1. **Interrupt model upgrade**: Generalise beyond the xHCI-specific MSI vector so the interrupt allocator can reserve/release vectors, mask IOAPIC routes, and handle teardown for any PCI function that requests MSI/MSI-X.
 2. **Diagnostics tooling**: Round out the `pci` monitor output with capability summaries and surface the new FADT/legacy handoff state so bring-up issues are easier to spot.
 
 ## Testing & Verification

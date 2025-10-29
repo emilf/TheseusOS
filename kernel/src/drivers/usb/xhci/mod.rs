@@ -9,11 +9,11 @@
 //! full USB enumeration.
 
 use alloc::string::ToString;
-use alloc::{format, string::String, vec::Vec};
+use alloc::{format, string::String, vec, vec::Vec};
 use core::convert::TryFrom;
 use core::hint::spin_loop;
 use core::slice;
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 use crate::acpi;
@@ -21,6 +21,7 @@ use crate::drivers::manager::driver_manager;
 use crate::drivers::pci;
 use crate::drivers::traits::{Device, DeviceClass, DeviceId, DeviceResource, Driver};
 use crate::input::keyboard::{self, KeyEvent, KeyTransition};
+use crate::interrupts::XHCI_MSI_VECTOR;
 use crate::memory::dma::DmaBuffer;
 use crate::memory::{
     current_pml4_phys, map_range_with_policy, phys_to_virt_pa, PageTable, PTE_GLOBAL, PTE_NO_EXEC,
@@ -77,6 +78,84 @@ const TRB_TYPE_ADDRESS_DEVICE: u32 = 0x0B;
 const ENDPOINT_TYPE_CONTROL: u32 = 4;
 const ENDPOINT_TYPE_INTERRUPT_IN: u32 = 7;
 const DEFAULT_EP0_RING_TRBS: usize = 64;
+
+/// Per-size cache used to recycle DMA buffers backing xHCI rings.
+struct RingCache {
+    size: usize,
+    buffers: Vec<DmaBuffer>,
+}
+
+/// Thread-safe recycler that hands out zeroed DMA buffers for TRB rings.
+struct RingRecycler {
+    caches: Vec<RingCache>,
+}
+
+impl RingRecycler {
+    /// Create an empty recycler.
+    const fn new() -> Self {
+        Self { caches: Vec::new() }
+    }
+
+    /// Fetch a buffer with the exact size if one is cached.
+    fn acquire(&mut self, size: usize) -> Option<DmaBuffer> {
+        self.caches
+            .iter_mut()
+            .find(|entry| entry.size == size)
+            .and_then(|entry| entry.buffers.pop())
+    }
+
+    /// Return a buffer to the recycler for future reuse.
+    fn recycle(&mut self, buffer: DmaBuffer) {
+        let size = buffer.len();
+        if let Some(entry) = self.caches.iter_mut().find(|entry| entry.size == size) {
+            entry.buffers.push(buffer);
+        } else {
+            self.caches.push(RingCache {
+                size,
+                buffers: vec![buffer],
+            });
+        }
+    }
+}
+
+static RING_RECYCLER: Mutex<RingRecycler> = Mutex::new(RingRecycler::new());
+
+/// Request a DMA buffer sized for a TRB ring, reusing cached allocations when available.
+fn request_ring_buffer(size: usize, tag: &str) -> Result<DmaBuffer, &'static str> {
+    {
+        let mut recycler = RING_RECYCLER.lock();
+        if let Some(mut buffer) = recycler.acquire(size) {
+            buffer.as_mut_slice().fill(0);
+            log_debug!(
+                "xHCI ring recycler reused {} buffer: size={} bytes phys={:#012x}",
+                tag,
+                size,
+                buffer.phys_addr()
+            );
+            return Ok(buffer);
+        }
+    }
+
+    DmaBuffer::allocate(size, RING_ALIGNMENT).map_err(|_| match tag {
+        "command" => "failed to allocate command ring",
+        "event" => "failed to allocate event ring",
+        _ => "failed to allocate ring",
+    })
+}
+
+/// Return a DMA ring buffer to the recycler so future controllers can reuse it.
+fn recycle_ring_buffer(buffer: DmaBuffer, tag: &str) {
+    let phys = buffer.phys_addr();
+    let size = buffer.len();
+    let mut recycler = RING_RECYCLER.lock();
+    recycler.recycle(buffer);
+    log_debug!(
+        "xHCI ring recycler cached {} buffer: size={} bytes phys={:#012x}",
+        tag,
+        size,
+        phys
+    );
+}
 const HID_INTERRUPT_RING_TRBS: usize = 32;
 const DEVICE_DESCRIPTOR_LENGTH: usize = 18;
 const CONFIG_DESCRIPTOR_LENGTH: usize = 9;
@@ -150,6 +229,7 @@ struct XhciController {
     scratchpad_count: u16,
     context_entry_size: usize,
     msi_enabled: AtomicBool,
+    msi_vector: Option<u8>,
     command_ring: Option<CommandRing>,
     event_ring: Option<EventRing>,
     input_context: Option<InputContext>,
@@ -243,7 +323,7 @@ pub struct HidEndpointSummary {
 /// controller can consume the entries. The controller toggles the cycle bit
 /// when it wraps, so we track both the current index and producer cycle.
 struct CommandRing {
-    buffer: DmaBuffer,
+    buffer: Option<DmaBuffer>,
     index: usize,
     cycle: bool,
 }
@@ -254,7 +334,7 @@ struct CommandRing {
 /// buffer. The driver advances the consumer pointer, clears interrupt-pending
 /// bits and updates ERDP so the controller can post additional events.
 struct EventRing {
-    buffer: DmaBuffer,
+    buffer: Option<DmaBuffer>,
     table: DmaBuffer,
     index: usize,
     cycle: bool,
@@ -631,7 +711,7 @@ impl CommandRing {
     /// Construct a new command ring wrapper around the provided DMA buffer.
     fn new(buffer: DmaBuffer) -> Self {
         Self {
-            buffer,
+            buffer: Some(buffer),
             index: 0,
             cycle: true,
         }
@@ -639,12 +719,19 @@ impl CommandRing {
 
     /// Physical base address advertised to hardware via CRCR.
     fn phys_addr(&self) -> u64 {
-        self.buffer.phys_addr()
+        self.buffer
+            .as_ref()
+            .expect("command ring buffer not initialised")
+            .phys_addr()
     }
 
     /// Pointer to the next TRB slot to be written by software.
     fn current_trb(&self) -> *mut u32 {
-        (self.buffer.virt_addr() + (self.index * TRB_SIZE) as u64) as *mut u32
+        let buffer = self
+            .buffer
+            .as_ref()
+            .expect("command ring buffer not initialised");
+        (buffer.virt_addr() + (self.index * TRB_SIZE) as u64) as *mut u32
     }
 
     /// Cycle bit value to encode in the TRB control dword.
@@ -671,6 +758,14 @@ impl CommandRing {
         if self.index == COMMAND_RING_TRBS {
             self.index = 0;
             self.cycle = !self.cycle;
+        }
+    }
+}
+
+impl Drop for CommandRing {
+    fn drop(&mut self) {
+        if let Some(buffer) = self.buffer.take() {
+            recycle_ring_buffer(buffer, "command");
         }
     }
 }
@@ -780,7 +875,7 @@ impl EventRing {
     /// Construct a new event ring wrapper with its associated ERST entry.
     fn new(buffer: DmaBuffer, table: DmaBuffer) -> Self {
         Self {
-            buffer,
+            buffer: Some(buffer),
             table,
             index: 0,
             cycle: true,
@@ -789,7 +884,10 @@ impl EventRing {
 
     /// Physical base address of the event ring buffer.
     fn phys_addr(&self) -> u64 {
-        self.buffer.phys_addr()
+        self.buffer
+            .as_ref()
+            .expect("event ring buffer not initialised")
+            .phys_addr()
     }
 
     /// Physical address of the ERST entry.
@@ -799,7 +897,11 @@ impl EventRing {
 
     /// Pointer to the next TRB that software should inspect.
     fn current_trb(&self) -> *mut u32 {
-        (self.buffer.virt_addr() + (self.index * TRB_SIZE) as u64) as *mut u32
+        let buffer = self
+            .buffer
+            .as_ref()
+            .expect("event ring buffer not initialised");
+        (buffer.virt_addr() + (self.index * TRB_SIZE) as u64) as *mut u32
     }
 
     /// Advance the consumer pointer, toggling the expected cycle on wrap.
@@ -808,6 +910,14 @@ impl EventRing {
         if self.index == EVENT_RING_TRBS {
             self.index = 0;
             self.cycle = !self.cycle;
+        }
+    }
+}
+
+impl Drop for EventRing {
+    fn drop(&mut self) {
+        if let Some(buffer) = self.buffer.take() {
+            recycle_ring_buffer(buffer, "event");
         }
     }
 }
@@ -1131,6 +1241,7 @@ impl XhciDriver {
                 scratchpad_count,
                 context_entry_size,
                 msi_enabled: AtomicBool::new(false),
+                msi_vector: None,
                 command_ring: None,
                 event_ring: None,
                 input_context: None,
@@ -1295,15 +1406,49 @@ impl XhciDriver {
             return;
         }
 
-        // TODO: integrate with interrupt allocator to source a vector dynamically.
-        log_info!(
-            "xHCI {:02x}:{:02x}.{} advertises MSI/MSI-X (msi={} msix={})",
-            bus,
-            device,
-            function,
-            pci_info.capabilities.msi,
-            pci_info.capabilities.msix
-        );
+        if let Some(irq) = pci_info.interrupt_line() {
+            log_debug!(
+                "xHCI {:02x}:{:02x}.{} legacy IRQ {} will be masked when IOAPIC plumbing lands",
+                bus,
+                device,
+                function,
+                irq
+            );
+        }
+
+        let mut controllers = CONTROLLERS.lock();
+        let Some(controller) = controllers.iter_mut().find(|ctrl| ctrl.ident == ident) else {
+            log_warn!("xHCI {}: controller record missing during MSI setup", ident);
+            return;
+        };
+
+        if controller.msi_enabled.load(Ordering::Relaxed) {
+            log_debug!("xHCI {}: MSI already active", ident);
+            return;
+        }
+
+        match pci::enable_msi(pci_info, &platform.pci_config_regions, 0, XHCI_MSI_VECTOR) {
+            Ok(()) => {
+                controller.msi_enabled.store(true, Ordering::Release);
+                controller.msi_vector = Some(XHCI_MSI_VECTOR);
+                log_info!(
+                    "xHCI {:02x}:{:02x}.{} routed via MSI vector 0x{:02x}",
+                    bus,
+                    device,
+                    function,
+                    XHCI_MSI_VECTOR
+                );
+            }
+            Err(err) => {
+                log_warn!(
+                    "xHCI {:02x}:{:02x}.{}: enabling MSI failed: {}",
+                    bus,
+                    device,
+                    function,
+                    err
+                );
+            }
+        }
     }
 
     /// Reset the controller after ensuring it is halted.
@@ -1421,11 +1566,7 @@ impl XhciDriver {
     /// Allocate a DMA ring buffer with the requested TRB capacity.
     fn allocate_ring(&self, trbs: usize, tag: &str) -> Result<DmaBuffer, &'static str> {
         let size = trbs * TRB_SIZE;
-        DmaBuffer::allocate(size, RING_ALIGNMENT).map_err(|_| match tag {
-            "command" => "failed to allocate command ring",
-            "event" => "failed to allocate event ring",
-            _ => "failed to allocate ring",
-        })
+        request_ring_buffer(size, tag)
     }
 
     /// Allocate and zero an input context for the controller.
@@ -2011,9 +2152,13 @@ impl XhciDriver {
                     ident,
                     usbsts
                 );
+                let buffer = event_ring
+                    .buffer
+                    .as_ref()
+                    .expect("event ring buffer not initialised");
                 for sample in 0..8 {
                     let sample_ptr =
-                        (event_ring.buffer.virt_addr() + (sample * TRB_SIZE) as u64) as *const u32;
+                        (buffer.virt_addr() + (sample * TRB_SIZE) as u64) as *const u32;
                     let sample_parameter_lo = core::ptr::read_volatile(sample_ptr);
                     let sample_parameter_hi = core::ptr::read_volatile(sample_ptr.add(1));
                     let sample_status = core::ptr::read_volatile(sample_ptr.add(2));

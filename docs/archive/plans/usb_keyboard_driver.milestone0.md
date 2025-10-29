@@ -23,6 +23,6 @@ Milestone 0 was about auditing prerequisites before writing any USB code. This n
 - `PlatformInfo::legacy_usb` now captures the FADT-provided SMI command port, SCI line, and ownership bytes so firmware handoff sequencing is documented alongside other prerequisites.
 - Any ACPI `XHCI` tables are mirrored into `PlatformInfo::xhci_descriptors`, preserving controller-specific hints for later milestones.
 
-## Follow-Up Actions (carried into Milestone 2)
-- Integrate the new MSI helper into real drivers (reserve vectors, mask IOAPIC routes, and handle teardown paths).
-- Extend the DMA pooling story with recycling strategies tailored for xHCI command/event rings.
+## Follow-Up Actions
+- ✅ Integrated the `pci::enable_msi` helper with the xHCI driver. A dedicated MSI vector (0x50) is now wired into the IDT, a lightweight handler drains controller events, and the driver programs the capability whenever firmware exposes it—falling back to polling only when MSI is absent.
+- ✅ Added a ring recycler atop the DMA helper so command and event rings reuse zeroed, aligned buffers across controller resets instead of re-allocating from the global contiguous allocator.
