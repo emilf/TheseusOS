@@ -166,6 +166,29 @@ pub struct PciCapabilities {
     pub msix_pointer: Option<u8>,
 }
 
+/// Description of an MSI-X capability advertised by a PCI function.
+pub struct MsixCapability {
+    config_base: u64,
+    control_offset: u8,
+    pub table_bir: u8,
+    pub table_offset: u32,
+    pub table_size: u16,
+    pub pba_bir: u8,
+    pub pba_offset: u32,
+}
+
+impl MsixCapability {
+    /// Read the current MSI-X control register value.
+    pub fn control(&self) -> u16 {
+        config_read_u16(self.config_base, self.control_offset)
+    }
+
+    /// Write a new value to the MSI-X control register.
+    pub fn write_control(&self, value: u16) {
+        config_write_u16(self.config_base, self.control_offset, value);
+    }
+}
+
 /// Summary of a discovered PCI function.
 ///
 /// This structure contains all the essential information about a PCI device
@@ -912,6 +935,47 @@ pub fn enable_msi(
     config_write_u16(base, control_offset, control);
 
     Ok(())
+}
+
+/// Retrieve MSI-X capability details for the specified PCI function.
+pub fn msix_capability(
+    device: &PciDeviceInfo,
+    regions: &[PciConfigRegion],
+) -> Result<MsixCapability, &'static str> {
+    let cap_ptr = device
+        .capabilities
+        .msix_pointer
+        .ok_or("MSI-X capability not present")?;
+
+    let mut config_base = None;
+    for region in regions {
+        if region.segment != device.segment {
+            continue;
+        }
+        if device.bus < region.bus_start || device.bus > region.bus_end {
+            continue;
+        }
+        config_base = function_base(region, device.bus, device.device, device.function);
+        if config_base.is_some() {
+            break;
+        }
+    }
+
+    let base = config_base.ok_or("PCI function configuration space not accessible")?;
+    let control_offset = cap_ptr + 2;
+    let control = config_read_u16(base, control_offset);
+    let table = config_read_u32(base, cap_ptr + 4);
+    let pba = config_read_u32(base, cap_ptr + 8);
+
+    Ok(MsixCapability {
+        config_base: base,
+        control_offset,
+        table_bir: (table & 0x7) as u8,
+        table_offset: table & !0x7,
+        table_size: ((control & 0x07FF) + 1) as u16,
+        pba_bir: (pba & 0x7) as u8,
+        pba_offset: pba & !0x7,
+    })
 }
 
 // Configuration space access functions

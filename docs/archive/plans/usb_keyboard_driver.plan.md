@@ -8,7 +8,7 @@
 ## Status Snapshot
 - [x] **Milestone 0 – Prerequisite Audit**: Baseline inventory captured; FADT-derived legacy USB knobs and XHCI descriptors are now mirrored in `PlatformInfo`.
 - [x] **Milestone 1 – PCI Discovery**: ECAM enumeration integrated with the driver system, and USB controllers are claimed via the new legacy handoff path.
-- [ ] **Milestone 2 – ACPI & Controller Handoff**: Firmware ownership negotiation and monitor diagnostics are in place; documentation and policy wiring remain.
+- [x] **Milestone 2 – ACPI & Controller Handoff**: Firmware ownership negotiation and monitor diagnostics are in place; documentation and policy wiring now cover the MSI/IOAPIC fallback story.
 
 ## Milestone 0: Prerequisite Audit
 - Confirm interrupt delivery story: document current APIC/IOAPIC usage, available vectors, and whether MSI/MSI-X is viable for early use; define the fallback legacy IRQ path.
@@ -27,7 +27,13 @@
 - ✅ Implement BIOS ownership/OS ownership handoff (EHCI legacy handoff and xHCI Extended Capabilities) to disable firmware emulation that might steal the controller.
 - ✅ Surface MCFG ranges (if present) to let the PCI layer switch to memory-mapped config space for performance and to access devices above bus 255 if needed.
 - ✅ Expose diagnostics/monitor hooks for the newfound legacy handoff state so firmware ownership can be audited quickly.
-- ⬜ Document the firmware release procedure and codify policy wiring for MSI/IOAPIC fallback.
+- ✅ Document the firmware release procedure and codify policy wiring for MSI/IOAPIC fallback.
+
+### Firmware Release & Interrupt Policy (2025-10-29)
+- **Ownership release**: During boot we clear the BIOS-owned bit in the xHCI Extended Capabilities and wait for firmware acknowledgement before touching runtime registers. If the BIOS refuses to yield within the 500 µs polling window we log the fault and continue with a degraded configuration, keeping the fallback polling path active.
+- **Preferred routing**: When MSI or MSI-X capabilities are present we allocate vector `0x50`, program the message address with the BSP LAPIC ID, and mark the controller as interrupt driven. Each controller records the selected vector in `msi_vector` so diagnostics can confirm delivery.
+- **Fallback rules**: If the platform lacks MSI/MSI-X (or the enable step fails) we leave `msi_enabled` false and rely on the cooperative polling loop. The idle path calls `poll_runtime_events_fallback()` once per `hlt` iteration so controllers without modern interrupt support still make progress.
+- **Re-entrancy guard**: Interrupt-side servicing now routes through `service_runtime_interrupt()`, which uses a non-blocking `try_lock` around the controller list. When the lock is contended we defer to the next interrupt so the legacy polling loop can release the lock—eliminating the deadlock that starved HID reports after MSI-X was enabled.
 
 ## Milestone 3: xHCI Host Controller Bring-Up
 - ☐ Create an xHCI driver module that maps the controller MMIO region, parses capability/operational registers, and performs controller reset to a known state.

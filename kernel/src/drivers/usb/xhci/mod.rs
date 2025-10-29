@@ -78,6 +78,8 @@ const TRB_TYPE_ADDRESS_DEVICE: u32 = 0x0B;
 const ENDPOINT_TYPE_CONTROL: u32 = 4;
 const ENDPOINT_TYPE_INTERRUPT_IN: u32 = 7;
 const DEFAULT_EP0_RING_TRBS: usize = 64;
+const MSIX_ENTRY_SIZE: usize = 16;
+const MSI_MESSAGE_ADDR_BASE: u64 = 0xFEE0_0000;
 
 /// Per-size cache used to recycle DMA buffers backing xHCI rings.
 struct RingCache {
@@ -1426,37 +1428,54 @@ impl XhciDriver {
         );
 
         let mut controllers = CONTROLLERS.lock();
-        let Some(controller) = controllers.iter_mut().find(|ctrl| ctrl.ident == ident) else {
+        let mut controller_match: Option<&mut XhciController> = None;
+        if let Some(raw) = dev.driver_data {
+            let target = raw as *const XhciController;
+            for ctrl in controllers.iter_mut() {
+                let ctrl_ptr = ctrl as *mut XhciController as *const XhciController;
+                if ctrl_ptr == target {
+                    controller_match = Some(ctrl);
+                    break;
+                }
+            }
+        }
+        if controller_match.is_none() {
+            controller_match = controllers.iter_mut().find(|ctrl| ctrl.ident == ident);
+        }
+        let Some(controller) = controller_match else {
             log_warn!("xHCI {}: controller record missing during MSI setup", ident);
             return;
         };
 
-        if controller.msi_enabled.load(Ordering::Relaxed) {
+        let msi_active = controller.msi_enabled.load(Ordering::Relaxed);
+        let vector_configured = controller.msi_vector.is_some();
+        log_debug!(
+            "xHCI {} initial MSI enabled flag={} vector={:?}",
+            ident,
+            msi_active,
+            controller.msi_vector
+        );
+
+        if msi_active && vector_configured {
             log_debug!("xHCI {}: MSI already active", ident);
             return;
         }
 
-        match pci::enable_msi(pci_info, &platform.pci_config_regions, 0, XHCI_MSI_VECTOR) {
-            Ok(()) => {
-                controller.msi_enabled.store(true, Ordering::Release);
-                controller.msi_vector = Some(XHCI_MSI_VECTOR);
-                log_info!(
-                    "xHCI {:02x}:{:02x}.{} routed via MSI vector 0x{:02x}",
-                    bus,
-                    device,
-                    function,
-                    XHCI_MSI_VECTOR
-                );
-            }
-            Err(err) => {
-                if err == "MSI capability not present" {
+        if pci_info.capabilities.msi {
+            match pci::enable_msi(pci_info, &platform.pci_config_regions, 0, XHCI_MSI_VECTOR) {
+                Ok(()) => {
+                    controller.msi_enabled.store(true, Ordering::Release);
+                    controller.msi_vector = Some(XHCI_MSI_VECTOR);
                     log_info!(
-                        "xHCI {:02x}:{:02x}.{}: MSI not advertised, continuing with polling",
+                        "xHCI {:02x}:{:02x}.{} routed via MSI vector 0x{:02x}",
                         bus,
                         device,
-                        function
+                        function,
+                        XHCI_MSI_VECTOR
                     );
-                } else {
+                    return;
+                }
+                Err(err) => {
                     log_warn!(
                         "xHCI {:02x}:{:02x}.{}: enabling MSI failed: {}",
                         bus,
@@ -1467,6 +1486,145 @@ impl XhciDriver {
                 }
             }
         }
+
+        if pci_info.capabilities.msix {
+            match self.configure_msix(
+                controller,
+                pci_info,
+                &platform.pci_config_regions,
+                bus,
+                device,
+                function,
+            ) {
+                Ok(()) => {
+                    log_info!(
+                        "xHCI {} routed via MSI-X vector 0x{:02x}",
+                        ident,
+                        XHCI_MSI_VECTOR
+                    );
+                    return;
+                }
+                Err(err) => {
+                    log_warn!(
+                        "xHCI {:02x}:{:02x}.{}: enabling MSI-X failed: {}",
+                        bus,
+                        device,
+                        function,
+                        err
+                    );
+                }
+            }
+        } else {
+            log_info!(
+                "xHCI {:02x}:{:02x}.{}: no MSI/MSI-X capability; controller will use polling",
+                bus,
+                device,
+                function
+            );
+        }
+    }
+
+    fn configure_msix(
+        &self,
+        controller: &mut XhciController,
+        pci_info: &pci::PciDeviceInfo,
+        regions: &[acpi::PciConfigRegion],
+        bus: u8,
+        device: u8,
+        function: u8,
+    ) -> Result<(), &'static str> {
+        let msix = pci::msix_capability(pci_info, regions)
+            .map_err(|_| "MSI-X capability not accessible")?;
+        if msix.table_size == 0 {
+            return Err("MSI-X table advertises zero entries");
+        }
+
+        log_debug!(
+            "xHCI {:02x}:{:02x}.{} MSI-X table bir={} offset=0x{:05x} entries={}",
+            bus,
+            device,
+            function,
+            msix.table_bir,
+            msix.table_offset,
+            msix.table_size
+        );
+
+        let bar_index = msix.table_bir as usize;
+        if bar_index >= pci_info.bars.len() {
+            return Err("MSI-X table BAR index out of range");
+        }
+
+        let bar_phys = match &pci_info.bars[bar_index] {
+            pci::PciBar::Memory32 { base, .. } | pci::PciBar::Memory64 { base, .. } => *base,
+            _ => return Err("MSI-X table located in non-memory BAR"),
+        };
+
+        let table_phys = bar_phys + msix.table_offset as u64;
+        let table_bytes = msix.table_size as u64 * MSIX_ENTRY_SIZE as u64;
+        if table_bytes == 0 {
+            return Err("MSI-X table size calculation underflowed");
+        }
+
+        let controller_range_end = controller.phys_base + controller.mmio_length as u64;
+        let table_virt = if table_phys >= controller.phys_base
+            && table_phys + table_bytes <= controller_range_end
+        {
+            controller.virt_base + (table_phys - controller.phys_base)
+        } else {
+            self.map_mmio(table_phys, table_bytes as usize)
+        };
+
+        log_debug!(
+            "xHCI {:02x}:{:02x}.{} MSI-X table mapped: phys=0x{:012x} bytes={} virt=0x{:012x}",
+            bus,
+            device,
+            function,
+            table_phys,
+            table_bytes,
+            table_virt
+        );
+
+        let control_word = msix.control();
+        if (control_word & (1 << 14)) == 0 {
+            msix.write_control(control_word | (1 << 14));
+        }
+
+        let entry_ptr = table_virt as *mut u8;
+        unsafe {
+            let vector_control_ptr = entry_ptr.add(12) as *mut u32;
+            let mut entry_control = core::ptr::read_volatile(vector_control_ptr);
+            if (entry_control & 1) == 0 {
+                entry_control |= 1;
+                core::ptr::write_volatile(vector_control_ptr, entry_control);
+            }
+
+            core::ptr::write_volatile(
+                entry_ptr as *mut u64,
+                MSI_MESSAGE_ADDR_BASE | ((0u64) << 12),
+            );
+            core::ptr::write_volatile(entry_ptr.add(8) as *mut u32, XHCI_MSI_VECTOR as u32);
+
+            entry_control &= !1;
+            core::ptr::write_volatile(vector_control_ptr, entry_control);
+        }
+
+        let mut control_word = msix.control();
+        control_word |= 1 << 15; // Enable MSI-X
+        control_word &= !(1 << 14); // Unmask all functions
+        msix.write_control(control_word);
+
+        controller.msi_enabled.store(true, Ordering::Release);
+        controller.msi_vector = Some(XHCI_MSI_VECTOR);
+
+        log_info!(
+            "xHCI {:02x}:{:02x}.{} routed via MSI-X vector 0x{:02x}",
+            bus,
+            device,
+            function,
+            XHCI_MSI_VECTOR
+        );
+
+        Ok(())
     }
 
     /// Reset the controller after ensuring it is halted.
@@ -4565,14 +4723,32 @@ impl XhciDriver {
         }
     }
 
-    /// Non-blocking poll hook used during the idle loop to service runtime events.
-    fn poll_runtime_events(&self, force: bool) {
-        let mut controllers = CONTROLLERS.lock();
+    /// Drain runtime events for the provided controller list, optionally skipping MSI-armed devices.
+    fn poll_runtime_events_locked(
+        &self,
+        controllers: &mut Vec<XhciController>,
+        force: bool,
+    ) {
         for controller in controllers.iter_mut() {
             if !force && controller.msi_enabled.load(Ordering::Acquire) {
                 continue;
             }
             self.poll_runtime_events_for_controller(controller);
+        }
+    }
+
+    /// Non-blocking poll hook used during the idle loop to service runtime events.
+    fn poll_runtime_events(&self, force: bool) {
+        let mut controllers = CONTROLLERS.lock();
+        self.poll_runtime_events_locked(&mut controllers, force);
+    }
+
+    /// Interrupt-safe poll hook that attempts to drain runtime events without blocking.
+    fn poll_runtime_events_from_interrupt(&self) {
+        if let Some(mut controllers) = CONTROLLERS.try_lock() {
+            self.poll_runtime_events_locked(&mut controllers, true);
+        } else {
+            log_trace!("xHCI interrupt handling deferred: controller list busy");
         }
     }
 }
@@ -4599,6 +4775,11 @@ impl Driver for XhciDriver {
         }
 
         let newly_mapped = self.initialise_controller(dev, phys, length)?;
+        log_debug!(
+            "xHCI init new mapping={} driver_data={:?}",
+            newly_mapped,
+            dev.driver_data
+        );
         self.try_enable_msi(dev);
         if newly_mapped {
             log_debug!("xHCI controller initialised at phys={:#012x}", phys);
@@ -4626,4 +4807,9 @@ pub fn poll_runtime_events() {
 /// Poll only controllers that still rely on the fallback polling path.
 pub fn poll_runtime_events_fallback() {
     XHCI_DRIVER.poll_runtime_events(false);
+}
+
+/// Service an interrupt raised by an xHCI controller by draining its event rings without blocking.
+pub fn service_runtime_interrupt() {
+    XHCI_DRIVER.poll_runtime_events_from_interrupt();
 }

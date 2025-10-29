@@ -364,7 +364,7 @@ pub(super) extern "x86-interrupt" fn handler_usb_xhci(_stack: InterruptStackFram
         write_apic_register(apic_base, 0xB0, 0);
     }
 
-    usb::poll_runtime_events();
+    usb::service_runtime_interrupt();
 }
 
 /// Spurious interrupt handler (Vector 0xFF and APIC error vector 0xFE)
