@@ -430,6 +430,10 @@ impl Monitor {
         self.writeln("  help|?              - Show this help");
     }
 
+    /// Drain the xHCI driver’s HID event queue and print each transition.
+    ///
+    /// This provides a simple observable for students to validate the keyboard stack without
+    /// building a full input subsystem first.
     fn cmd_kbd(&mut self) {
         let mut count = 0;
         loop {

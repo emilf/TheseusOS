@@ -106,6 +106,7 @@ const PORTSC_PLC: u32 = 1 << 22;
 const PORTSC_CEC: u32 = 1 << 23;
 const SCRATCHPAD_ENTRY_SIZE: usize = 8;
 const SCRATCHPAD_POINTER_ALIGN: usize = 64;
+/// Textual names for the modifier bits in the first byte of a boot keyboard report.
 const HID_MODIFIER_NAMES: [&str; 8] = [
     "LeftCtrl",
     "LeftShift",
@@ -117,28 +118,36 @@ const HID_MODIFIER_NAMES: [&str; 8] = [
     "RightMeta",
 ];
 const HID_MODIFIER_USAGE_BASE: u8 = 0xE0;
+/// Usage-code to string mapping for alphabetic keys in the boot protocol.
 const HID_LETTER_NAMES: [&str; 26] = [
     "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
     "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
 ];
+/// Usage-code to string mapping for the number row keys.
 const HID_NUMBER_NAMES: [&str; 10] = [
     "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
 ];
+/// Lookup table for the F1..F12 usages.
 const HID_FUNCTION_NAMES: [&str; 12] = [
     "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
 ];
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
+/// FIFO queue that exposes high-level HID keyboard events to the rest of the kernel.
 static HID_EVENTS: SpinMutex<VecDeque<KeyEvent>> = SpinMutex::new(VecDeque::new());
+
+/// Maximum number of HID events retained before older entries are dropped.
 const HID_EVENT_QUEUE_CAPACITY: usize = 64;
 
+/// Indicates whether a key transitioned to the pressed or released state.
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum KeyTransition {
     Pressed,
     Released,
 }
 
+/// Event surfaced to consumers whenever the boot keyboard report changes.
 #[derive(Clone, Debug)]
 pub struct KeyEvent {
     pub transition: KeyTransition,
@@ -2407,6 +2416,7 @@ impl XhciDriver {
         }
     }
 
+    /// Collect unique, non-zero usage codes from the boot-report payload, ignoring modifiers.
     fn collect_usage_codes(report: &[u8], len: usize) -> Vec<u8> {
         let mut keys = Vec::new();
         let usable_len = core::cmp::min(len, report.len());
@@ -2418,6 +2428,7 @@ impl XhciDriver {
         keys
     }
 
+    /// Translate a HID usage code into a human-readable label for debugging/teaching.
     fn hid_usage_to_name(usage: u8) -> &'static str {
         match usage {
             0x04..=0x1d => HID_LETTER_NAMES[(usage - 0x04) as usize],
@@ -2454,6 +2465,7 @@ impl XhciDriver {
         }
     }
 
+    /// Append a new event to the shared queue, trimming the oldest entry if necessary.
     fn push_key_event(event: KeyEvent) {
         let mut queue = HID_EVENTS.lock();
         if queue.len() >= HID_EVENT_QUEUE_CAPACITY {
