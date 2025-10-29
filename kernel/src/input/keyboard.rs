@@ -16,11 +16,17 @@ const DEFAULT_QUEUE_CAPACITY: usize = 64;
 /// Hard cap on simultaneous listeners so misbehaving code cannot exhaust heap.
 const MAX_LISTENERS: usize = 8;
 
+/// Lookup table for unshifted digits in the boot protocol usage range.
+const NUMBER_BASE: [char; 10] = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
+/// Lookup table for shifted digits in the boot protocol usage range.
+const NUMBER_SHIFT: [char; 10] = ['!', '@', '#', '$', '%', '^', '&', '*', '(', ')'];
+
 /// Registers that bridge the keyboard hub to the rest of the runtime.
 struct KeyboardHub {
     queue: VecDeque<KeyEvent>,
     listeners: Vec<KeyboardCallback>,
     capacity: usize,
+    state: KeyboardState,
 }
 
 impl KeyboardHub {
@@ -30,6 +36,7 @@ impl KeyboardHub {
             queue: VecDeque::with_capacity(DEFAULT_QUEUE_CAPACITY),
             listeners: Vec::new(),
             capacity: DEFAULT_QUEUE_CAPACITY,
+            state: KeyboardState::default(),
         }
     }
 }
@@ -70,6 +77,10 @@ pub struct KeyEvent {
     pub usage: u8,
     /// Human-readable label that corresponds to the usage.
     pub label: &'static str,
+    /// Printable ASCII representation if this transition corresponds to a character.
+    pub ascii: Option<char>,
+    /// Snapshot of active modifiers when the event was enqueued.
+    pub modifiers: Modifiers,
 }
 
 static KEYBOARD_HUB: Once<SpinMutex<KeyboardHub>> = Once::new();
@@ -91,9 +102,12 @@ fn next_listener_id() -> &'static SpinMutex<usize> {
 /// provide a convenient historical view for debugging tools.  Listeners are
 /// invoked synchronously after the queue is updated; callers should avoid
 /// deadlocks by keeping their handlers short and non-blocking.
-pub fn publish_event(event: KeyEvent) {
+pub fn publish_event(mut event: KeyEvent) {
     let listeners = {
         let mut hub = hub().lock();
+        event.ascii = translate_ascii(&hub.state, &event);
+        hub.state.apply(&event);
+        event.modifiers = hub.state.snapshot();
         if hub.queue.len() == hub.capacity {
             hub.queue.pop_front();
         }
@@ -138,4 +152,126 @@ pub fn register_listener(callback: fn(&KeyEvent)) -> Result<ListenerHandle, Regi
 /// function simply leaves the listener table unchanged.
 pub fn unregister_listener(handle: ListenerHandle) {
     hub().lock().listeners.retain(|entry| entry.id != handle.0);
+}
+
+/// Track modifier state so ASCII translation can account for Shift and Caps Lock.
+#[derive(Clone, Debug, Default)]
+struct KeyboardState {
+    left_shift: bool,
+    right_shift: bool,
+    left_ctrl: bool,
+    right_ctrl: bool,
+    left_alt: bool,
+    right_alt: bool,
+    left_gui: bool,
+    right_gui: bool,
+    caps_lock: bool,
+}
+
+impl KeyboardState {
+    /// Apply the provided event to the modifier bookkeeping.
+    fn apply(&mut self, event: &KeyEvent) {
+        match event.usage {
+            0xE0 => self.left_ctrl = event.transition == KeyTransition::Pressed,
+            0xE1 => self.left_shift = event.transition == KeyTransition::Pressed,
+            0xE2 => self.left_alt = event.transition == KeyTransition::Pressed,
+            0xE3 => self.left_gui = event.transition == KeyTransition::Pressed,
+            0xE4 => self.right_ctrl = event.transition == KeyTransition::Pressed,
+            0xE5 => self.right_shift = event.transition == KeyTransition::Pressed,
+            0xE6 => self.right_alt = event.transition == KeyTransition::Pressed,
+            0xE7 => self.right_gui = event.transition == KeyTransition::Pressed,
+            0x39 if event.transition == KeyTransition::Pressed => {
+                self.caps_lock = !self.caps_lock;
+            }
+            _ => {}
+        }
+    }
+
+    /// Return a snapshot suitable for attaching to outbound events.
+    fn snapshot(&self) -> Modifiers {
+        Modifiers {
+            shift: self.left_shift || self.right_shift,
+            ctrl: self.left_ctrl || self.right_ctrl,
+            alt: self.left_alt || self.right_alt,
+            gui: self.left_gui || self.right_gui,
+            caps_lock: self.caps_lock,
+        }
+    }
+}
+
+/// Report which modifiers were held when an event was generated.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Modifiers {
+    /// Any Shift key (left or right).
+    pub shift: bool,
+    /// Any Control key (left or right).
+    pub ctrl: bool,
+    /// Any Alt/Option key (left or right).
+    pub alt: bool,
+    /// Any GUI/Super key (left or right).
+    pub gui: bool,
+    /// Whether Caps Lock is currently toggled on.
+    pub caps_lock: bool,
+}
+
+/// Produce an ASCII character if the usage represents printable output.
+fn translate_ascii(state: &KeyboardState, event: &KeyEvent) -> Option<char> {
+    if event.transition != KeyTransition::Pressed {
+        return None;
+    }
+
+    if (0xE0..=0xE7).contains(&event.usage) {
+        return None;
+    }
+
+    let shift_active = state.left_shift || state.right_shift;
+    let effective_upper = shift_active ^ state.caps_lock;
+
+    match event.usage {
+        0x04..=0x1d => {
+            let base = (event.usage - 0x04) as u8;
+            let letter = (b'a' + base) as char;
+            if effective_upper {
+                Some(letter.to_ascii_uppercase())
+            } else {
+                Some(letter)
+            }
+        }
+        0x1e..=0x27 => {
+            let idx = (event.usage - 0x1e) as usize;
+            if shift_active {
+                Some(NUMBER_SHIFT[idx])
+            } else {
+                Some(NUMBER_BASE[idx])
+            }
+        }
+        0x28 => Some('\n'),
+        0x2b => Some('\t'),
+        0x2c => Some(' '),
+        0x2d => Some(if shift_active { '_' } else { '-' }),
+        0x2e => Some(if shift_active { '+' } else { '=' }),
+        0x2f => Some(if shift_active { '{' } else { '[' }),
+        0x30 => Some(if shift_active { '}' } else { ']' }),
+        0x31 => Some(if shift_active { '|' } else { '\\' }),
+        0x33 => Some(if shift_active { ':' } else { ';' }),
+        0x34 => Some(if shift_active { '"' } else { '\'' }),
+        0x35 => Some(if shift_active { '~' } else { '`' }),
+        0x36 => Some(if shift_active { '<' } else { ',' }),
+        0x37 => Some(if shift_active { '>' } else { '.' }),
+        0x38 => Some(if shift_active { '?' } else { '/' }),
+        _ => None,
+    }
+}
+
+impl KeyEvent {
+    /// Convenience constructor to keep callsites tidy.
+    pub fn new(transition: KeyTransition, usage: u8, label: &'static str) -> Self {
+        Self {
+            transition,
+            usage,
+            label,
+            ascii: None,
+            modifiers: Modifiers::default(),
+        }
+    }
 }

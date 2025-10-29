@@ -11,6 +11,6 @@ pub mod keyboard;
 pub use keyboard::{
     pop_event as keyboard_pop_event, publish_event as keyboard_publish_event,
     register_listener as keyboard_register_listener,
-    unregister_listener as keyboard_unregister_listener, KeyEvent, KeyTransition,
-    ListenerHandle, RegisterListenerError,
+    unregister_listener as keyboard_unregister_listener, KeyEvent, KeyTransition, ListenerHandle,
+    Modifiers, RegisterListenerError,
 };

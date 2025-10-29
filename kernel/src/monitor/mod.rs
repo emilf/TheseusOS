@@ -444,12 +444,23 @@ impl Monitor {
                         KeyTransition::Pressed => "press",
                         KeyTransition::Released => "release",
                     };
-                    self.writeln(&format!(
-                        "{:>7} usage=0x{:02x} label={}",
-                        state,
-                        event.usage,
-                        event.label
-                    ));
+                    if let Some(ch) = event.ascii {
+                        let ascii_repr = match ch {
+                            '\n' => String::from("\\n"),
+                            '\t' => String::from("\\t"),
+                            ' ' => String::from("' '"),
+                            _ => format!("'{}'", ch),
+                        };
+                        self.writeln(&format!(
+                            "{:>7} usage=0x{:02x} label={} ascii={}",
+                            state, event.usage, event.label, ascii_repr
+                        ));
+                    } else {
+                        self.writeln(&format!(
+                            "{:>7} usage=0x{:02x} label={}",
+                            state, event.usage, event.label
+                        ));
+                    }
                 }
                 None => break,
             }

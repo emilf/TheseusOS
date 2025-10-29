@@ -8,8 +8,8 @@
 //! path. Later lessons will extend this scaffolding to cover slot contexts and
 //! full USB enumeration.
 
-use alloc::{format, string::String, vec::Vec};
 use alloc::string::ToString;
+use alloc::{format, string::String, vec::Vec};
 use core::convert::TryFrom;
 use core::hint::spin_loop;
 use core::slice;
@@ -20,8 +20,8 @@ use crate::acpi;
 use crate::drivers::manager::driver_manager;
 use crate::drivers::pci;
 use crate::drivers::traits::{Device, DeviceClass, DeviceId, DeviceResource, Driver};
-use crate::memory::dma::DmaBuffer;
 use crate::input::keyboard::{self, KeyEvent, KeyTransition};
+use crate::memory::dma::DmaBuffer;
 use crate::memory::{
     current_pml4_phys, map_range_with_policy, phys_to_virt_pa, PageTable, PTE_GLOBAL, PTE_NO_EXEC,
     PTE_PCD, PTE_PRESENT, PTE_PWT, PTE_WRITABLE,
@@ -119,13 +119,11 @@ const HID_MODIFIER_NAMES: [&str; 8] = [
 const HID_MODIFIER_USAGE_BASE: u8 = 0xE0;
 /// Usage-code to string mapping for alphabetic keys in the boot protocol.
 const HID_LETTER_NAMES: [&str; 26] = [
-    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
-    "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S",
+    "T", "U", "V", "W", "X", "Y", "Z",
 ];
 /// Usage-code to string mapping for the number row keys.
-const HID_NUMBER_NAMES: [&str; 10] = [
-    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
-];
+const HID_NUMBER_NAMES: [&str; 10] = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
 /// Lookup table for the F1..F12 usages.
 const HID_FUNCTION_NAMES: [&str; 12] = [
     "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
@@ -368,7 +366,6 @@ impl InputContext {
         let words = entry_size / core::mem::size_of::<u32>();
         Some(unsafe { slice::from_raw_parts_mut(ptr, words) })
     }
-
 }
 
 /// Raw representation of a command TRB to be written to the command ring.
@@ -686,7 +683,10 @@ impl CommandRing {
 impl TransferRing {
     /// Construct a transfer ring over the provided buffer and seed the mandatory link TRB.
     fn new(buffer: DmaBuffer, trb_count: usize) -> Self {
-        assert!(trb_count >= 2, "transfer ring requires space for at least one link TRB");
+        assert!(
+            trb_count >= 2,
+            "transfer ring requires space for at least one link TRB"
+        );
         let mut ring = Self {
             buffer,
             enqueue_index: 0,
@@ -1212,7 +1212,8 @@ impl XhciDriver {
                                 port_state.index,
                                 err
                             );
-                        } else if let Err(err) = self.enumerate_default_control_endpoint(controller_ref, &ident)
+                        } else if let Err(err) =
+                            self.enumerate_default_control_endpoint(controller_ref, &ident)
                         {
                             log_warn!(
                                 "xHCI {}: default control enumeration failed in slot {}: {}",
@@ -1873,8 +1874,9 @@ impl XhciDriver {
     ) -> Result<(), &'static str> {
         let parameter = dequeue & !0xF;
         let status = if dcs { 1 } else { 0 };
-        let control =
-            (TRB_TYPE_SET_TR_DEQUEUE_POINTER << 10) | ((endpoint_id as u32) << 16) | ((slot_id as u32) << 24);
+        let control = (TRB_TYPE_SET_TR_DEQUEUE_POINTER << 10)
+            | ((endpoint_id as u32) << 16)
+            | ((slot_id as u32) << 24);
         let trb = RawCommandTrb {
             parameter,
             status,
@@ -1921,7 +1923,11 @@ impl XhciDriver {
             .ok_or("input context missing for configure-endpoint")?;
 
         let parameter = ctx.phys_addr() & !0xF;
-        let ics_flag = if controller.context_entry_size == 64 { 1 } else { 0 };
+        let ics_flag = if controller.context_entry_size == 64 {
+            1
+        } else {
+            0
+        };
         let trb = RawCommandTrb {
             parameter,
             status: ics_flag,
@@ -1987,8 +1993,7 @@ impl XhciDriver {
                 let usbsts = core::ptr::read_volatile(op_base.add((0x04 / 4) as usize));
                 let parameter_lo = core::ptr::read_volatile(trb_ptr);
                 let parameter_hi = core::ptr::read_volatile(trb_ptr.add(1));
-                let parameter =
-                    ((parameter_hi as u64) << 32) | (parameter_lo as u64 & 0xFFFF_FFFF);
+                let parameter = ((parameter_hi as u64) << 32) | (parameter_lo as u64 & 0xFFFF_FFFF);
                 let status_snapshot = core::ptr::read_volatile(trb_ptr.add(2));
                 log_warn!(
                     "xHCI {} event ring cycle mismatch (expected={} observed={:#x} index={} cycle={} iman={:#x} param={:#x} status={:#x})",
@@ -2001,13 +2006,17 @@ impl XhciDriver {
                     parameter,
                     status_snapshot
                 );
-                log_warn!("xHCI {} USBSTS snapshot during mismatch: {:#010x}", ident, usbsts);
-                    for sample in 0..8 {
-                        let sample_ptr = (event_ring.buffer.virt_addr()
-                            + (sample * TRB_SIZE) as u64) as *const u32;
-                        let sample_parameter_lo = core::ptr::read_volatile(sample_ptr);
-                        let sample_parameter_hi = core::ptr::read_volatile(sample_ptr.add(1));
-                        let sample_status = core::ptr::read_volatile(sample_ptr.add(2));
+                log_warn!(
+                    "xHCI {} USBSTS snapshot during mismatch: {:#010x}",
+                    ident,
+                    usbsts
+                );
+                for sample in 0..8 {
+                    let sample_ptr =
+                        (event_ring.buffer.virt_addr() + (sample * TRB_SIZE) as u64) as *const u32;
+                    let sample_parameter_lo = core::ptr::read_volatile(sample_ptr);
+                    let sample_parameter_hi = core::ptr::read_volatile(sample_ptr.add(1));
+                    let sample_status = core::ptr::read_volatile(sample_ptr.add(2));
                     let sample_control = core::ptr::read_volatile(sample_ptr.add(3));
                     let sample_parameter = ((sample_parameter_hi as u64) << 32)
                         | (sample_parameter_lo as u64 & 0xFFFF_FFFF);
@@ -2238,9 +2247,8 @@ impl XhciDriver {
             }
         };
 
-        let actual_bytes = requested.saturating_sub(
-            core::cmp::min(event.residual_length(), requested),
-        ) as usize;
+        let actual_bytes =
+            requested.saturating_sub(core::cmp::min(event.residual_length(), requested)) as usize;
         let slice = buffer.as_mut_slice();
         let report_len = core::cmp::min(actual_bytes, slice.len()).min(8);
         let mut report = [0u8; 8];
@@ -2277,11 +2285,7 @@ impl XhciDriver {
             );
             self.log_hid_keyboard_events(ident, &prev_bytes, prev_len, &report[..report_len]);
         } else {
-            log_trace!(
-                "xHCI {} HID report unchanged ({} bytes)",
-                ident,
-                report_len
-            );
+            log_trace!("xHCI {} HID report unchanged ({} bytes)", ident, report_len);
         }
 
         // Reset the capture buffer to a known state before re-queuing.
@@ -2316,8 +2320,7 @@ impl XhciDriver {
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
         unsafe {
-            let doorbell =
-                (controller.virt_base + controller.doorbell_offset as u64) as *mut u32;
+            let doorbell = (controller.virt_base + controller.doorbell_offset as u64) as *mut u32;
             core::ptr::write_volatile(
                 doorbell.add(event.slot_id() as usize),
                 hid.endpoint_id as u32,
@@ -2345,18 +2348,18 @@ impl XhciDriver {
                 let name = HID_MODIFIER_NAMES[bit as usize];
                 if (curr_mod & (1 << bit)) != 0 {
                     log_info!("xHCI {} key pressed: {}", ident, name);
-                    Self::push_key_event(KeyEvent {
-                        transition: KeyTransition::Pressed,
-                        usage: HID_MODIFIER_USAGE_BASE + bit as u8,
-                        label: name,
-                    });
+                    Self::push_key_event(KeyEvent::new(
+                        KeyTransition::Pressed,
+                        HID_MODIFIER_USAGE_BASE + bit as u8,
+                        name,
+                    ));
                 } else {
                     log_info!("xHCI {} key released: {}", ident, name);
-                    Self::push_key_event(KeyEvent {
-                        transition: KeyTransition::Released,
-                        usage: HID_MODIFIER_USAGE_BASE + bit as u8,
-                        label: name,
-                    });
+                    Self::push_key_event(KeyEvent::new(
+                        KeyTransition::Released,
+                        HID_MODIFIER_USAGE_BASE + bit as u8,
+                        name,
+                    ));
                 }
             }
         }
@@ -2371,11 +2374,11 @@ impl XhciDriver {
                     ident,
                     Self::hid_usage_to_name(*usage)
                 );
-                Self::push_key_event(KeyEvent {
-                    transition: KeyTransition::Pressed,
-                    usage: *usage,
-                    label: Self::hid_usage_to_name(*usage),
-                });
+                Self::push_key_event(KeyEvent::new(
+                    KeyTransition::Pressed,
+                    *usage,
+                    Self::hid_usage_to_name(*usage),
+                ));
             }
         }
 
@@ -2386,11 +2389,11 @@ impl XhciDriver {
                     ident,
                     Self::hid_usage_to_name(*usage)
                 );
-                Self::push_key_event(KeyEvent {
-                    transition: KeyTransition::Released,
-                    usage: *usage,
-                    label: Self::hid_usage_to_name(*usage),
-                });
+                Self::push_key_event(KeyEvent::new(
+                    KeyTransition::Released,
+                    *usage,
+                    Self::hid_usage_to_name(*usage),
+                ));
             }
         }
     }
@@ -2484,11 +2487,7 @@ impl XhciDriver {
                     };
                     controller.last_command_status = Some(completion);
                 }
-                other => log_debug!(
-                    "xHCI {} runtime event ignored: type={}",
-                    ident,
-                    other
-                ),
+                other => log_debug!("xHCI {} runtime event ignored: type={}", ident, other),
             }
         }
     }
@@ -2685,8 +2684,13 @@ impl XhciDriver {
                 PORTSC_REGISTER_OFFSET + ((port.index.saturating_sub(1)) * PORT_REGISTER_STRIDE);
             let portsc_ptr = op_base.add(offset) as *mut u32;
 
-            let rw1c_mask = PORTSC_CSC | PORTSC_PEC | PORTSC_WRC | PORTSC_OCC | PORTSC_PRC
-                | PORTSC_PLC | PORTSC_CEC;
+            let rw1c_mask = PORTSC_CSC
+                | PORTSC_PEC
+                | PORTSC_WRC
+                | PORTSC_OCC
+                | PORTSC_PRC
+                | PORTSC_PLC
+                | PORTSC_CEC;
             let mut value = core::ptr::read_volatile(portsc_ptr);
             value &= !rw1c_mask;
             value |= PORTSC_PR;
@@ -2717,9 +2721,13 @@ impl XhciDriver {
 
             let updated = core::ptr::read_volatile(portsc_ptr);
             let state = PortState::from_register(port.index, updated);
-            let clear_mask =
-                PORTSC_CSC | PORTSC_PEC | PORTSC_WRC | PORTSC_OCC | PORTSC_PRC | PORTSC_PLC
-                    | PORTSC_CEC;
+            let clear_mask = PORTSC_CSC
+                | PORTSC_PEC
+                | PORTSC_WRC
+                | PORTSC_OCC
+                | PORTSC_PRC
+                | PORTSC_PLC
+                | PORTSC_CEC;
             let mut current = core::ptr::read_volatile(portsc_ptr);
             current &= !rw1c_mask;
             current |= clear_mask;
@@ -2952,15 +2960,7 @@ impl XhciDriver {
             let capacity = ring.capacity().max(1);
             self.enqueue_setup_stage(ring, setup, true);
             // Data stage returns the descriptor body from the device (IN transfer).
-            self.enqueue_data_stage(
-                ring,
-                buffer_phys,
-                length,
-                TransferDir::In,
-                true,
-                true,
-                0,
-            );
+            self.enqueue_data_stage(ring, buffer_phys, length, TransferDir::In, true, true, 0);
             // Status stage toggles direction back OUT to complete the control transfer.
             self.enqueue_status_stage(ring, TransferDir::Out, true);
 
@@ -2999,7 +2999,6 @@ impl XhciDriver {
                 ring.enqueue_index,
                 if ring.cycle { 1 } else { 0 }
             );
-
         }
 
         unsafe {
@@ -3035,13 +3034,7 @@ impl XhciDriver {
         length: usize,
     ) -> Result<(), &'static str> {
         let setup = UsbControlSetup::get_descriptor(1, 0, 0);
-        self.queue_descriptor_transfer(
-            controller,
-            ident,
-            setup,
-            length,
-            "GET_DESCRIPTOR(Device)",
-        )
+        self.queue_descriptor_transfer(controller, ident, setup, length, "GET_DESCRIPTOR(Device)")
     }
 
     /// Queue a `GET_DESCRIPTOR(Configuration)` request for the default configuration.
@@ -3275,7 +3268,10 @@ impl XhciDriver {
                             interface_subclass,
                             interface_protocol
                         );
-                        if interface_class == 0x03 && interface_subclass == 0x01 && interface_protocol == 0x01 {
+                        if interface_class == 0x03
+                            && interface_subclass == 0x01
+                            && interface_protocol == 0x01
+                        {
                             active_boot_interface = Some(interface_number);
                             log_info!(
                                 "xHCI {} interface {} flagged as HID boot keyboard",
@@ -3343,10 +3339,8 @@ impl XhciDriver {
                 }
                 0x21 => {
                     if length >= 6 {
-                        let hid_version = u16::from_le_bytes([
-                            descriptor[offset + 2],
-                            descriptor[offset + 3],
-                        ]);
+                        let hid_version =
+                            u16::from_le_bytes([descriptor[offset + 2], descriptor[offset + 3]]);
                         let country_code = descriptor[offset + 4];
                         let descriptor_count = descriptor[offset + 5];
                         log_info!(
@@ -3637,20 +3631,18 @@ impl XhciDriver {
                 add_flags
             );
 
-            if let Some(ep_words) = ctx.endpoint_words_mut(controller.context_entry_size, DEFAULT_CONTROL_ENDPOINT)
+            if let Some(ep_words) =
+                ctx.endpoint_words_mut(controller.context_entry_size, DEFAULT_CONTROL_ENDPOINT)
             {
                 self.populate_endpoint_zero(
                     ep_words,
-                    controller
-                        .attached_speed
-                        .unwrap_or(PortSpeed::Full),
+                    controller.attached_speed.unwrap_or(PortSpeed::Full),
                     ring.dequeue_pointer(),
                     ring.cycle_state(),
                 );
                 if ep_words.len() > 1 {
-                    ep_words[1] = (ENDPOINT_TYPE_CONTROL << 3)
-                        | (3 << 1)
-                        | ((max_packet as u32) << 16);
+                    ep_words[1] =
+                        (ENDPOINT_TYPE_CONTROL << 3) | (3 << 1) | ((max_packet as u32) << 16);
                 }
             } else {
                 return Err("failed to access endpoint context while updating max packet");
@@ -3710,8 +3702,7 @@ impl XhciDriver {
             {
                 let ep_src_ptr =
                     (dev_ctx.virt_addr() + controller.context_entry_size as u64) as *const u32;
-                let src_ep0 =
-                    core::slice::from_raw_parts(ep_src_ptr, dst_ep0.len());
+                let src_ep0 = core::slice::from_raw_parts(ep_src_ptr, dst_ep0.len());
                 dst_ep0.copy_from_slice(src_ep0);
             } else {
                 return Err("failed to sync endpoint context");
@@ -3722,8 +3713,7 @@ impl XhciDriver {
             let control_words = ctx.control_words_mut(controller.context_entry_size);
             control_words.fill(0);
             if control_words.len() > 1 {
-                control_words[1] =
-                    (1 << SLOT_CONTEXT_INDEX) | (1 << DEFAULT_CONTROL_ENDPOINT);
+                control_words[1] = (1 << SLOT_CONTEXT_INDEX) | (1 << DEFAULT_CONTROL_ENDPOINT);
             }
         }
 
@@ -3962,8 +3952,7 @@ impl XhciDriver {
                 let control_words = ctx.control_words_mut(entry_size);
                 control_words.fill(0);
                 if control_words.len() > 1 {
-                    control_words[1] = (1 << SLOT_CONTEXT_INDEX)
-                        | (1 << endpoint_index);
+                    control_words[1] = (1 << SLOT_CONTEXT_INDEX) | (1 << endpoint_index);
                 }
             }
 
@@ -3975,9 +3964,7 @@ impl XhciDriver {
                 }
             }
 
-            if let Some(ep_words) =
-                ctx.endpoint_words_mut(entry_size, endpoint_index)
-            {
+            if let Some(ep_words) = ctx.endpoint_words_mut(entry_size, endpoint_index) {
                 self.populate_interrupt_endpoint(
                     ep_words,
                     dequeue_pointer,
@@ -4010,11 +3997,7 @@ impl XhciDriver {
             });
 
         if let Err(err) = self.send_hid_set_idle(controller, ident, hid) {
-            log_warn!(
-                "xHCI {} failed to send HID SET_IDLE: {}",
-                ident,
-                err
-            );
+            log_warn!("xHCI {} failed to send HID SET_IDLE: {}", ident, err);
         }
 
         // TODO: teach the control path to negotiate HID boot protocol via SET_PROTOCOL when the OS needs 8-byte reports.
@@ -4045,8 +4028,7 @@ impl XhciDriver {
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
         unsafe {
-            let doorbell =
-                (controller.virt_base + controller.doorbell_offset as u64) as *mut u32;
+            let doorbell = (controller.virt_base + controller.doorbell_offset as u64) as *mut u32;
             core::ptr::write_volatile(doorbell.add(slot_id as usize), endpoint_index as u32);
         }
 
@@ -4129,8 +4111,7 @@ impl XhciDriver {
                 let control_words = ctx.control_words_mut(entry_size);
                 control_words.fill(0);
                 if control_words.len() > 1 {
-                    control_words[1] =
-                        (1 << SLOT_CONTEXT_INDEX) | (1 << DEFAULT_CONTROL_ENDPOINT);
+                    control_words[1] = (1 << SLOT_CONTEXT_INDEX) | (1 << DEFAULT_CONTROL_ENDPOINT);
                 }
             }
             ctx.phys_addr() & !0xF
@@ -4196,11 +4177,7 @@ impl XhciDriver {
                 descriptor_prefix.len()
             );
         }
-        let max_packet = descriptor_prefix
-            .get(7)
-            .copied()
-            .unwrap_or(8)
-            .max(8u8);
+        let max_packet = descriptor_prefix.get(7).copied().unwrap_or(8).max(8u8);
 
         let mut refreshed_port = None;
         if let Ok(new_port_state) = self.reset_attached_port(controller, ident) {
@@ -4214,7 +4191,10 @@ impl XhciDriver {
             );
             refreshed_port = Some(new_port_state);
         } else {
-            log_debug!("xHCI {} unable to reset attached port after prefix read", ident);
+            log_debug!(
+                "xHCI {} unable to reset attached port after prefix read",
+                ident
+            );
         }
 
         if let Some(port_state) = refreshed_port {
@@ -4265,7 +4245,9 @@ impl XhciDriver {
         self.log_device_descriptor(ident, &descriptor_full);
 
         match self.retrieve_configuration_descriptor(controller, ident) {
-            Ok(configuration) => self.parse_configuration_descriptor(controller, ident, &configuration),
+            Ok(configuration) => {
+                self.parse_configuration_descriptor(controller, ident, &configuration)
+            }
             Err(err) => log_warn!(
                 "xHCI {} failed to retrieve configuration descriptor: {}",
                 ident,
@@ -4340,12 +4322,7 @@ impl XhciDriver {
             index: hid.interface_number as u16,
             length: 0,
         };
-        self.queue_control_transfer_no_data(
-            controller,
-            ident,
-            setup,
-            "SET_IDLE(HID)",
-        )
+        self.queue_control_transfer_no_data(controller, ident, setup, "SET_IDLE(HID)")
     }
 
     /// Decode USBSTS into a pipe-separated list of active flags.

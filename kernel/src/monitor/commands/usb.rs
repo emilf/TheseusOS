@@ -31,17 +31,26 @@ impl Monitor {
             "summary" => {
                 self.writeln(&format!("xHCI controllers ({})", snapshot.len()));
                 for (index, ctrl) in snapshot.iter().enumerate() {
-                    let state = if ctrl.controller_running { "RUN" } else { "HALT" };
-                    let slots = if ctrl.slots_enabled { "enabled" } else { "disabled" };
+                    let state = if ctrl.controller_running {
+                        "RUN"
+                    } else {
+                        "HALT"
+                    };
+                    let slots = if ctrl.slots_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    };
                     let attached = ctrl
                         .attached_port
                         .map(|port| format!("port{:02}", port))
                         .unwrap_or_else(|| "none".into());
-                    let speed = ctrl
-                        .attached_speed
-                        .as_deref()
-                        .unwrap_or("-");
-                    let hid = if ctrl.hid_keyboard.is_some() { "yes" } else { "no" };
+                    let speed = ctrl.attached_speed.as_deref().unwrap_or("-");
+                    let hid = if ctrl.hid_keyboard.is_some() {
+                        "yes"
+                    } else {
+                        "no"
+                    };
                     self.writeln(&format!(
                         "  [{:02}] {:<16} phys={:#014x} mmio={:#x} ports={} slots={} state={} slots={} attached={} ({}) hid={}",
                         index,
@@ -57,7 +66,9 @@ impl Monitor {
                         hid
                     ));
                 }
-                self.writeln("Use 'usb ports <index>' for per-port detail, 'usb hid' for HID endpoints.");
+                self.writeln(
+                    "Use 'usb ports <index>' for per-port detail, 'usb hid' for HID endpoints.",
+                );
             }
             "ports" => {
                 let target_index = args
@@ -111,10 +122,7 @@ impl Monitor {
                             .attached_port
                             .map(|port| format!("port{:02}", port))
                             .unwrap_or_else(|| "unknown".into());
-                        let speed = ctrl
-                            .attached_speed
-                            .as_deref()
-                            .unwrap_or("-");
+                        let speed = ctrl.attached_speed.as_deref().unwrap_or("-");
                         self.writeln(&format!(
                             "  [{:02}] {} {} speed={} interface={} endpoint={:#04x} max_packet={} interval={}",
                             index,
@@ -136,7 +144,9 @@ impl Monitor {
                 self.writeln("usb diagnostics command:");
                 self.writeln("  usb                 - summary of xHCI controllers");
                 self.writeln("  usb ports [index]   - detailed port state (default index 0)");
-                self.writeln("  usb hid             - list controllers exposing HID boot keyboards");
+                self.writeln(
+                    "  usb hid             - list controllers exposing HID boot keyboards",
+                );
             }
             other => {
                 self.writeln(&format!("Unknown usb subcommand '{}'", other));
