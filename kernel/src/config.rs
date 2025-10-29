@@ -9,7 +9,7 @@ pub const VERBOSE_KERNEL_OUTPUT: bool = true;
 
 /// When `true` the kernel will idle (keep running) after initialization.
 /// When `false` the kernel will exit QEMU immediately (useful for CI).
-pub const KERNEL_SHOULD_IDLE: bool = false;
+pub const KERNEL_SHOULD_IDLE: bool = true;
 
 /// When `true`, dump the UEFI hardware inventory entries during driver init.
 pub const PRINT_HARDWARE_INVENTORY: bool = true;

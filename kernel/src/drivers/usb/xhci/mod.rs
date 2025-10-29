@@ -25,7 +25,7 @@ use crate::memory::{
     current_pml4_phys, map_range_with_policy, phys_to_virt_pa, PageTable, PTE_GLOBAL, PTE_NO_EXEC,
     PTE_PCD, PTE_PRESENT, PTE_PWT, PTE_WRITABLE,
 };
-use crate::{log_debug, log_info, log_warn};
+use crate::{log_debug, log_info, log_trace, log_warn};
 
 /// Base virtual address used when mapping xHCI MMIO windows into the kernel.
 const XHCI_MMIO_WINDOW_BASE: u64 = 0xFFFF_FFB0_0000_0000;
@@ -152,6 +152,12 @@ struct XhciController {
     hid_interrupt_ring: Option<TransferRing>,
     /// DMA buffer that receives the raw HID reports from the interrupt pipe.
     hid_report_buffer: Option<DmaBuffer>,
+    /// Running count of HID interrupt reports successfully captured.
+    hid_reports_seen: u64,
+    /// Cached copy of the last HID report observed (boot protocol -> 8 bytes).
+    hid_last_report: [u8; 8],
+    /// Length of the cached report (≤ 8 bytes for boot keyboards).
+    hid_last_report_len: usize,
 }
 
 /// Minimal description of the interrupt endpoint exposed by a HID boot keyboard.
@@ -204,6 +210,7 @@ pub struct HidEndpointSummary {
     pub max_packet_size: u16,
     pub interval: u8,
     pub endpoint_id: u8,
+    pub reports_seen: u64,
 }
 
 /// Software producer view of the command ring shared with the controller.
@@ -1119,6 +1126,9 @@ impl XhciDriver {
                 hid_boot_keyboard: None,
                 hid_interrupt_ring: None,
                 hid_report_buffer: None,
+                hid_reports_seen: 0,
+                hid_last_report: [0; 8],
+                hid_last_report_len: 0,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -1477,7 +1487,7 @@ impl XhciDriver {
             core::ptr::write_volatile(erdp_ptr, event_ring.phys_addr() & !0xF);
 
             let iman = core::ptr::read_volatile(iman_ptr);
-            core::ptr::write_volatile(iman_ptr, (iman & !IMAN_IP) | IMAN_IE);
+            core::ptr::write_volatile(iman_ptr, (iman | IMAN_IP) | IMAN_IE);
         }
 
         event_ring.index = 0;
@@ -1996,7 +2006,7 @@ impl XhciDriver {
             event_ring.advance();
 
             let iman = core::ptr::read_volatile(iman_ptr);
-            core::ptr::write_volatile(iman_ptr, iman & !IMAN_IP);
+            core::ptr::write_volatile(iman_ptr, iman | IMAN_IP);
             let erdp = (event_ring.phys_addr() + (event_ring.index * TRB_SIZE) as u64) & !0xF;
             // Per xHCI §4.9.4 software must set the Event Handler Busy (EHB) bit
             // whenever it advances ERDP so the controller can post new events.
@@ -2019,6 +2029,63 @@ impl XhciDriver {
         })
     }
 
+    /// Attempt to consume the next event TRB without blocking.
+    ///
+    /// Returns `Ok(Some(event))` when the ring held an entry, `Ok(None)` if the ring is idle,
+    /// or an error when the controller has not been initialised fully.
+    fn try_fetch_event_trb(
+        &self,
+        controller: &mut XhciController,
+    ) -> Result<Option<RawEventTrb>, &'static str> {
+        let Some(event_ring) = controller.event_ring.as_mut() else {
+            return Err("event ring missing");
+        };
+
+        unsafe {
+            let runtime_base = (controller.virt_base + controller.runtime_offset as u64) as *mut u8;
+            let interrupter0 = runtime_base.add(INTERRUPTER_STRIDE as usize);
+            let iman_ptr = interrupter0.add(0x00) as *mut u32;
+            let erdp_ptr = interrupter0.add(0x18) as *mut u64;
+
+            // Quick exit when the controller is not signalling an interrupt pending state.
+            let iman = core::ptr::read_volatile(iman_ptr);
+            if iman & IMAN_IP == 0 {
+                return Ok(None);
+            }
+
+            let expected_cycle = event_ring.cycle as u32;
+            let trb_ptr = event_ring.current_trb();
+            let control = core::ptr::read_volatile(trb_ptr.add(3));
+
+            if (control & TRB_CYCLE_BIT) != expected_cycle {
+                let iman = core::ptr::read_volatile(iman_ptr);
+                if iman & IMAN_IP != 0 {
+                    core::ptr::write_volatile(iman_ptr, iman | IMAN_IP);
+                }
+                return Ok(None);
+            }
+
+            let parameter_lo = core::ptr::read_volatile(trb_ptr);
+            let parameter_hi = core::ptr::read_volatile(trb_ptr.add(1));
+            let status = core::ptr::read_volatile(trb_ptr.add(2));
+            let parameter = ((parameter_hi as u64) << 32) | parameter_lo as u64;
+
+            event_ring.advance();
+
+            let iman = core::ptr::read_volatile(iman_ptr);
+            core::ptr::write_volatile(iman_ptr, iman | IMAN_IP);
+
+            let erdp = (event_ring.phys_addr() + (event_ring.index * TRB_SIZE) as u64) & !0xF;
+            core::ptr::write_volatile(erdp_ptr, erdp | (1 << 3));
+
+            Ok(Some(RawEventTrb {
+                parameter,
+                status,
+                control,
+            }))
+        }
+    }
+
     /// Handle a transfer event by caching EP0 completions for synchronous consumers.
     ///
     /// The default control pipe is driven synchronously during early bring-up, so
@@ -2029,7 +2096,7 @@ impl XhciDriver {
         controller: &mut XhciController,
         ident: &str,
         event: &RawEventTrb,
-    ) {
+    ) -> bool {
         let slot_id = event.slot_id();
         let endpoint_id = event.endpoint_id();
         let code = event.completion_code();
@@ -2050,7 +2117,7 @@ impl XhciDriver {
                 ident,
                 event.parameter
             );
-            return;
+            return false;
         };
 
         if slot_id != active_slot {
@@ -2060,26 +2127,212 @@ impl XhciDriver {
                 slot_id,
                 active_slot
             );
-            return;
+            return false;
         }
 
-        if endpoint_id != DEFAULT_CONTROL_ENDPOINT as u8 {
-            log_debug!(
-                "xHCI {} transfer event for endpoint {} ignored (awaiting EP0)",
-                ident,
-                endpoint_id
-            );
-            return;
+        if endpoint_id == DEFAULT_CONTROL_ENDPOINT as u8 {
+            if controller.pending_ep0_event.is_some() {
+                log_warn!(
+                    "xHCI {} overriding pending EP0 event; previous completion will be dropped",
+                    ident
+                );
+            }
+
+            controller.pending_ep0_event = Some(*event);
+            return false;
         }
 
-        if controller.pending_ep0_event.is_some() {
+        if let Some(hid) = controller.hid_boot_keyboard {
+            if endpoint_id == hid.endpoint_id {
+                return self.handle_hid_report_event(controller, ident, event, hid);
+            }
+        }
+
+        log_debug!(
+            "xHCI {} transfer event for endpoint {} ignored (unsupported)",
+            ident,
+            endpoint_id
+        );
+        false
+    }
+
+    /// Process a HID interrupt transfer completion, emit diagnostics, and re-arm the pipe.
+    ///
+    /// Returns `true` when the caller should break out of the current polling loop so the
+    /// CPU can drop back into `hlt` before the next completion arrives. This avoids spinning
+    /// through back-to-back events when QEMU immediately satisfies the rearmed TRB.
+    fn handle_hid_report_event(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+        event: &RawEventTrb,
+        hid: HidEndpoint,
+    ) -> bool {
+        let code = event.completion_code();
+        if code != TRB_COMPLETION_SUCCESS {
             log_warn!(
-                "xHCI {} overriding pending EP0 event; previous completion will be dropped",
+                "xHCI {} HID transfer completion code {} (slot={} residual={})",
+                ident,
+                code,
+                event.slot_id(),
+                event.residual_length()
+            );
+        }
+
+        let requested = core::cmp::min(
+            controller
+                .hid_report_buffer
+                .as_ref()
+                .map(|buffer| buffer.len())
+                .unwrap_or(0) as u32,
+            hid.max_packet_size as u32,
+        );
+
+        if requested == 0 {
+            log_warn!(
+                "xHCI {} HID report buffer unavailable (requested length zero); skipping rearm",
                 ident
             );
+            return false;
         }
 
-        controller.pending_ep0_event = Some(*event);
+        let buffer = match controller.hid_report_buffer.as_mut() {
+            Some(buffer) => buffer,
+            None => {
+                log_warn!(
+                    "xHCI {} HID report buffer missing during interrupt completion",
+                    ident
+                );
+                return false;
+            }
+        };
+
+        let actual_bytes = requested.saturating_sub(
+            core::cmp::min(event.residual_length(), requested),
+        ) as usize;
+        let slice = buffer.as_mut_slice();
+        let data = &slice[..core::cmp::min(actual_bytes, slice.len())];
+        let dump = if data.is_empty() {
+            "<empty>".to_string()
+        } else {
+            data.iter()
+                .map(|byte| format!("{:02x}", byte))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+
+        let copy_len = core::cmp::min(data.len(), controller.hid_last_report.len());
+        let changed = controller.hid_last_report_len != data.len()
+            || controller.hid_last_report[..copy_len] != data[..copy_len];
+        controller.hid_last_report.fill(0);
+        controller.hid_last_report[..copy_len].copy_from_slice(&data[..copy_len]);
+        controller.hid_last_report_len = data.len();
+
+        if changed {
+            let sequence = controller.hid_reports_seen;
+            controller.hid_reports_seen = controller.hid_reports_seen.saturating_add(1);
+            log_info!(
+                "xHCI {} HID report #{} ({} bytes): {}",
+                ident,
+                sequence,
+                data.len(),
+                dump
+            );
+        } else {
+            log_trace!(
+                "xHCI {} HID report unchanged ({} bytes)",
+                ident,
+                data.len()
+            );
+        }
+
+        // Reset the capture buffer to a known state before re-queuing.
+        for byte in slice.iter_mut().take(requested as usize) {
+            *byte = 0;
+        }
+
+        let ring = match controller.hid_interrupt_ring.as_mut() {
+            Some(ring) => ring,
+            None => {
+                log_warn!(
+                    "xHCI {} HID interrupt ring missing while attempting to re-arm endpoint",
+                    ident
+                );
+                return false;
+            }
+        };
+        let start_index = ring.enqueue_index;
+        ring.enqueue(
+            buffer.phys_addr(),
+            requested,
+            (TRB_TYPE_NORMAL << 10) | TRB_IOC | TRB_DIR_IN,
+        );
+        log_debug!(
+            "xHCI {} HID ring re-armed: start={} next={} cycle={}",
+            ident,
+            start_index,
+            ring.enqueue_index,
+            if ring.cycle { 1 } else { 0 }
+        );
+
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+        unsafe {
+            let doorbell =
+                (controller.virt_base + controller.doorbell_offset as u64) as *mut u32;
+            core::ptr::write_volatile(
+                doorbell.add(event.slot_id() as usize),
+                hid.endpoint_id as u32,
+            );
+        }
+
+        // Break out of the polling loop so the CPU can `hlt` before the controller posts the
+        // next completion. This keeps the runtime trace and polling cadence tamer under QEMU.
+        true
+    }
+
+    /// Drain pending runtime events for a controller without blocking.
+    fn poll_runtime_events_for_controller(&self, controller: &mut XhciController) {
+        let ident = controller.ident.clone();
+        loop {
+            let event = match self.try_fetch_event_trb(controller) {
+                Ok(Some(event)) => event,
+                Ok(None) => break,
+                Err(err) => {
+                    log_warn!("xHCI {} runtime poll failed: {}", ident, err);
+                    break;
+                }
+            };
+
+            match event.trb_type() {
+                TRB_TYPE_TRANSFER_EVENT => {
+                    if self.handle_transfer_event(controller, &ident, &event) {
+                        break;
+                    }
+                }
+                TRB_TYPE_COMMAND_COMPLETION => {
+                    controller.pending_commands = controller.pending_commands.saturating_sub(1);
+                    let slot_id = match event.slot_id() {
+                        0 => None,
+                        value => Some(value),
+                    };
+                    let completion = CommandCompletion {
+                        code: event.completion_code(),
+                        trb_type: event.trb_type(),
+                        parameter: event.parameter,
+                        status: event.status,
+                        control: event.control,
+                        slot_id,
+                    };
+                    controller.last_command_status = Some(completion);
+                }
+                other => log_debug!(
+                    "xHCI {} runtime event ignored: type={}",
+                    ident,
+                    other
+                ),
+            }
+        }
     }
 
     /// Consume the next entry from the event ring waiting for a command
@@ -2133,7 +2386,7 @@ impl XhciDriver {
             }
 
             if trb_type == TRB_TYPE_TRANSFER_EVENT {
-                self.handle_transfer_event(controller, ident, &event);
+                let _ = self.handle_transfer_event(controller, ident, &event);
                 continue;
             }
 
@@ -2161,7 +2414,7 @@ impl XhciDriver {
             let code = event.completion_code();
 
             if trb_type == TRB_TYPE_TRANSFER_EVENT {
-                self.handle_transfer_event(controller, ident, &event);
+                let _ = self.handle_transfer_event(controller, ident, &event);
                 continue;
             }
 
@@ -2671,6 +2924,67 @@ impl XhciDriver {
         self.finalize_ep0_transfer_data(controller, ident, length, label)
     }
 
+    /// Issue a control transfer without a data stage (setup + status only).
+    fn queue_control_transfer_no_data(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+        setup: UsbControlSetup,
+        label: &str,
+    ) -> Result<(), &'static str> {
+        let slot_id = controller
+            .active_slot
+            .ok_or("cannot submit control transfer without active slot")?;
+
+        {
+            let ring = controller
+                .control_transfer_ring
+                .as_mut()
+                .ok_or("control transfer ring missing")?;
+
+            let start_index = ring.enqueue_index;
+            self.enqueue_setup_stage(ring, setup, false);
+            let status_direction = if (setup.request_type & 0x80) != 0 {
+                TransferDir::Out
+            } else {
+                TransferDir::In
+            };
+            self.enqueue_status_stage(ring, status_direction, true);
+
+            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+            log_debug!(
+                "xHCI {} control(no-data) TRBs queued for {} starting at index {}",
+                ident,
+                label,
+                start_index
+            );
+        }
+
+        unsafe {
+            let doorbell_base =
+                (controller.virt_base + controller.doorbell_offset as u64) as *mut u32;
+            core::ptr::write_volatile(
+                doorbell_base.add(slot_id as usize),
+                DEFAULT_CONTROL_ENDPOINT as u32,
+            );
+        }
+
+        let event = self.wait_for_ep0_transfer_event(controller, ident)?;
+        if event.completion_code() != TRB_COMPLETION_SUCCESS {
+            log_warn!(
+                "xHCI {} {} completion code {}",
+                ident,
+                label,
+                event.completion_code()
+            );
+            return Err("control transfer (no data) failed");
+        }
+
+        log_info!("xHCI {} {} completed successfully", ident, label);
+        Ok(())
+    }
+
     fn retrieve_configuration_descriptor(
         &self,
         controller: &mut XhciController,
@@ -2929,6 +3243,7 @@ impl XhciDriver {
                 max_packet_size: hid.max_packet_size,
                 interval: hid.interval,
                 endpoint_id: hid.endpoint_id,
+                reports_seen: controller.hid_reports_seen,
             });
 
             snapshot.push(ControllerDiagnostics {
@@ -3474,6 +3789,9 @@ impl XhciDriver {
             buffer.as_mut_slice().fill(0);
             (buffer.phys_addr(), buffer.len())
         };
+        controller.hid_reports_seen = 0;
+        controller.hid_last_report.fill(0);
+        controller.hid_last_report_len = 0;
 
         {
             let ctx = controller
@@ -3533,6 +3851,15 @@ impl XhciDriver {
                 );
             });
 
+        if let Err(err) = self.send_hid_set_idle(controller, ident, hid) {
+            log_warn!(
+                "xHCI {} failed to send HID SET_IDLE: {}",
+                ident,
+                err
+            );
+        }
+
+        // TODO: teach the control path to negotiate HID boot protocol via SET_PROTOCOL when the OS needs 8-byte reports.
         let mut transfer_length = core::cmp::min(buffer_len, max_packet as usize) as u32;
         if transfer_length == 0 {
             transfer_length = max_packet as u32;
@@ -3546,7 +3873,7 @@ impl XhciDriver {
             ring.enqueue(
                 buffer_phys,
                 transfer_length,
-                (TRB_TYPE_NORMAL << 10) | TRB_IOC,
+                (TRB_TYPE_NORMAL << 10) | TRB_IOC | TRB_DIR_IN,
             );
             log_debug!(
                 "xHCI {} HID ring enqueue complete: start={} next={} cycle={}",
@@ -3841,6 +4168,28 @@ impl XhciDriver {
         Ok(())
     }
 
+    /// Issue the HID class `SET_IDLE` request so the keyboard only reports on state changes.
+    fn send_hid_set_idle(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+        hid: HidEndpoint,
+    ) -> Result<(), &'static str> {
+        let setup = UsbControlSetup {
+            request_type: 0x21, // Class | Interface | Host-to-device
+            request: 0x0A,      // SET_IDLE
+            value: 0,           // duration=0, report ID=0
+            index: hid.interface_number as u16,
+            length: 0,
+        };
+        self.queue_control_transfer_no_data(
+            controller,
+            ident,
+            setup,
+            "SET_IDLE(HID)",
+        )
+    }
+
     /// Decode USBSTS into a pipe-separated list of active flags.
     fn describe_status(&self, sts: u32) -> String {
         let mut parts = Vec::new();
@@ -3917,6 +4266,14 @@ impl XhciDriver {
             );
         }
     }
+
+    /// Non-blocking poll hook used during the idle loop to service runtime events.
+    fn poll_runtime_events(&self) {
+        let mut controllers = CONTROLLERS.lock();
+        for controller in controllers.iter_mut() {
+            self.poll_runtime_events_for_controller(controller);
+        }
+    }
 }
 
 impl Driver for XhciDriver {
@@ -3958,4 +4315,9 @@ impl Driver for XhciDriver {
 /// Public entry point for collecting xHCI diagnostic information.
 pub fn diagnostics_snapshot() -> Vec<ControllerDiagnostics> {
     XHCI_DRIVER.diagnostics_snapshot()
+}
+
+/// Poll all active xHCI controllers for pending events.
+pub fn poll_runtime_events() {
+    XHCI_DRIVER.poll_runtime_events();
 }

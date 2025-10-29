@@ -12,13 +12,18 @@ Milestone 3 focuses on bringing the xHCI host controller online with modern prac
 - **Ring lifecycle diagnostics**: Pulling the control transfer ring’s enqueue indices into the debug logs (rather than always dumping TRBs 0–2) makes it obvious which slots are reused across transfers and confirmed that the controller consumes the data stage before raising the status-stage completion.
 - **Configuration descriptor discovery**: The enumeration helper now reads the configuration descriptor header, refetches the full descriptor, walks the descriptor chain, and records/logs the HID boot keyboard interface plus its interrupt IN endpoint (`kernel/src/drivers/usb/xhci/mod.rs:2645`).
 - **Interrupt endpoint bring-up**: The driver now updates the input control context, provisions a dedicated transfer ring, and issues a 64-byte `Configure Endpoint` (with ICS set) so the HID boot keyboard’s interrupt-IN pipe is live. The ring is primed with an initial normal TRB and the slot doorbell is rung to start polling (`kernel/src/drivers/usb/xhci/mod.rs:3437`).
+- **HID interrupt reports**: Transfer events for the boot keyboard now copy the DMA buffer, emit a hex dump for debugging, recycle the capture space, enqueue the next normal TRB, and ring the doorbell so polling continues indefinitely (`kernel/src/drivers/usb/xhci/mod.rs:2105`).
+- **HID idle configuration**: A class-specific `SET_IDLE` request keeps the keyboard quiet until its report actually changes, eliminating the stream of zero-filled completions while the system is idle (`kernel/src/drivers/usb/xhci/mod.rs:2050`).
 
 ## Observations from QEMU (`./startQemu.sh headless 10`)
 - Controller capabilities report `scratchpads=0` on QEMU’s `qemu-xhci`, confirming the scratchpad path is dormant yet safe for hardware that requires it.
 - Port summaries show ports 5 and 6 connected at high-speed in `Polling`, aligning with the virtual keyboard and mouse topology.
 - With the corrected route string and TRB encodings the controller now posts transfer events for both descriptor TDs, `evaluate-context` returns completion code 1, `configure-endpoint` succeeds, and the logged device/configuration descriptors match QEMU’s virtual keyboard (device `usb=0x0200 vid=0x0627 pid=0x0001`, configuration exposes interface 0 as a HID boot keyboard with endpoint `0x81`).
+- The interrupt ring stays armed after each poll; QEMU only delivers HID reports when a key is pressed, so the current headless run shows the re-arm debug output without report dumps—handy confirmation that the recycling path is ready for real input.
+- The interrupt ring stays armed after each poll; QEMU only delivers HID reports when a key is pressed, so the current headless run shows the re-arm debug output without report dumps—handy confirmation that the recycling path is ready for real input.
+- Background polling now checks the IMAN interrupt-pending bit before touching runtime registers, so the QEMU trace is quiet unless hardware actually signals an event.
 
 ## Next Steps
-1. Capture and service transfer events from the HID interrupt ring, recycling TRBs so reports continue to flow and instrumenting the raw report data for debugging.
+1. Parse the HID boot reports into key press/release events and feed them into a kernel input channel so higher layers can consume keyboard activity.
 2. Wire the MSI helper into the controller once interrupt allocator plumbing lands; until then the legacy timer vector remains the only actively serviced interrupt.
 3. Start decoding port status change interrupts to automatically kick off enumeration when devices arrive.
