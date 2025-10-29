@@ -54,6 +54,7 @@ const TRB_TYPE_DATA_STAGE: u32 = 0x03;
 const TRB_TYPE_STATUS_STAGE: u32 = 0x04;
 const TRB_TYPE_LINK: u32 = 0x06;
 const TRB_TYPE_TRANSFER_EVENT: u32 = 0x20;
+const TRB_TYPE_NORMAL: u32 = 0x01;
 const TRB_TYPE_SET_TR_DEQUEUE_POINTER: u32 = 0x10;
 const TRB_TYPE_EVALUATE_CONTEXT: u32 = 0x0D;
 const TRB_TYPE_CONFIGURE_ENDPOINT: u32 = 0x0C;
@@ -73,7 +74,9 @@ const TRB_TYPE_ENABLE_SLOT: u32 = 0x09;
 #[allow(dead_code)]
 const TRB_TYPE_ADDRESS_DEVICE: u32 = 0x0B;
 const ENDPOINT_TYPE_CONTROL: u32 = 4;
+const ENDPOINT_TYPE_INTERRUPT_IN: u32 = 7;
 const DEFAULT_EP0_RING_TRBS: usize = 64;
+const HID_INTERRUPT_RING_TRBS: usize = 32;
 const DEVICE_DESCRIPTOR_LENGTH: usize = 18;
 const CONFIG_DESCRIPTOR_LENGTH: usize = 9;
 const DEVICE_CONTEXT_ALIGN: usize = 64;
@@ -145,6 +148,10 @@ struct XhciController {
     pending_ep0_event: Option<RawEventTrb>,
     /// Cached interrupt endpoint discovered in the HID boot interface (if any).
     hid_boot_keyboard: Option<HidEndpoint>,
+    /// Transfer ring dedicated to the HID interrupt endpoint (if armed).
+    hid_interrupt_ring: Option<TransferRing>,
+    /// DMA buffer that receives the raw HID reports from the interrupt pipe.
+    hid_report_buffer: Option<DmaBuffer>,
 }
 
 /// Minimal description of the interrupt endpoint exposed by a HID boot keyboard.
@@ -155,6 +162,8 @@ struct HidEndpoint {
     endpoint_address: u8,
     max_packet_size: u16,
     interval: u8,
+    /// xHCI endpoint identifier derived from the USB endpoint address.
+    endpoint_id: u8,
 }
 
 /// Human-readable snapshot of an xHCI controller used for diagnostics.
@@ -194,6 +203,7 @@ pub struct HidEndpointSummary {
     pub endpoint_address: u8,
     pub max_packet_size: u16,
     pub interval: u8,
+    pub endpoint_id: u8,
 }
 
 /// Software producer view of the command ring shared with the controller.
@@ -1107,6 +1117,8 @@ impl XhciDriver {
                 ep0_descriptor_buffer: None,
                 pending_ep0_event: None,
                 hid_boot_keyboard: None,
+                hid_interrupt_ring: None,
+                hid_report_buffer: None,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -1873,9 +1885,10 @@ impl XhciDriver {
             .ok_or("input context missing for configure-endpoint")?;
 
         let parameter = ctx.phys_addr() & !0xF;
+        let ics_flag = if controller.context_entry_size == 64 { 1 } else { 0 };
         let trb = RawCommandTrb {
             parameter,
-            status: 0,
+            status: ics_flag,
             control: (TRB_TYPE_CONFIGURE_ENDPOINT << 10) | ((slot_id as u32) << 24),
         };
 
@@ -2686,6 +2699,25 @@ impl XhciDriver {
         }
     }
 
+    /// Translate a USB endpoint address into the corresponding xHCI endpoint ID.
+    ///
+    /// The xHCI encoding stores endpoint number in bits 1..=4 and the direction
+    /// (0 = OUT, 1 = IN) in bit 0. Endpoint ID zero is reserved for the slot
+    /// context, so a non-zero result signals a valid mapping.
+    fn endpoint_id_from_address(&self, address: u8) -> Option<u8> {
+        let number = address & 0x0F;
+        let direction_in = (address & 0x80) != 0;
+        if number > 15 {
+            return None;
+        }
+        let id = (number << 1) | if direction_in { 1 } else { 0 };
+        if id == 0 {
+            None
+        } else {
+            Some(id)
+        }
+    }
+
     fn parse_configuration_descriptor(
         &self,
         controller: &mut XhciController,
@@ -2800,11 +2832,23 @@ impl XhciDriver {
                                     descriptor[offset + 5],
                                 ]);
                                 let interval = descriptor[offset + 6];
+                                let Some(endpoint_id) =
+                                    self.endpoint_id_from_address(endpoint_address)
+                                else {
+                                    log_warn!(
+                                        "xHCI {} could not derive endpoint ID from address {:#04x}",
+                                        ident,
+                                        endpoint_address
+                                    );
+                                    offset += length;
+                                    continue;
+                                };
                                 hid_endpoint = Some(HidEndpoint {
                                     interface_number,
                                     endpoint_address,
                                     max_packet_size: max_packet,
                                     interval,
+                                    endpoint_id,
                                 });
                                 log_info!(
                                     "xHCI {} HID keyboard endpoint discovered: addr={:#04x} max_packet={} bInterval={}",
@@ -2884,6 +2928,7 @@ impl XhciDriver {
                 endpoint_address: hid.endpoint_address,
                 max_packet_size: hid.max_packet_size,
                 interval: hid.interval,
+                endpoint_id: hid.endpoint_id,
             });
 
             snapshot.push(ControllerDiagnostics {
@@ -3283,6 +3328,255 @@ impl XhciDriver {
         }
     }
 
+    /// Seed an interrupt-IN endpoint context for the HID keyboard.
+    ///
+    /// The endpoint launches disabled (state 0) and advertises the transfer ring
+    /// dequeue pointer plus the interrupt polling interval derived from the HID
+    /// descriptor.
+    fn populate_interrupt_endpoint(
+        &self,
+        endpoint_words: &mut [u32],
+        dequeue_pointer: u64,
+        dequeue_cycle: bool,
+        max_packet: u16,
+        interval: u8,
+    ) {
+        endpoint_words.fill(0);
+
+        if !endpoint_words.is_empty() {
+            endpoint_words[0] = (interval as u32) << 16;
+        }
+        if endpoint_words.len() > 1 {
+            let error_recovery_count: u32 = 3;
+            endpoint_words[1] = (ENDPOINT_TYPE_INTERRUPT_IN << 3)
+                | (error_recovery_count << 1)
+                | ((max_packet as u32) << 16);
+        }
+        let dequeue_masked = dequeue_pointer & !0xFu64;
+        let dequeue_low = (dequeue_masked as u32) | if dequeue_cycle { 1 } else { 0 };
+        let dequeue_high = (dequeue_masked >> 32) as u32;
+        if endpoint_words.len() > 2 {
+            endpoint_words[2] = dequeue_low;
+        }
+        if endpoint_words.len() > 3 {
+            endpoint_words[3] = dequeue_high;
+        }
+        if endpoint_words.len() > 4 {
+            let average_trb_length = core::cmp::max(max_packet as u32, 8);
+            let max_esit_payload = max_packet as u32;
+            endpoint_words[4] = (max_esit_payload << 16) | average_trb_length;
+        }
+        if endpoint_words.len() > 5 {
+            endpoint_words[5] = 0;
+        }
+        if endpoint_words.len() > 7 {
+            endpoint_words[7] = max_packet as u32;
+        }
+    }
+
+    /// Ensure a DMA buffer exists for HID interrupt reports with at least `required` bytes.
+    fn ensure_hid_report_buffer<'a>(
+        &self,
+        controller: &'a mut XhciController,
+        ident: &str,
+        required: usize,
+    ) -> Result<&'a mut DmaBuffer, &'static str> {
+        let need_allocation = match controller.hid_report_buffer.as_ref() {
+            Some(buffer) => buffer.len() < required,
+            None => true,
+        };
+
+        if need_allocation {
+            let size = core::cmp::max(required, 8);
+            let buffer = DmaBuffer::allocate(size, RING_ALIGNMENT)
+                .map_err(|_| "failed to allocate HID report buffer")?;
+            let phys = buffer.phys_addr();
+            let len = buffer.len();
+            controller.hid_report_buffer = Some(buffer);
+            log_info!(
+                "xHCI {} HID report buffer allocated: phys={:#012x} bytes={}",
+                ident,
+                phys,
+                len
+            );
+        }
+
+        controller
+            .hid_report_buffer
+            .as_mut()
+            .ok_or("HID report buffer missing after allocation attempt")
+    }
+
+    /// Configure and arm the HID keyboard's interrupt-IN endpoint.
+    ///
+    /// This allocates a dedicated transfer ring, programs the endpoint context via
+    /// `Configure Endpoint`, queues an initial normal TRB, and rings the slot
+    /// doorbell so the controller can begin polling for input reports.
+    fn configure_hid_interrupt_endpoint(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+    ) -> Result<(), &'static str> {
+        let Some(hid) = controller.hid_boot_keyboard else {
+            log_info!(
+                "xHCI {} skipping HID endpoint configuration (no boot keyboard discovered)",
+                ident
+            );
+            return Ok(());
+        };
+
+        let endpoint_index = hid.endpoint_id as usize;
+        if endpoint_index == 0 || endpoint_index >= DEVICE_CONTEXT_ENTRIES {
+            log_warn!(
+                "xHCI {} HID endpoint index {} out of range",
+                ident,
+                endpoint_index
+            );
+            return Err("hid endpoint index invalid");
+        }
+
+        let slot_id = controller
+            .active_slot
+            .ok_or("HID endpoint requested without active slot")?;
+
+        self.sync_input_context_from_device(controller, ident)?;
+
+        if controller.hid_interrupt_ring.is_none() {
+            let size = HID_INTERRUPT_RING_TRBS * TRB_SIZE;
+            let buffer = DmaBuffer::allocate(size, RING_ALIGNMENT)
+                .map_err(|_| "failed to allocate HID interrupt ring")?;
+            let ring = TransferRing::new(buffer, HID_INTERRUPT_RING_TRBS);
+            let phys = ring.phys_addr();
+            let usable = ring.capacity();
+            let total = ring.total_trbs();
+            log_info!(
+                "xHCI {} HID interrupt ring allocated: phys={:#012x} usable_trbs={} total_trbs={}",
+                ident,
+                phys,
+                usable,
+                total
+            );
+            controller.hid_interrupt_ring = Some(ring);
+        }
+
+        let max_packet = hid.max_packet_size;
+        let interval = if hid.interval == 0 { 1 } else { hid.interval };
+        let required_bytes = core::cmp::max(max_packet as usize, 8);
+        let (dequeue_pointer, dequeue_cycle) = {
+            let ring = controller
+                .hid_interrupt_ring
+                .as_ref()
+                .ok_or("hid interrupt ring missing after allocation")?;
+            (ring.dequeue_pointer(), ring.cycle_state())
+        };
+        let (buffer_phys, buffer_len) = {
+            let buffer = self.ensure_hid_report_buffer(controller, ident, required_bytes)?;
+            buffer.as_mut_slice().fill(0);
+            (buffer.phys_addr(), buffer.len())
+        };
+
+        {
+            let ctx = controller
+                .input_context
+                .as_mut()
+                .ok_or("input context missing while configuring HID endpoint")?;
+            let entry_size = controller.context_entry_size;
+
+            {
+                let control_words = ctx.control_words_mut(entry_size);
+                control_words.fill(0);
+                if control_words.len() > 1 {
+                    control_words[1] = (1 << SLOT_CONTEXT_INDEX)
+                        | (1 << endpoint_index);
+                }
+            }
+
+            {
+                let slot_words = ctx.slot_words_mut(entry_size);
+                if slot_words.len() > 1 {
+                    slot_words[1] &= !(0x1F << 27);
+                    slot_words[1] |= ((endpoint_index as u32) & 0x1F) << 27;
+                }
+            }
+
+            if let Some(ep_words) =
+                ctx.endpoint_words_mut(entry_size, endpoint_index)
+            {
+                self.populate_interrupt_endpoint(
+                    ep_words,
+                    dequeue_pointer,
+                    dequeue_cycle,
+                    max_packet,
+                    interval,
+                );
+                log_debug!(
+                    "xHCI {} HID endpoint context seeded: id={} d0={:#010x} d1={:#010x} d2={:#010x} d3={:#010x}",
+                    ident,
+                    endpoint_index,
+                    ep_words.get(0).copied().unwrap_or(0),
+                    ep_words.get(1).copied().unwrap_or(0),
+                    ep_words.get(2).copied().unwrap_or(0),
+                    ep_words.get(3).copied().unwrap_or(0)
+                );
+            } else {
+                return Err("failed to map HID endpoint context");
+            }
+        }
+
+        self.configure_endpoint_command(controller, ident)?;
+        self.sync_input_context_from_device(controller, ident)
+            .unwrap_or_else(|err| {
+                log_debug!(
+                    "xHCI {} HID endpoint post-config sync skipped: {}",
+                    ident,
+                    err
+                );
+            });
+
+        let mut transfer_length = core::cmp::min(buffer_len, max_packet as usize) as u32;
+        if transfer_length == 0 {
+            transfer_length = max_packet as u32;
+        }
+        {
+            let ring = controller
+                .hid_interrupt_ring
+                .as_mut()
+                .ok_or("hid interrupt ring unavailable for queueing")?;
+            let start_index = ring.enqueue_index;
+            ring.enqueue(
+                buffer_phys,
+                transfer_length,
+                (TRB_TYPE_NORMAL << 10) | TRB_IOC,
+            );
+            log_debug!(
+                "xHCI {} HID ring enqueue complete: start={} next={} cycle={}",
+                ident,
+                start_index,
+                ring.enqueue_index,
+                if ring.cycle { 1 } else { 0 }
+            );
+        }
+
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+        unsafe {
+            let doorbell =
+                (controller.virt_base + controller.doorbell_offset as u64) as *mut u32;
+            core::ptr::write_volatile(doorbell.add(slot_id as usize), endpoint_index as u32);
+        }
+
+        log_info!(
+            "xHCI {} HID endpoint armed: slot={} endpoint={} buffer={:#012x} length={}",
+            ident,
+            slot_id,
+            endpoint_index,
+            buffer_phys,
+            transfer_length
+        );
+
+        Ok(())
+    }
+
     /// Issue an Enable Slot command and capture the returned slot identifier.
     fn enable_device_slot(
         &self,
@@ -3492,6 +3786,14 @@ impl XhciDriver {
                 ident,
                 err
             ),
+        }
+
+        if let Err(err) = self.configure_hid_interrupt_endpoint(controller, ident) {
+            log_warn!(
+                "xHCI {} failed to configure HID interrupt endpoint: {}",
+                ident,
+                err
+            );
         }
 
         Ok(())

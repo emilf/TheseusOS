@@ -11,6 +11,7 @@ Milestone 3 focuses on bringing the xHCI host controller online with modern prac
 - **EP0 control path**: Route-string handling now matches the xHCI expectation (root ports advertise a zero route string), command TRB type constants line up with the spec, and the transfer ring producer no longer rewinds without informing hardware. Together these fixes allow the BSR sequence, evaluate-context, and configure-endpoint commands to succeed, and the driver captures both the 8-byte prefix and the full 18-byte device descriptor under QEMU.
 - **Ring lifecycle diagnostics**: Pulling the control transfer ring’s enqueue indices into the debug logs (rather than always dumping TRBs 0–2) makes it obvious which slots are reused across transfers and confirmed that the controller consumes the data stage before raising the status-stage completion.
 - **Configuration descriptor discovery**: The enumeration helper now reads the configuration descriptor header, refetches the full descriptor, walks the descriptor chain, and records/logs the HID boot keyboard interface plus its interrupt IN endpoint (`kernel/src/drivers/usb/xhci/mod.rs:2645`).
+- **Interrupt endpoint bring-up**: The driver now updates the input control context, provisions a dedicated transfer ring, and issues a 64-byte `Configure Endpoint` (with ICS set) so the HID boot keyboard’s interrupt-IN pipe is live. The ring is primed with an initial normal TRB and the slot doorbell is rung to start polling (`kernel/src/drivers/usb/xhci/mod.rs:3437`).
 
 ## Observations from QEMU (`./startQemu.sh headless 10`)
 - Controller capabilities report `scratchpads=0` on QEMU’s `qemu-xhci`, confirming the scratchpad path is dormant yet safe for hardware that requires it.
@@ -18,6 +19,6 @@ Milestone 3 focuses on bringing the xHCI host controller online with modern prac
 - With the corrected route string and TRB encodings the controller now posts transfer events for both descriptor TDs, `evaluate-context` returns completion code 1, `configure-endpoint` succeeds, and the logged device/configuration descriptors match QEMU’s virtual keyboard (device `usb=0x0200 vid=0x0627 pid=0x0001`, configuration exposes interface 0 as a HID boot keyboard with endpoint `0x81`).
 
 ## Next Steps
-1. Materialise the HID interrupt endpoint context (and TR) so we can arm the doorbell and receive keyboard reports.
+1. Capture and service transfer events from the HID interrupt ring, recycling TRBs so reports continue to flow and instrumenting the raw report data for debugging.
 2. Wire the MSI helper into the controller once interrupt allocator plumbing lands; until then the legacy timer vector remains the only actively serviced interrupt.
 3. Start decoding port status change interrupts to automatically kick off enumeration when devices arrive.
