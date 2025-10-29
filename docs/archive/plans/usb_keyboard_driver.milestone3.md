@@ -15,6 +15,7 @@ Milestone 3 focuses on bringing the xHCI host controller online with modern prac
 - **HID interrupt reports**: Transfer events for the boot keyboard now copy the DMA buffer, emit a hex dump for debugging, recycle the capture space, enqueue the next normal TRB, and ring the doorbell so polling continues indefinitely (`kernel/src/drivers/usb/xhci/mod.rs:2105`).
 - **HID idle configuration**: A class-specific `SET_IDLE` request keeps the keyboard quiet until its report actually changes, eliminating the stream of zero-filled completions while the system is idle (`kernel/src/drivers/usb/xhci/mod.rs:2050`).
 - **Boot report parsing**: The driver now decodes the 8-byte HID boot protocol reports into modifier and usage changes, emitting press/release logs for human-readable keys while tracking state to avoid duplicate events. A tiny ring buffer holds the decoded events so other subsystems (or the monitor `kbd` command) can consume them (`kernel/src/drivers/usb/xhci/mod.rs:2208`, `kernel/src/monitor/mod.rs:439`).
+- **Keyboard input hub**: The driver now publishes decoded key transitions through `kernel::input::keyboard`, which owns the shared queue and listener registry. Consumers can either drain the buffer or subscribe for push-style delivery, decoupling the monitor command from the driver internals (`kernel/src/input/keyboard.rs`, `kernel/src/drivers/usb/xhci/mod.rs:2333`).
 
 ## Observations from QEMU (`./startQemu.sh headless 10`)
 - Controller capabilities report `scratchpads=0` on QEMU’s `qemu-xhci`, confirming the scratchpad path is dormant yet safe for hardware that requires it.
@@ -24,6 +25,6 @@ Milestone 3 focuses on bringing the xHCI host controller online with modern prac
 - Background polling now checks the IMAN interrupt-pending bit before touching runtime registers, so the QEMU trace is quiet unless hardware actually signals an event.
 
 ## Next Steps
-1. Parse the HID boot reports into key press/release events and feed them into a kernel input channel so higher layers can consume keyboard activity.
+1. Surface higher-level key translation (ASCII, control sequences) on top of the shared event hub so shells and UI layers can consume characters directly.
 2. Wire the MSI helper into the controller once interrupt allocator plumbing lands; until then the legacy timer vector remains the only actively serviced interrupt.
 3. Start decoding port status change interrupts to automatically kick off enumeration when devices arrive.

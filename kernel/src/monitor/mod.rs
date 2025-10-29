@@ -62,7 +62,7 @@ use crate::config;
 use crate::drivers::manager::driver_manager;
 use crate::drivers::serial;
 use crate::drivers::traits::DeviceClass;
-use crate::drivers::usb::{hidevent_pop, KeyTransition};
+use crate::input::keyboard::{pop_event as keyboard_pop_event, KeyTransition};
 
 use crate::log_debug;
 
@@ -430,14 +430,14 @@ impl Monitor {
         self.writeln("  help|?              - Show this help");
     }
 
-    /// Drain the xHCI driver’s HID event queue and print each transition.
+    /// Drain the shared keyboard input queue and print each transition.
     ///
-    /// This provides a simple observable for students to validate the keyboard stack without
-    /// building a full input subsystem first.
+    /// This remains a handy teaching aid: students can validate the keyboard stack before they
+    /// wire higher-level input routing.
     fn cmd_kbd(&mut self) {
         let mut count = 0;
         loop {
-            match hidevent_pop() {
+            match keyboard_pop_event() {
                 Some(event) => {
                     count += 1;
                     let state = match event.transition {

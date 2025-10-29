@@ -10,8 +10,6 @@
 
 use alloc::{format, string::String, vec::Vec};
 use alloc::string::ToString;
-use alloc::collections::VecDeque;
-use spin::Mutex as SpinMutex;
 use core::convert::TryFrom;
 use core::hint::spin_loop;
 use core::slice;
@@ -23,6 +21,7 @@ use crate::drivers::manager::driver_manager;
 use crate::drivers::pci;
 use crate::drivers::traits::{Device, DeviceClass, DeviceId, DeviceResource, Driver};
 use crate::memory::dma::DmaBuffer;
+use crate::input::keyboard::{self, KeyEvent, KeyTransition};
 use crate::memory::{
     current_pml4_phys, map_range_with_policy, phys_to_virt_pa, PageTable, PTE_GLOBAL, PTE_NO_EXEC,
     PTE_PCD, PTE_PRESENT, PTE_PWT, PTE_WRITABLE,
@@ -134,26 +133,6 @@ const HID_FUNCTION_NAMES: [&str; 12] = [
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
-/// FIFO queue that exposes high-level HID keyboard events to the rest of the kernel.
-static HID_EVENTS: SpinMutex<VecDeque<KeyEvent>> = SpinMutex::new(VecDeque::new());
-
-/// Maximum number of HID events retained before older entries are dropped.
-const HID_EVENT_QUEUE_CAPACITY: usize = 64;
-
-/// Indicates whether a key transitioned to the pressed or released state.
-#[derive(Clone, Debug, Copy, PartialEq, Eq)]
-pub enum KeyTransition {
-    Pressed,
-    Released,
-}
-
-/// Event surfaced to consumers whenever the boot keyboard report changes.
-#[derive(Clone, Debug)]
-pub struct KeyEvent {
-    pub transition: KeyTransition,
-    pub usage: u8,
-    pub label: &'static str,
-}
 
 #[allow(dead_code)]
 /// Aggregated state for a discovered controller.
@@ -2465,13 +2444,9 @@ impl XhciDriver {
         }
     }
 
-    /// Append a new event to the shared queue, trimming the oldest entry if necessary.
+    /// Forward the event to the shared keyboard input hub.
     fn push_key_event(event: KeyEvent) {
-        let mut queue = HID_EVENTS.lock();
-        if queue.len() >= HID_EVENT_QUEUE_CAPACITY {
-            queue.pop_front();
-        }
-        queue.push_back(event);
+        keyboard::publish_event(event);
     }
 
     /// Drain pending runtime events for a controller without blocking.
@@ -4503,9 +4478,4 @@ pub fn diagnostics_snapshot() -> Vec<ControllerDiagnostics> {
 /// Poll all active xHCI controllers for pending events.
 pub fn poll_runtime_events() {
     XHCI_DRIVER.poll_runtime_events();
-}
-
-/// Retrieve the next buffered HID keyboard event, if any.
-pub fn hidevent_pop() -> Option<KeyEvent> {
-    HID_EVENTS.lock().pop_front()
 }
