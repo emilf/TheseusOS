@@ -35,6 +35,7 @@ const XHCI_MMIO_WINDOW_BASE: u64 = 0xFFFF_FFB0_0000_0000;
 const XHCI_MIN_MMIO: usize = 0x2000;
 const USBCMD_RUN_STOP: u32 = 1 << 0;
 const USBCMD_HCRST: u32 = 1 << 1;
+const USBCMD_INTERRUPT_ENABLE: u32 = 1 << 2;
 const USBSTS_HCHALTED: u32 = 1 << 0;
 const USBSTS_HOST_CONTROLLER_ERROR: u32 = 1 << 2;
 const USBSTS_TRANSFER_EVENT: u32 = 1 << 3;
@@ -2067,9 +2068,6 @@ impl XhciDriver {
         controller: &mut XhciController,
         ident: &str,
     ) -> Result<(), &'static str> {
-        if controller.controller_running {
-            return Ok(());
-        }
         if controller.command_ring.is_none()
             || controller.event_ring.is_none()
             || controller.dcbaa.is_none()
@@ -2083,27 +2081,42 @@ impl XhciDriver {
             let sts_ptr = op_base.add(0x04) as *mut u32;
 
             let mut cmd = core::ptr::read_volatile(cmd_ptr);
-            if cmd & USBCMD_RUN_STOP == 0 {
+            let mut updated = false;
+
+            if cmd & USBCMD_INTERRUPT_ENABLE == 0 {
+                cmd |= USBCMD_INTERRUPT_ENABLE;
+                updated = true;
+            }
+
+            if !controller.controller_running && (cmd & USBCMD_RUN_STOP) == 0 {
                 cmd |= USBCMD_RUN_STOP;
+                updated = true;
+            }
+
+            if updated {
                 core::ptr::write_volatile(cmd_ptr, cmd);
             }
 
-            if !self.poll_with_timeout(
-                || core::ptr::read_volatile(sts_ptr) & USBSTS_HCHALTED == 0,
-                RUN_STOP_TIMEOUT,
-            ) {
-                return Err("controller failed to leave halt state");
-            }
+            if !controller.controller_running {
+                if !self.poll_with_timeout(
+                    || core::ptr::read_volatile(sts_ptr) & USBSTS_HCHALTED == 0,
+                    RUN_STOP_TIMEOUT,
+                ) {
+                    return Err("controller failed to leave halt state");
+                }
 
-            let status = core::ptr::read_volatile(sts_ptr);
-            let ready = (status & USBSTS_CONTROLLER_NOT_READY) == 0;
-            if !ready {
-                log_warn!("xHCI {} controller not ready after run", ident);
+                let status = core::ptr::read_volatile(sts_ptr);
+                let ready = (status & USBSTS_CONTROLLER_NOT_READY) == 0;
+                if !ready {
+                    log_warn!("xHCI {} controller not ready after run", ident);
+                }
             }
         }
 
-        controller.controller_running = true;
-        log_info!("xHCI {} controller running", ident);
+        if !controller.controller_running {
+            controller.controller_running = true;
+            log_info!("xHCI {} controller running", ident);
+        }
         Ok(())
     }
 
