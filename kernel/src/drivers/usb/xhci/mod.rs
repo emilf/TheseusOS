@@ -22,7 +22,7 @@ use crate::drivers::manager::driver_manager;
 use crate::drivers::pci;
 use crate::drivers::traits::{Device, DeviceClass, DeviceId, DeviceResource, Driver};
 use crate::input::keyboard::{self, KeyEvent, KeyTransition};
-use crate::interrupts::XHCI_MSI_VECTOR;
+use crate::interrupts::{get_apic_base, read_apic_register, XHCI_MSI_VECTOR};
 use crate::memory::dma::DmaBuffer;
 use crate::memory::{
     current_pml4_phys, map_range_with_policy, phys_to_virt_pa, PageTable, PTE_GLOBAL, PTE_NO_EXEC,
@@ -959,6 +959,15 @@ pub fn register_xhci_driver() {
 struct XhciDriver;
 
 impl XhciDriver {
+    /// Read the local APIC ID of the current processor so MSI/MSI-X targets the
+    /// correct destination.
+    fn local_apic_id() -> u8 {
+        unsafe {
+            let apic_base = get_apic_base();
+            (read_apic_register(apic_base, 0x20) >> 24) as u8
+        }
+    }
+
     /// Extract the PCI segment/bus/device/function tuple from a device entry.
     ///
     /// # Parameters
@@ -1407,7 +1416,12 @@ impl XhciDriver {
             return;
         };
 
-        log_info!("xHCI {} attempting MSI setup", ident);
+        let local_apic_id = Self::local_apic_id();
+        log_info!(
+            "xHCI {} attempting MSI setup (local APIC {:02x})",
+            ident,
+            local_apic_id
+        );
 
         if let Some(irq) = pci_info.interrupt_line() {
             log_debug!(
@@ -1465,7 +1479,12 @@ impl XhciDriver {
         }
 
         if pci_info.capabilities.msi {
-            match pci::enable_msi(pci_info, &platform.pci_config_regions, 0, XHCI_MSI_VECTOR) {
+            match pci::enable_msi(
+                pci_info,
+                &platform.pci_config_regions,
+                local_apic_id,
+                XHCI_MSI_VECTOR,
+            ) {
                 Ok(()) => {
                     controller.msi_enabled.store(true, Ordering::Release);
                     controller.msi_vector = Some(XHCI_MSI_VECTOR);
@@ -1593,6 +1612,8 @@ impl XhciDriver {
         }
 
         let entry_ptr = table_virt as *mut u8;
+        let local_apic_id = Self::local_apic_id();
+
         unsafe {
             let vector_control_ptr = entry_ptr.add(12) as *mut u32;
             let mut entry_control = core::ptr::read_volatile(vector_control_ptr);
@@ -1603,7 +1624,7 @@ impl XhciDriver {
 
             core::ptr::write_volatile(
                 entry_ptr as *mut u64,
-                MSI_MESSAGE_ADDR_BASE | ((0u64) << 12),
+                MSI_MESSAGE_ADDR_BASE | ((local_apic_id as u64) << 12),
             );
             core::ptr::write_volatile(entry_ptr.add(8) as *mut u32, XHCI_MSI_VECTOR as u32);
 
