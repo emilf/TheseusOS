@@ -17,6 +17,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 use crate::acpi;
+use crate::config;
 use crate::drivers::manager::driver_manager;
 use crate::drivers::pci;
 use crate::drivers::traits::{Device, DeviceClass, DeviceId, DeviceResource, Driver};
@@ -212,6 +213,7 @@ const HID_FUNCTION_NAMES: [&str; 12] = [
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
+static MSI_DEFERRED_RUNTIME_SERVICE: AtomicBool = AtomicBool::new(false);
 
 #[allow(dead_code)]
 /// Aggregated state for a discovered controller.
@@ -2414,6 +2416,12 @@ impl XhciDriver {
             let control = core::ptr::read_volatile(trb_ptr.add(3));
 
             if (control & TRB_CYCLE_BIT) != expected_cycle {
+                log_trace!(
+                    "xHCI {} event ring cycle mismatch: expected={} control={:#x}",
+                    controller.ident,
+                    expected_cycle,
+                    control
+                );
                 let iman = core::ptr::read_volatile(iman_ptr);
                 if iman & IMAN_IP != 0 {
                     core::ptr::write_volatile(iman_ptr, iman | IMAN_IP);
@@ -2433,6 +2441,14 @@ impl XhciDriver {
 
             let erdp = (event_ring.phys_addr() + (event_ring.index * TRB_SIZE) as u64) & !0xF;
             core::ptr::write_volatile(erdp_ptr, erdp | (1 << 3));
+
+            log_trace!(
+                "xHCI {} fetched event TRB: parameter={:#x} status={:#x} control={:#x}",
+                controller.ident,
+                parameter,
+                status,
+                control
+            );
 
             Ok(Some(RawEventTrb {
                 parameter,
@@ -4727,12 +4743,9 @@ impl XhciDriver {
     fn poll_runtime_events_locked(
         &self,
         controllers: &mut Vec<XhciController>,
-        force: bool,
+        _force: bool,
     ) {
         for controller in controllers.iter_mut() {
-            if !force && controller.msi_enabled.load(Ordering::Acquire) {
-                continue;
-            }
             self.poll_runtime_events_for_controller(controller);
         }
     }
@@ -4740,15 +4753,26 @@ impl XhciDriver {
     /// Non-blocking poll hook used during the idle loop to service runtime events.
     fn poll_runtime_events(&self, force: bool) {
         let mut controllers = CONTROLLERS.lock();
-        self.poll_runtime_events_locked(&mut controllers, force);
+        let mut should_force = force;
+        if config::USB_ENABLE_POLLING_FALLBACK && !should_force {
+            should_force = MSI_DEFERRED_RUNTIME_SERVICE.swap(false, Ordering::AcqRel);
+            if should_force {
+                log_trace!("xHCI runtime poll forced after deferred interrupt");
+            }
+        }
+        if config::USB_ENABLE_POLLING_FALLBACK || should_force {
+            self.poll_runtime_events_locked(&mut controllers, should_force);
+        }
     }
 
     /// Interrupt-safe poll hook that attempts to drain runtime events without blocking.
     fn poll_runtime_events_from_interrupt(&self) {
         if let Some(mut controllers) = CONTROLLERS.try_lock() {
+            log_trace!("xHCI interrupt servicing event ring immediately");
             self.poll_runtime_events_locked(&mut controllers, true);
         } else {
             log_trace!("xHCI interrupt handling deferred: controller list busy");
+            MSI_DEFERRED_RUNTIME_SERVICE.store(true, Ordering::Release);
         }
     }
 }

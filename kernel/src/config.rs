@@ -28,6 +28,11 @@ pub const RUN_POST_BOOT_SERIAL_REVERSE_ECHO: bool = false;
 /// When `false`, rely on per-table ACPI mappings and tighter PHYS_OFFSET coverage.
 pub const MAP_LEGACY_PHYS_OFFSET_1GIB: bool = true;
 
+/// When `true`, allow the USB stack to service xHCI controllers via the idle-loop
+/// fallback poll even after MSI/MSI-X delivery is configured. Disable to rely solely
+/// on interrupt-driven completions (reduces QEMU trace chatter).
+pub const USB_ENABLE_POLLING_FALLBACK: bool = false;
+
 // ============================================================================
 // Logging Configuration
 // ============================================================================
