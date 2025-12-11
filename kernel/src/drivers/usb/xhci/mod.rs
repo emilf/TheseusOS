@@ -62,6 +62,7 @@ const TRB_TYPE_NORMAL: u32 = 0x01;
 const TRB_TYPE_SET_TR_DEQUEUE_POINTER: u32 = 0x10;
 const TRB_TYPE_EVALUATE_CONTEXT: u32 = 0x0D;
 const TRB_TYPE_CONFIGURE_ENDPOINT: u32 = 0x0C;
+const TRB_TYPE_PORT_STATUS_CHANGE_EVENT: u32 = 0x22;
 const TRB_COMPLETION_CODE_MASK: u32 = 0xFF << 24;
 const TRB_TYPE_MASK: u32 = 0x3F << 10;
 const TRB_TYPE_COMMAND_COMPLETION: u32 = 0x21;
@@ -271,6 +272,9 @@ struct XhciController {
     msi_pending_logged: bool,
     /// Debug latch used to report when IMAN.IE is unexpectedly cleared.
     msi_disarmed_logged: bool,
+    /// When set, we have queued an MSI/MSI-X self-test NOOP and are waiting for its completion
+    /// to be observed via the interrupt-driven event ring path.
+    msix_self_test_pending: bool,
 }
 
 /// Minimal description of the interrupt endpoint exposed by a HID boot keyboard.
@@ -1296,6 +1300,7 @@ impl XhciDriver {
                 hid_last_report_len: 0,
                 msi_pending_logged: false,
                 msi_disarmed_logged: false,
+                msix_self_test_pending: false,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -1506,6 +1511,16 @@ impl XhciDriver {
                         function,
                         XHCI_MSI_VECTOR
                     );
+                    // Re-assert IMAN.IE after MSI is enabled so QEMU (and real
+                    // hardware) sees the interrupter mapping as active.
+                    unsafe {
+                        let runtime_base =
+                            (controller.virt_base + controller.runtime_offset as u64) as *mut u8;
+                        let interrupter0 = runtime_base.add(INTERRUPTER_STRIDE as usize);
+                        let iman_ptr = interrupter0.add(0x00) as *mut u32;
+                        let iman = core::ptr::read_volatile(iman_ptr);
+                        core::ptr::write_volatile(iman_ptr, (iman | IMAN_IP) | IMAN_IE);
+                    }
                     return;
                 }
                 Err(err) => {
@@ -1535,6 +1550,16 @@ impl XhciDriver {
                         ident,
                         XHCI_MSI_VECTOR
                     );
+                    // Re-assert IMAN.IE after MSI-X is enabled so the PCI shim
+                    // can "use" the vector for interrupter 0.
+                    unsafe {
+                        let runtime_base =
+                            (controller.virt_base + controller.runtime_offset as u64) as *mut u8;
+                        let interrupter0 = runtime_base.add(INTERRUPTER_STRIDE as usize);
+                        let iman_ptr = interrupter0.add(0x00) as *mut u32;
+                        let iman = core::ptr::read_volatile(iman_ptr);
+                        core::ptr::write_volatile(iman_ptr, (iman | IMAN_IP) | IMAN_IE);
+                    }
                     return;
                 }
                 Err(err) => {
@@ -2229,6 +2254,43 @@ impl XhciDriver {
         Ok(())
     }
 
+    /// Enqueue a NOOP command TRB and ring the host doorbell, but do **not**
+    /// wait for the completion.
+    ///
+    /// This is used as a minimal interrupt-delivery self-test: if MSI/MSI-X is
+    /// configured correctly, the command-completion event will arrive on the
+    /// event ring and be observed by the interrupt handler.
+    fn submit_noop_async(&self, controller: &mut XhciController) -> Result<(), &'static str> {
+        let Some(ring) = controller.command_ring.as_mut() else {
+            return Err("command ring not allocated");
+        };
+
+        let trb = RawCommandTrb {
+            parameter: 0,
+            status: 0,
+            control: TRB_TYPE_NOOP_COMMAND << 10,
+        };
+
+        // Program the next command-ring entry and ring the host doorbell.
+        let trb_ptr = ring.current_trb();
+        unsafe {
+            core::ptr::write_volatile(trb_ptr, trb.parameter as u32);
+            core::ptr::write_volatile(trb_ptr.add(1), (trb.parameter >> 32) as u32);
+            core::ptr::write_volatile(trb_ptr.add(2), trb.status);
+            let control = ring.cycle_bit_u32() | trb.control;
+            core::ptr::write_volatile(trb_ptr.add(3), control);
+        }
+        ring.advance();
+
+        unsafe {
+            let doorbell_base = (controller.virt_base + controller.doorbell_offset as u64) as *mut u32;
+            core::ptr::write_volatile(doorbell_base.add(DOORBELL_HOST as usize), 0);
+        }
+
+        controller.pending_commands += 1;
+        Ok(())
+    }
+
     /// Update an endpoint's dequeue pointer via the `SET_TR_DEQUEUE_POINTER` command.
     ///
     /// This helper is primarily useful while debugging ring desynchronisation issues
@@ -2457,12 +2519,6 @@ impl XhciDriver {
             let interrupter0 = runtime_base.add(INTERRUPTER_STRIDE as usize);
             let iman_ptr = interrupter0.add(0x00) as *mut u32;
             let erdp_ptr = interrupter0.add(0x18) as *mut u64;
-
-            // Quick exit when the controller is not signalling an interrupt pending state.
-            let iman = core::ptr::read_volatile(iman_ptr);
-            if iman & IMAN_IP == 0 {
-                return Ok(None);
-            }
 
             let expected_cycle = event_ring.cycle as u32;
             let trb_ptr = event_ring.current_trb();
@@ -2876,6 +2932,13 @@ impl XhciDriver {
                         slot_id,
                     };
                     controller.last_command_status = Some(completion);
+                    if controller.msix_self_test_pending {
+                        log_info!(
+                            "xHCI {} MSI/MSI-X self-test: observed command completion via runtime event ring",
+                            ident
+                        );
+                        controller.msix_self_test_pending = false;
+                    }
                 }
                 other => log_debug!("xHCI {} runtime event ignored: type={}", ident, other),
             }
@@ -2937,6 +3000,11 @@ impl XhciDriver {
                 continue;
             }
 
+            if trb_type == TRB_TYPE_PORT_STATUS_CHANGE_EVENT {
+                // Port-status-change events are expected while we are still
+                // enumerating and resetting ports; ignore and keep waiting.
+                continue;
+            }
             log_warn!(
                 "xHCI {} unexpected event type {} while awaiting command completion",
                 ident,
@@ -3000,6 +3068,10 @@ impl XhciDriver {
                 continue;
             }
 
+            if trb_type == TRB_TYPE_PORT_STATUS_CHANGE_EVENT {
+                // Ignore root-hub churn while waiting for control-transfer completion.
+                continue;
+            }
             log_warn!(
                 "xHCI {} unexpected event type {} while awaiting EP0 transfer",
                 ident,
@@ -4830,7 +4902,15 @@ impl XhciDriver {
             }
         }
         if !config::USB_ENABLE_POLLING_FALLBACK && !should_force {
-            self.trace_pending_interrupts(&mut controllers);
+            // When fallback polling is disabled we must avoid touching runtime
+            // registers in the idle loop; QEMU's `trace:usb_*` will otherwise
+            // spam the host log with `usb_xhci_runtime_read off 0x0020 ...`.
+            //
+            // A dedicated diagnostics switch exists for cases where we *do*
+            // want to peek at IMAN (IE/IP) without fully draining the ring.
+            if config::USB_IDLE_IMAN_DIAGNOSTICS {
+                self.trace_pending_interrupts(&mut controllers);
+            }
             return;
         }
         self.poll_runtime_events_locked(&mut controllers, should_force);
@@ -4956,4 +5036,41 @@ pub fn poll_runtime_events_fallback() {
 /// Service an interrupt raised by an xHCI controller by draining its event rings without blocking.
 pub fn service_runtime_interrupt() {
     XHCI_DRIVER.poll_runtime_events_from_interrupt();
+}
+
+/// Attempt to kick the MSI/MSI-X delivery self-test for any controller that has
+/// MSI enabled but has not yet observed the completion via the interrupt path.
+///
+/// This is intended to be called after interrupts are enabled (IF=1), such as
+/// from the idle loop setup path, so the completion has a chance to actually
+/// invoke the handler.
+#[allow(dead_code)]
+pub fn kick_msix_self_test() {
+    if !config::USB_RUN_MSIX_SELF_TEST {
+        return;
+    }
+    let mut controllers = CONTROLLERS.lock();
+    for controller in controllers.iter_mut() {
+        if !controller.msi_enabled.load(Ordering::Acquire) {
+            continue;
+        }
+        if controller.msix_self_test_pending {
+            continue;
+        }
+        controller.msix_self_test_pending = true;
+        match XHCI_DRIVER.submit_noop_async(controller) {
+            Ok(()) => log_info!(
+                "xHCI {} MSI/MSI-X self-test (post-IF): NOOP submitted (awaiting interrupt completion)",
+                controller.ident
+            ),
+            Err(err) => {
+                controller.msix_self_test_pending = false;
+                log_warn!(
+                    "xHCI {} MSI/MSI-X self-test (post-IF): failed to submit NOOP: {}",
+                    controller.ident,
+                    err
+                );
+            }
+        }
+    }
 }

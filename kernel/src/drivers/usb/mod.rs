@@ -10,7 +10,7 @@ pub use handoff::ensure_legacy_usb_handoff;
 pub use xhci::register_xhci_driver;
 pub use xhci::{
     diagnostics_snapshot, poll_runtime_events, poll_runtime_events_fallback, ControllerDiagnostics,
-    HidEndpointSummary, PortDiagnostics, service_runtime_interrupt,
+    HidEndpointSummary, PortDiagnostics, kick_msix_self_test, service_runtime_interrupt,
 };
 
 /// Register all USB-class drivers with the driver manager.

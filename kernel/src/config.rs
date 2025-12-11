@@ -33,6 +33,24 @@ pub const MAP_LEGACY_PHYS_OFFSET_1GIB: bool = true;
 /// on interrupt-driven completions (reduces QEMU trace chatter).
 pub const USB_ENABLE_POLLING_FALLBACK: bool = false;
 
+/// When `true`, the idle loop will periodically peek at `IMAN` to detect
+/// "pending without delivery" cases even when fallback polling is disabled.
+///
+/// Leave this disabled when QEMU USB tracing (`trace:usb_*`) is enabled, as any
+/// runtime register read will spam the host log.
+pub const USB_IDLE_IMAN_DIAGNOSTICS: bool = false;
+
+/// When `true`, the xHCI driver will enqueue a NOOP command immediately after
+/// successfully enabling MSI/MSI-X and rely on the interrupt path to observe
+/// the completion. This provides a boot-time "MVP" signal that MSI delivery is
+/// wired correctly, without requiring user input.
+pub const USB_RUN_MSIX_SELF_TEST: bool = true;
+
+/// When `true`, execute a software `int 0x50` once after interrupts are enabled.
+/// This validates the IDT handler wiring for the xHCI MSI vector independently
+/// of PCI/MSI delivery.
+pub const USB_RUN_SW_INT_SELF_TEST: bool = false;
+
 // ============================================================================
 // Logging Configuration
 // ============================================================================

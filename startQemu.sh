@@ -40,7 +40,7 @@ if [[ "$HEADLESS" == "true" || "$HEADLESS" == "headless" ]]; then
 #  QEMU_MONITOR_ARGS=( -chardev pipe,id=mon0,path=/tmp/qemu-monitor -monitor chardev:mon0  -chardev pipe,id=serial0,path=/tmp/qemu-serial -serial chardev:serial0)
   QEMU_PAUSE_ARGS=()
   QEMU_DEBUG_ARGS=( -device isa-debugcon,chardev=debugcon )
-  QEMU_DEBUG_CHAR_ARGS=( -chardev stdio,id=debugcon -d int,guest_errors,cpu_reset,trace:usb_* )
+  QEMU_DEBUG_CHAR_ARGS=( -chardev stdio,id=debugcon -d int,guest_errors,cpu_reset) #,trace:usb_* )
 else
   echo "Starting QEMU in headed mode..."
   echo "  QEMU Debug Driver output: debug.log"
@@ -55,6 +55,13 @@ fi
 # For GDB debugging, use: QEMU_OPTS="-S -s" make run-test
 QEMU_OPTS=${QEMU_OPTS:-}
 
+# QEMU machine tuning toggles (useful for interrupt-delivery debugging)
+# - Set `QEMU_ACCEL=tcg` to avoid KVM/irqchip interactions while debugging MSI/MSI-X
+# - Set `QEMU_IRQCHIP=off|on|split` to select the irqchip mode (default: split)
+QEMU_ACCEL=${QEMU_ACCEL:-kvm:tcg}
+QEMU_IRQCHIP=${QEMU_IRQCHIP:-split}
+QEMU_ENABLE_IOMMU=${QEMU_ENABLE_IOMMU:-false}
+
 # If caller asked for CPU debug but no output file, direct to stdout
 if [[ "$QEMU_OPTS" == *"-d"* && "$QEMU_OPTS" != *"-D"* ]]; then
   # Route QEMU's debug output to stdio by using chardev stdio for serial
@@ -65,7 +72,7 @@ fi
 ## Build QEMU command as an array (robust quoting, no eval needed)
 QEMU_CMD=(
   qemu-system-x86_64
-  -machine q35,accel=kvm:tcg,kernel-irqchip=split
+  -machine q35,accel=${QEMU_ACCEL},kernel-irqchip=${QEMU_IRQCHIP}
   -cpu max
   -smp 4
   -m 2G
@@ -94,11 +101,16 @@ QEMU_CMD=(
   -device usb-mouse,bus=xhci0.0
   # NIC on its own root port
   -device virtio-net-pci,id=nic0,bus=rp2
-  # IOMMU
-  -device intel-iommu,intremap=on,caching-mode=on,aw-bits=48
   -nic none
   -no-reboot
 )
+
+# Optional IOMMU (VT-d). We keep it disabled by default until the kernel
+# implements DMA and interrupt-remapping configuration.
+if [[ "${QEMU_ENABLE_IOMMU}" == "1" || "${QEMU_ENABLE_IOMMU}" == "true" ]]; then
+  # Override with: QEMU_IOMMU_INTREMAP=on QEMU_ENABLE_IOMMU=true ./startQemu.sh headless 10
+  QEMU_CMD+=( -device intel-iommu,intremap=${QEMU_IOMMU_INTREMAP:-off},caching-mode=on,aw-bits=48 )
+fi
 
 # Append extra options from QEMU_OPTS (split on spaces safely)
 if [[ -n "${QEMU_OPTS}" ]]; then

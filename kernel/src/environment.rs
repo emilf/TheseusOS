@@ -383,6 +383,15 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
 
     log_info!("Timer configured and interrupts enabled");
 
+    if crate::config::USB_RUN_SW_INT_SELF_TEST {
+        // Validate that the IDT entry for the xHCI MSI vector is installed and
+        // callable. This does *not* validate PCI MSI delivery, only our own
+        // interrupt/handler plumbing.
+        unsafe {
+            core::arch::asm!("int 0x50");
+        }
+    }
+
     // Small delay to ensure all debug bytes are emitted
     for _ in 0..1_000_00 {
         core::hint::spin_loop();
@@ -402,6 +411,10 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
     if crate::config::KERNEL_SHOULD_IDLE {
         log_warn!("Entering idle loop - heart animation active");
         log_warn!("Kill QEMU to stop the kernel");
+
+        // Kick a one-shot MSI/MSI-X self-test after IF is enabled so we can
+        // verify interrupt delivery without any user input.
+        crate::drivers::usb::kick_msix_self_test();
 
         // Idle loop - the timer interrupt will handle the heart animation
         loop {

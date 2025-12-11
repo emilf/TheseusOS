@@ -64,8 +64,9 @@ impl Monitor {
                         yes_no(ctrl.interrupt_pending),
                         ctrl.iman_raw
                     );
+                    // Print as two lines to avoid truncation on narrow serial consoles.
                     self.writeln(&format!(
-                        "  [{:02}] {:<16} phys={:#014x} mmio={:#x} ports={} slots={} state={} slots={} attached={} ({}) hid={} irq={} {}",
+                        "  [{:02}] {} phys={:#014x} mmio={:#x} ports={} slots={} state={} slots={} attached={} ({}) hid={}",
                         index,
                         ctrl.ident,
                         ctrl.phys_base,
@@ -76,10 +77,9 @@ impl Monitor {
                         slots,
                         attached,
                         speed,
-                        hid,
-                        irq,
-                        iman
+                        hid
                     ));
+                    self.writeln(&format!("       irq={} {}", irq, iman));
                 }
                 self.writeln(
                     "Use 'usb ports <index>' for per-port detail, 'usb hid' for HID endpoints.",
