@@ -51,8 +51,21 @@ impl Monitor {
                     } else {
                         "no"
                     };
+                    let irq = if ctrl.msi_enabled {
+                        ctrl.msi_vector
+                            .map(|vec| format!("msi vec={:#04x}", vec))
+                            .unwrap_or_else(|| "msi vec=??".into())
+                    } else {
+                        "legacy".into()
+                    };
+                    let iman = format!(
+                        "iman ie={} ip={} raw={:#010x}",
+                        yes_no(ctrl.interrupt_enabled),
+                        yes_no(ctrl.interrupt_pending),
+                        ctrl.iman_raw
+                    );
                     self.writeln(&format!(
-                        "  [{:02}] {:<16} phys={:#014x} mmio={:#x} ports={} slots={} state={} slots={} attached={} ({}) hid={}",
+                        "  [{:02}] {:<16} phys={:#014x} mmio={:#x} ports={} slots={} state={} slots={} attached={} ({}) hid={} irq={} {}",
                         index,
                         ctrl.ident,
                         ctrl.phys_base,
@@ -63,7 +76,9 @@ impl Monitor {
                         slots,
                         attached,
                         speed,
-                        hid
+                        hid,
+                        irq,
+                        iman
                     ));
                 }
                 self.writeln(

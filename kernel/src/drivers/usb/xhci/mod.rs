@@ -267,6 +267,10 @@ struct XhciController {
     hid_last_report: [u8; 8],
     /// Length of the cached report (≤ 8 bytes for boot keyboards).
     hid_last_report_len: usize,
+    /// Debug latch used to avoid spamming logs when MSI appears stuck pending.
+    msi_pending_logged: bool,
+    /// Debug latch used to report when IMAN.IE is unexpectedly cleared.
+    msi_disarmed_logged: bool,
 }
 
 /// Minimal description of the interrupt endpoint exposed by a HID boot keyboard.
@@ -294,6 +298,11 @@ pub struct ControllerDiagnostics {
     pub active_slot: Option<u8>,
     pub attached_port: Option<u8>,
     pub attached_speed: Option<String>,
+    pub msi_enabled: bool,
+    pub msi_vector: Option<u8>,
+    pub interrupt_enabled: bool,
+    pub interrupt_pending: bool,
+    pub iman_raw: u32,
     pub hid_keyboard: Option<HidEndpointSummary>,
     pub ports: Vec<PortDiagnostics>,
 }
@@ -1285,6 +1294,8 @@ impl XhciDriver {
                 hid_reports_seen: 0,
                 hid_last_report: [0; 8],
                 hid_last_report_len: 0,
+                msi_pending_logged: false,
+                msi_disarmed_logged: false,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -3760,6 +3771,15 @@ impl XhciDriver {
                 })
                 .collect();
 
+            let (iman_raw, interrupt_enabled, interrupt_pending) = unsafe {
+                let runtime_base =
+                    (controller.virt_base + controller.runtime_offset as u64) as *mut u8;
+                let interrupter0 = runtime_base.add(INTERRUPTER_STRIDE as usize);
+                let iman_ptr = interrupter0.add(0x00) as *mut u32;
+                let iman = core::ptr::read_volatile(iman_ptr);
+                (iman, (iman & IMAN_IE) != 0, (iman & IMAN_IP) != 0)
+            };
+
             let hid_keyboard = controller.hid_boot_keyboard.map(|hid| HidEndpointSummary {
                 interface_number: hid.interface_number,
                 endpoint_address: hid.endpoint_address,
@@ -3782,6 +3802,11 @@ impl XhciDriver {
                 attached_speed: controller
                     .attached_speed
                     .map(|speed| speed.as_str().to_string()),
+                msi_enabled: controller.msi_enabled.load(Ordering::Acquire),
+                msi_vector: controller.msi_vector,
+                interrupt_enabled,
+                interrupt_pending,
+                iman_raw,
                 hid_keyboard,
                 ports: port_diags,
             });
@@ -4781,6 +4806,8 @@ impl XhciDriver {
     ) {
         for controller in controllers.iter_mut() {
             self.poll_runtime_events_for_controller(controller);
+            controller.msi_pending_logged = false;
+            controller.msi_disarmed_logged = false;
         }
     }
 
@@ -4794,9 +4821,11 @@ impl XhciDriver {
                 log_trace!("xHCI runtime poll forced after deferred interrupt");
             }
         }
-        if config::USB_ENABLE_POLLING_FALLBACK || should_force {
-            self.poll_runtime_events_locked(&mut controllers, should_force);
+        if !config::USB_ENABLE_POLLING_FALLBACK && !should_force {
+            self.trace_pending_interrupts(&mut controllers);
+            return;
         }
+        self.poll_runtime_events_locked(&mut controllers, should_force);
     }
 
     /// Interrupt-safe poll hook that attempts to drain runtime events without blocking.
@@ -4807,6 +4836,55 @@ impl XhciDriver {
         } else {
             log_trace!("xHCI interrupt handling deferred: controller list busy");
             MSI_DEFERRED_RUNTIME_SERVICE.store(true, Ordering::Release);
+        }
+    }
+
+    /// Debug helper invoked when the fallback poll is disabled so we can detect
+    /// controllers that appear to have pending completions without receiving an
+    /// interrupt. This keeps the log noise manageable by emitting a warning only
+    /// once per pending stretch.
+    fn trace_pending_interrupts(&self, controllers: &mut Vec<XhciController>) {
+        for controller in controllers.iter_mut() {
+            if !controller.msi_enabled.load(Ordering::Acquire) {
+                controller.msi_pending_logged = false;
+                controller.msi_disarmed_logged = false;
+                continue;
+            }
+
+            let iman = unsafe {
+                let runtime_base =
+                    (controller.virt_base + controller.runtime_offset as u64) as *mut u8;
+                let interrupter0 = runtime_base.add(INTERRUPTER_STRIDE as usize);
+                let iman_ptr = interrupter0.add(0x00) as *mut u32;
+                core::ptr::read_volatile(iman_ptr)
+            };
+
+            if (iman & IMAN_IE) == 0 {
+                if !controller.msi_disarmed_logged {
+                    log_warn!(
+                        "xHCI {} IMAN.IE cleared while MSI expected active (iman={:#x})",
+                        controller.ident,
+                        iman
+                    );
+                    controller.msi_disarmed_logged = true;
+                }
+                continue;
+            } else {
+                controller.msi_disarmed_logged = false;
+            }
+
+            if (iman & IMAN_IP) != 0 {
+                if !controller.msi_pending_logged {
+                    log_warn!(
+                        "xHCI {} IMAN.IP set without interrupt delivery (iman={:#x})",
+                        controller.ident,
+                        iman
+                    );
+                    controller.msi_pending_logged = true;
+                }
+            } else {
+                controller.msi_pending_logged = false;
+            }
         }
     }
 }
