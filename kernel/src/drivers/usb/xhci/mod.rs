@@ -1645,8 +1645,16 @@ impl XhciDriver {
 
         let mut control_word = msix.control();
         control_word |= 1 << 15; // Enable MSI-X
-        control_word &= !(1 << 14); // Unmask all functions
+        control_word &= !(1 << 14); // Clear function mask
         msix.write_control(control_word);
+        let final_control = msix.control();
+        log_debug!(
+            "xHCI {:02x}:{:02x}.{} MSI-X control final={:#06x}",
+            bus,
+            device,
+            function,
+            final_control
+        );
 
         controller.msi_enabled.store(true, Ordering::Release);
         controller.msi_vector = Some(XHCI_MSI_VECTOR);
