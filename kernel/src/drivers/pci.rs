@@ -937,6 +937,41 @@ pub fn enable_msi(
     Ok(())
 }
 
+/// Ensure the device can perform MMIO and bus-mastered transactions.
+///
+/// For PCI devices this means setting the COMMAND register bits for:
+/// - Memory Space Enable (bit 1)
+/// - Bus Master Enable (bit 2)
+///
+/// MSI/MSI-X messages are posted as memory writes, so some devices (and some
+/// emulators) will not deliver interrupts unless bus mastering is enabled.
+pub fn enable_mmio_busmaster(
+    device: &PciDeviceInfo,
+    regions: &[PciConfigRegion],
+) -> Result<(), &'static str> {
+    let mut config_base = None;
+    for region in regions {
+        if region.segment != device.segment {
+            continue;
+        }
+        if device.bus < region.bus_start || device.bus > region.bus_end {
+            continue;
+        }
+        config_base = function_base(region, device.bus, device.device, device.function);
+        if config_base.is_some() {
+            break;
+        }
+    }
+    let base = config_base.ok_or("PCI function configuration space not accessible")?;
+
+    let command = config_read_u16(base, 0x04);
+    let desired = command | 0x0006; // MEM + BUSMASTER
+    if desired != command {
+        config_write_u16(base, 0x04, desired);
+    }
+    Ok(())
+}
+
 /// Retrieve MSI-X capability details for the specified PCI function.
 pub fn msix_capability(
     device: &PciDeviceInfo,

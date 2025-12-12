@@ -51,6 +51,7 @@
 - Do not treat `IMAN.IP` as authoritative for “event ring has entries.” Under QEMU, `IMAN.IP` may be cleared after a successful MSI/MSI-X post, so the correct drain predicate is the event ring TRB cycle bit and consumer index. Relying on `IMAN.IP` can wedge interrupt-driven drains while the ring still contains events.
 - Ensure endpoint IDs are computed using the xHCI 1-based encoding (EP0 OUT=1, EP0 IN=2, EP1 IN=4). A common failure mode during HID bring-up is ringing the doorbell with an off-by-one endpoint target, which results in endless `ep_kick` traces but no transfer events.
 - Ensure “deferred MSI servicing” makes progress even when polling fallback is disabled: if the MSI handler cannot take the controller-list lock, it should latch a request that the idle loop later drains once the lock becomes available.
+- For the boot-time MSI/MSI-X NOOP self-test, perform a single forced drain pass after submission so the test cannot wedge forever (and so diagnostics remain stable even while interrupt delivery is still being tuned).
 
 ## Milestone 4: USB Device Enumeration Stack
 - Implement basic USB request/response infrastructure (setup packets, control transfers, TRBs) sufficient to enumerate attached devices over the default control endpoint.

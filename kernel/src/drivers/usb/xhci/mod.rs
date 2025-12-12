@@ -1432,6 +1432,10 @@ impl XhciDriver {
             return;
         };
 
+        if let Err(err) = pci::enable_mmio_busmaster(pci_info, &platform.pci_config_regions) {
+            log_warn!("xHCI {}: unable to enable PCI MEM/BUSMASTER: {}", ident, err);
+        }
+
         let local_apic_id = Self::local_apic_id();
         log_info!(
             "xHCI {} attempting MSI setup (local APIC {:02x})",
@@ -1898,11 +1902,12 @@ impl XhciDriver {
             core::ptr::write_volatile(imod_ptr, 0);
             core::ptr::write_volatile(erstsz_ptr, 1);
             core::ptr::write_volatile(erstba_ptr, event_ring.table_phys_addr());
-            core::ptr::write_volatile(erdp_ptr, event_ring.phys_addr() & !0xF);
+            // Clear Event Handler Busy (EHB) using the RW1C semantics (QEMU and
+            // most real controllers latch EHB across reset).
+            core::ptr::write_volatile(erdp_ptr, (event_ring.phys_addr() & !0xF) | (1 << 3));
 
-            let iman = core::ptr::read_volatile(iman_ptr);
-            // IMAN.IP is RW1C; do not set it when we only mean to enable IE.
-            core::ptr::write_volatile(iman_ptr, iman | IMAN_IE);
+            // Enable interrupts and clear any stale IP bit using RW1C semantics.
+            core::ptr::write_volatile(iman_ptr, IMAN_IE | IMAN_IP);
         }
 
         event_ring.index = 0;
@@ -5076,28 +5081,38 @@ pub fn kick_msix_self_test() {
     if !config::USB_RUN_MSIX_SELF_TEST {
         return;
     }
-    let mut controllers = CONTROLLERS.lock();
-    for controller in controllers.iter_mut() {
-        if !controller.msi_enabled.load(Ordering::Acquire) {
-            continue;
-        }
-        if controller.msix_self_test_pending {
-            continue;
-        }
-        controller.msix_self_test_pending = true;
-        match XHCI_DRIVER.submit_noop_async(controller) {
-            Ok(()) => log_info!(
-                "xHCI {} MSI/MSI-X self-test (post-IF): NOOP submitted (awaiting interrupt completion)",
-                controller.ident
-            ),
-            Err(err) => {
-                controller.msix_self_test_pending = false;
-                log_warn!(
-                    "xHCI {} MSI/MSI-X self-test (post-IF): failed to submit NOOP: {}",
-                    controller.ident,
-                    err
-                );
+    {
+        let mut controllers = CONTROLLERS.lock();
+        for controller in controllers.iter_mut() {
+            if !controller.msi_enabled.load(Ordering::Acquire) {
+                continue;
+            }
+            if controller.msix_self_test_pending {
+                continue;
+            }
+            controller.msix_self_test_pending = true;
+            match XHCI_DRIVER.submit_noop_async(controller) {
+                Ok(()) => log_info!(
+                    "xHCI {} MSI/MSI-X self-test (post-IF): NOOP submitted (awaiting interrupt completion)",
+                    controller.ident
+                ),
+                Err(err) => {
+                    controller.msix_self_test_pending = false;
+                    log_warn!(
+                        "xHCI {} MSI/MSI-X self-test (post-IF): failed to submit NOOP: {}",
+                        controller.ident,
+                        err
+                    );
+                }
             }
         }
     }
+
+    // If interrupts are misconfigured, the NOOP completion will sit in the
+    // event ring and `IMAN.IP` will stay asserted. To keep the system usable
+    // (and make debugging deterministic), do a single forced drain pass here.
+    //
+    // This does *not* re-enable background polling; it only ensures that the
+    // one-shot self-test cannot wedge forever.
+    XHCI_DRIVER.poll_runtime_events(true);
 }
