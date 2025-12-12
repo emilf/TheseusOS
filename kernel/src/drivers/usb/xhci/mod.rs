@@ -1519,7 +1519,8 @@ impl XhciDriver {
                         let interrupter0 = runtime_base.add(INTERRUPTER_STRIDE as usize);
                         let iman_ptr = interrupter0.add(0x00) as *mut u32;
                         let iman = core::ptr::read_volatile(iman_ptr);
-                        core::ptr::write_volatile(iman_ptr, (iman | IMAN_IP) | IMAN_IE);
+                        // IMAN.IP is RW1C; do not set it when we only mean to (re-)enable IE.
+                        core::ptr::write_volatile(iman_ptr, iman | IMAN_IE);
                     }
                     return;
                 }
@@ -1558,7 +1559,8 @@ impl XhciDriver {
                         let interrupter0 = runtime_base.add(INTERRUPTER_STRIDE as usize);
                         let iman_ptr = interrupter0.add(0x00) as *mut u32;
                         let iman = core::ptr::read_volatile(iman_ptr);
-                        core::ptr::write_volatile(iman_ptr, (iman | IMAN_IP) | IMAN_IE);
+                        // IMAN.IP is RW1C; do not set it when we only mean to (re-)enable IE.
+                        core::ptr::write_volatile(iman_ptr, iman | IMAN_IE);
                     }
                     return;
                 }
@@ -1899,7 +1901,8 @@ impl XhciDriver {
             core::ptr::write_volatile(erdp_ptr, event_ring.phys_addr() & !0xF);
 
             let iman = core::ptr::read_volatile(iman_ptr);
-            core::ptr::write_volatile(iman_ptr, (iman | IMAN_IP) | IMAN_IE);
+            // IMAN.IP is RW1C; do not set it when we only mean to enable IE.
+            core::ptr::write_volatile(iman_ptr, iman | IMAN_IE);
         }
 
         event_ring.index = 0;
@@ -5045,6 +5048,21 @@ pub fn poll_runtime_events_fallback() {
 /// Service an interrupt raised by an xHCI controller by draining its event rings without blocking.
 pub fn service_runtime_interrupt() {
     XHCI_DRIVER.poll_runtime_events_from_interrupt();
+}
+
+/// Service any deferred runtime work flagged by the interrupt handler.
+///
+/// When the MSI handler fires while another context holds the controller list
+/// lock (e.g. during monitor diagnostics), the handler avoids blocking and sets
+/// a latch. This helper lets thread context drain the event ring once the lock
+/// becomes available, without enabling full polling fallback.
+pub fn service_deferred_runtime() {
+    if !MSI_DEFERRED_RUNTIME_SERVICE.swap(false, Ordering::AcqRel) {
+        return;
+    }
+
+    // Force a drain under the regular lock now that we're in thread context.
+    XHCI_DRIVER.poll_runtime_events(true);
 }
 
 /// Attempt to kick the MSI/MSI-X delivery self-test for any controller that has
