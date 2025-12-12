@@ -3628,21 +3628,30 @@ impl XhciDriver {
 
     /// Translate a USB endpoint address into the corresponding xHCI endpoint ID.
     ///
-    /// The xHCI encoding stores endpoint number in bits 1..=4 and the direction
-    /// (0 = OUT, 1 = IN) in bit 0. Endpoint ID zero is reserved for the slot
-    /// context, so a non-zero result signals a valid mapping.
+    /// xHCI endpoint IDs are **1-based** (xHCI spec §6.2.3):
+    /// - EP0 OUT is endpoint ID 1
+    /// - EP0 IN  is endpoint ID 2
+    /// - EP1 OUT is endpoint ID 3
+    /// - EP1 IN  is endpoint ID 4
+    /// - ...
+    ///
+    /// USB endpoint addresses encode:
+    /// - endpoint number in bits 0..=3
+    /// - direction (IN) in bit 7
+    ///
+    /// This helper converts the USB encoding into the xHCI endpoint ID used by:
+    /// - transfer event TRBs (endpoint-id field)
+    /// - slot doorbell target values
     fn endpoint_id_from_address(&self, address: u8) -> Option<u8> {
         let number = address & 0x0F;
         let direction_in = (address & 0x80) != 0;
+        // Endpoint number is 4 bits, so this is defensive only.
         if number > 15 {
             return None;
         }
-        let id = (number << 1) | if direction_in { 1 } else { 0 };
-        if id == 0 {
-            None
-        } else {
-            Some(id)
-        }
+        let direction_bit = if direction_in { 1 } else { 0 };
+        // +1 because endpoint IDs start at 1 (slot context uses 0).
+        Some(number.saturating_mul(2).saturating_add(direction_bit).saturating_add(1))
     }
 
     fn parse_configuration_descriptor(

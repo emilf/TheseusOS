@@ -49,6 +49,7 @@
 - Fix the MSI-X control write so we enable the table (bit 15) while clearing the function mask (bit 14); with the corrected sequence QEMU now delivers completions over MSI-X and the idle fallback can remain disabled without starving the keyboard.
 - Add an interrupt-only MVP self-test: after MSI/MSI-X is enabled, enqueue a NOOP command and assert that the completion is observed by the interrupt-driven runtime event-ring path (no user input required). Keep idle-loop IMAN peeking disabled by default (`USB_IDLE_IMAN_DIAGNOSTICS=false`) to avoid QEMU `trace:usb_*` log storms.
 - Do not treat `IMAN.IP` as authoritative for “event ring has entries.” Under QEMU, `IMAN.IP` may be cleared after a successful MSI/MSI-X post, so the correct drain predicate is the event ring TRB cycle bit and consumer index. Relying on `IMAN.IP` can wedge interrupt-driven drains while the ring still contains events.
+- Ensure endpoint IDs are computed using the xHCI 1-based encoding (EP0 OUT=1, EP0 IN=2, EP1 IN=4). A common failure mode during HID bring-up is ringing the doorbell with an off-by-one endpoint target, which results in endless `ep_kick` traces but no transfer events.
 
 ## Milestone 4: USB Device Enumeration Stack
 - Implement basic USB request/response infrastructure (setup packets, control transfers, TRBs) sufficient to enumerate attached devices over the default control endpoint.
