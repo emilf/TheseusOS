@@ -258,6 +258,8 @@ struct XhciController {
     pending_ep0_event: Option<RawEventTrb>,
     /// Cached interrupt endpoint discovered in the HID boot interface (if any).
     hid_boot_keyboard: Option<HidEndpoint>,
+    /// Active configuration value selected via `SET_CONFIGURATION`, if any.
+    hid_configuration_value: Option<u8>,
     /// Transfer ring dedicated to the HID interrupt endpoint (if armed).
     hid_interrupt_ring: Option<TransferRing>,
     /// DMA buffer that receives the raw HID reports from the interrupt pipe.
@@ -410,6 +412,17 @@ impl UsbControlSetup {
             value: ((descriptor_type as u16) << 8) | descriptor_index as u16,
             index: 0,
             length,
+        }
+    }
+
+    /// Construct a SET_CONFIGURATION request selecting the provided configuration value.
+    fn set_configuration(configuration_value: u8) -> Self {
+        Self {
+            request_type: 0x00, // Host-to-device | Standard | Device
+            request: 0x09,      // SET_CONFIGURATION
+            value: configuration_value as u16,
+            index: 0,
+            length: 0,
         }
     }
 }
@@ -1293,6 +1306,7 @@ impl XhciDriver {
                 ep0_descriptor_buffer: None,
                 pending_ep0_event: None,
                 hid_boot_keyboard: None,
+                hid_configuration_value: None,
                 hid_interrupt_ring: None,
                 hid_report_buffer: None,
                 hid_reports_seen: 0,
@@ -2761,7 +2775,9 @@ impl XhciDriver {
         ring.enqueue(
             buffer.phys_addr(),
             requested,
-            (TRB_TYPE_NORMAL << 10) | TRB_IOC | TRB_DIR_IN,
+            // Direction is implied by the endpoint context; do not set the
+            // Setup/Status-stage DIR bit on a Normal TRB.
+            (TRB_TYPE_NORMAL << 10) | TRB_IOC,
         );
         log_debug!(
             "xHCI {} HID ring re-armed: start={} next={} cycle={}",
@@ -3606,6 +3622,25 @@ impl XhciDriver {
         Ok(())
     }
 
+    /// Select the specified configuration value on the attached USB device.
+    ///
+    /// Without this request, interfaces/endpoints beyond EP0 may legally STALL.
+    fn set_device_configuration(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+        configuration_value: u8,
+    ) -> Result<(), &'static str> {
+        self.queue_control_transfer_no_data(
+            controller,
+            ident,
+            UsbControlSetup::set_configuration(configuration_value),
+            "SET_CONFIGURATION",
+        )?;
+        controller.hid_configuration_value = Some(configuration_value);
+        Ok(())
+    }
+
     fn retrieve_configuration_descriptor(
         &self,
         controller: &mut XhciController,
@@ -3636,20 +3671,17 @@ impl XhciDriver {
 
     /// Translate a USB endpoint address into the corresponding xHCI endpoint ID.
     ///
-    /// xHCI endpoint IDs are **1-based** (xHCI spec §6.2.3):
-    /// - EP0 OUT is endpoint ID 1
-    /// - EP0 IN  is endpoint ID 2
-    /// - EP1 OUT is endpoint ID 3
-    /// - EP1 IN  is endpoint ID 4
-    /// - ...
-    ///
     /// USB endpoint addresses encode:
     /// - endpoint number in bits 0..=3
     /// - direction (IN) in bit 7
     ///
-    /// This helper converts the USB encoding into the xHCI endpoint ID used by:
-    /// - transfer event TRBs (endpoint-id field)
-    /// - slot doorbell target values
+    /// In practice (and in QEMU's xHCI implementation), endpoint IDs are encoded as:
+    /// - **EP0**: endpoint ID 1
+    /// - **EPn OUT**: endpoint ID = n * 2
+    /// - **EPn IN**:  endpoint ID = n * 2 + 1
+    ///
+    /// This helper converts the USB encoding into the endpoint ID used by transfer events and
+    /// the slot doorbell target.
     fn endpoint_id_from_address(&self, address: u8) -> Option<u8> {
         let number = address & 0x0F;
         let direction_in = (address & 0x80) != 0;
@@ -3657,9 +3689,11 @@ impl XhciDriver {
         if number > 15 {
             return None;
         }
+        if number == 0 {
+            return Some(1);
+        }
         let direction_bit = if direction_in { 1 } else { 0 };
-        // +1 because endpoint IDs start at 1 (slot context uses 0).
-        Some(number.saturating_mul(2).saturating_add(direction_bit).saturating_add(1))
+        Some(number.saturating_mul(2).saturating_add(direction_bit))
     }
 
     fn parse_configuration_descriptor(
@@ -4507,7 +4541,9 @@ impl XhciDriver {
             ring.enqueue(
                 buffer_phys,
                 transfer_length,
-                (TRB_TYPE_NORMAL << 10) | TRB_IOC | TRB_DIR_IN,
+                // Direction is implied by the endpoint context; do not set the
+                // Setup/Status-stage DIR bit on a Normal TRB.
+                (TRB_TYPE_NORMAL << 10) | TRB_IOC,
             );
             log_debug!(
                 "xHCI {} HID ring enqueue complete: start={} next={} cycle={}",
@@ -4739,7 +4775,19 @@ impl XhciDriver {
 
         match self.retrieve_configuration_descriptor(controller, ident) {
             Ok(configuration) => {
-                self.parse_configuration_descriptor(controller, ident, &configuration)
+                self.parse_configuration_descriptor(controller, ident, &configuration);
+
+                // Select the configuration before arming non-EP0 endpoints.
+                // HID interrupt endpoints may STALL until the device is configured.
+                let config_value = configuration.get(5).copied().unwrap_or(1);
+                if let Err(err) = self.set_device_configuration(controller, ident, config_value) {
+                    log_warn!(
+                        "xHCI {} failed to set device configuration {}: {}",
+                        ident,
+                        config_value,
+                        err
+                    );
+                }
             }
             Err(err) => log_warn!(
                 "xHCI {} failed to retrieve configuration descriptor: {}",
