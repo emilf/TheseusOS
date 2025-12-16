@@ -9,7 +9,7 @@
 //! full USB enumeration.
 
 use alloc::string::ToString;
-use alloc::{format, string::String, vec, vec::Vec};
+use alloc::{format, string::String, vec::Vec};
 use core::convert::TryFrom;
 use core::hint::spin_loop;
 use core::slice;
@@ -29,6 +29,9 @@ use crate::memory::{
     PTE_PCD, PTE_PRESENT, PTE_PWT, PTE_WRITABLE,
 };
 use crate::{log_debug, log_info, log_trace, log_warn};
+
+mod rings;
+use rings::{CommandRing, EventRing, TransferRing, RING_RECYCLER};
 
 /// Base virtual address used when mapping xHCI MMIO windows into the kernel.
 const XHCI_MMIO_WINDOW_BASE: u64 = 0xFFFF_FFB0_0000_0000;
@@ -84,47 +87,6 @@ const DEFAULT_EP0_RING_TRBS: usize = 64;
 const MSIX_ENTRY_SIZE: usize = 16;
 const MSI_MESSAGE_ADDR_BASE: u64 = 0xFEE0_0000;
 
-/// Per-size cache used to recycle DMA buffers backing xHCI rings.
-struct RingCache {
-    size: usize,
-    buffers: Vec<DmaBuffer>,
-}
-
-/// Thread-safe recycler that hands out zeroed DMA buffers for TRB rings.
-struct RingRecycler {
-    caches: Vec<RingCache>,
-}
-
-impl RingRecycler {
-    /// Create an empty recycler.
-    const fn new() -> Self {
-        Self { caches: Vec::new() }
-    }
-
-    /// Fetch a buffer with the exact size if one is cached.
-    fn acquire(&mut self, size: usize) -> Option<DmaBuffer> {
-        self.caches
-            .iter_mut()
-            .find(|entry| entry.size == size)
-            .and_then(|entry| entry.buffers.pop())
-    }
-
-    /// Return a buffer to the recycler for future reuse.
-    fn recycle(&mut self, buffer: DmaBuffer) {
-        let size = buffer.len();
-        if let Some(entry) = self.caches.iter_mut().find(|entry| entry.size == size) {
-            entry.buffers.push(buffer);
-        } else {
-            self.caches.push(RingCache {
-                size,
-                buffers: vec![buffer],
-            });
-        }
-    }
-}
-
-static RING_RECYCLER: Mutex<RingRecycler> = Mutex::new(RingRecycler::new());
-
 /// Request a DMA buffer sized for a TRB ring, reusing cached allocations when available.
 fn request_ring_buffer(size: usize, tag: &str) -> Result<DmaBuffer, &'static str> {
     {
@@ -148,19 +110,6 @@ fn request_ring_buffer(size: usize, tag: &str) -> Result<DmaBuffer, &'static str
     })
 }
 
-/// Return a DMA ring buffer to the recycler so future controllers can reuse it.
-fn recycle_ring_buffer(buffer: DmaBuffer, tag: &str) {
-    let phys = buffer.phys_addr();
-    let size = buffer.len();
-    let mut recycler = RING_RECYCLER.lock();
-    recycler.recycle(buffer);
-    log_debug!(
-        "xHCI ring recycler cached {} buffer: size={} bytes phys={:#012x}",
-        tag,
-        size,
-        phys
-    );
-}
 const HID_INTERRUPT_RING_TRBS: usize = 32;
 const DEVICE_DESCRIPTOR_LENGTH: usize = 18;
 const CONFIG_DESCRIPTOR_LENGTH: usize = 9;
@@ -337,45 +286,9 @@ pub struct HidEndpointSummary {
     pub reports_seen: u64,
 }
 
-/// Software producer view of the command ring shared with the controller.
-///
-/// The driver writes TRBs into this ring and rings the host doorbell so the
-/// controller can consume the entries. The controller toggles the cycle bit
-/// when it wraps, so we track both the current index and producer cycle.
-struct CommandRing {
-    buffer: Option<DmaBuffer>,
-    index: usize,
-    cycle: bool,
-}
-
-/// Consumer-side mirror of interrupter 0's event ring.
-///
-/// Hardware appends completion, transfer, and port-status events into this
-/// buffer. The driver advances the consumer pointer, clears interrupt-pending
-/// bits and updates ERDP so the controller can post additional events.
-struct EventRing {
-    buffer: Option<DmaBuffer>,
-    table: DmaBuffer,
-    index: usize,
-    cycle: bool,
-}
-
 /// DMA-backed input context used when programming slot and endpoint state.
 struct InputContext {
     buffer: DmaBuffer,
-}
-
-/// Transfer ring backing storage for a device endpoint.
-///
-/// Each endpoint has its own producer queue of TRBs. We maintain the enqueue
-/// pointer, track the producer cycle state, and keep the reserved link TRB up
-/// to date so the controller can treat the ring as circular.
-struct TransferRing {
-    buffer: DmaBuffer,
-    enqueue_index: usize,
-    cycle: bool,
-    trb_count: usize,
-    link_index: usize,
 }
 
 /// Encoded view of a USB control SETUP packet.
@@ -738,220 +651,6 @@ impl PortState {
     }
 }
 
-impl CommandRing {
-    /// Construct a new command ring wrapper around the provided DMA buffer.
-    fn new(buffer: DmaBuffer) -> Self {
-        Self {
-            buffer: Some(buffer),
-            index: 0,
-            cycle: true,
-        }
-    }
-
-    /// Physical base address advertised to hardware via CRCR.
-    fn phys_addr(&self) -> u64 {
-        self.buffer
-            .as_ref()
-            .expect("command ring buffer not initialised")
-            .phys_addr()
-    }
-
-    /// Pointer to the next TRB slot to be written by software.
-    fn current_trb(&self) -> *mut u32 {
-        let buffer = self
-            .buffer
-            .as_ref()
-            .expect("command ring buffer not initialised");
-        (buffer.virt_addr() + (self.index * TRB_SIZE) as u64) as *mut u32
-    }
-
-    /// Cycle bit value to encode in the TRB control dword.
-    fn cycle_bit_u32(&self) -> u32 {
-        if self.cycle {
-            TRB_CYCLE_BIT
-        } else {
-            0
-        }
-    }
-
-    /// Cycle bit value as u64 for CRCR programming.
-    fn cycle_bit_u64(&self) -> u64 {
-        if self.cycle {
-            TRB_CYCLE_BIT as u64
-        } else {
-            0
-        }
-    }
-
-    /// Advance to the next TRB, flipping the cycle bit when wrapping.
-    fn advance(&mut self) {
-        self.index += 1;
-        if self.index == COMMAND_RING_TRBS {
-            self.index = 0;
-            self.cycle = !self.cycle;
-        }
-    }
-}
-
-impl Drop for CommandRing {
-    fn drop(&mut self) {
-        if let Some(buffer) = self.buffer.take() {
-            recycle_ring_buffer(buffer, "command");
-        }
-    }
-}
-
-/// Software producer view of an endpoint transfer ring.
-///
-/// The ring is shared between the controller (consumer) and the driver
-/// (producer). We track the next enqueue slot and toggle the cycle bit whenever
-/// the producer wraps back to the beginning.
-impl TransferRing {
-    /// Construct a transfer ring over the provided buffer and seed the mandatory link TRB.
-    fn new(buffer: DmaBuffer, trb_count: usize) -> Self {
-        assert!(
-            trb_count >= 2,
-            "transfer ring requires space for at least one link TRB"
-        );
-        let mut ring = Self {
-            buffer,
-            enqueue_index: 0,
-            cycle: true,
-            trb_count,
-            link_index: trb_count - 1,
-        };
-        ring.initialise_link_trb();
-        ring
-    }
-
-    /// Physical base of the underlying DMA buffer.
-    fn phys_addr(&self) -> u64 {
-        self.buffer.phys_addr()
-    }
-
-    /// TR dequeue pointer advertised in endpoint contexts (cycle in context).
-    fn dequeue_pointer(&self) -> u64 {
-        self.buffer.phys_addr() & !0xF
-    }
-
-    /// Total number of TRBs the ring can hold.
-    fn capacity(&self) -> usize {
-        self.link_index
-    }
-
-    /// Total TRBs including the reserved link entry.
-    fn total_trbs(&self) -> usize {
-        self.trb_count
-    }
-
-    /// Current producer cycle state; used to seed the consumer's DCS bit.
-    fn cycle_state(&self) -> bool {
-        self.cycle
-    }
-
-    /// Append a TRB and advance the producer index, flipping the cycle on wrap.
-    #[allow(dead_code)]
-    fn enqueue(&mut self, parameter: u64, status: u32, control: u32) {
-        if self.enqueue_index >= self.link_index {
-            self.enqueue_index = 0;
-            self.cycle = !self.cycle;
-            self.initialise_link_trb();
-        }
-
-        let trb_ptr = self.trb_ptr(self.enqueue_index);
-        unsafe {
-            core::ptr::write_volatile(trb_ptr, parameter as u32);
-            core::ptr::write_volatile(trb_ptr.add(1), (parameter >> 32) as u32);
-            core::ptr::write_volatile(trb_ptr.add(2), status);
-            core::ptr::write_volatile(
-                trb_ptr.add(3),
-                control | if self.cycle { TRB_CYCLE_BIT } else { 0 },
-            );
-        }
-
-        self.enqueue_index += 1;
-
-        if self.enqueue_index >= self.link_index {
-            self.enqueue_index = 0;
-            self.cycle = !self.cycle;
-            self.initialise_link_trb();
-        }
-    }
-
-    /// Pointer to a TRB slot by index.
-    fn trb_ptr(&self, index: usize) -> *mut u32 {
-        (self.buffer.virt_addr() + (index * TRB_SIZE) as u64) as *mut u32
-    }
-
-    /// Program the reserved link TRB so hardware wraps back to the ring base.
-    fn initialise_link_trb(&mut self) {
-        let link_ptr = self.trb_ptr(self.link_index);
-        let target = self.buffer.phys_addr() & !0xF;
-        unsafe {
-            // Link TRB points back to the start of the ring and advertises the
-            // producer cycle so the controller can detect wrap-around.
-            core::ptr::write_volatile(link_ptr, target as u32);
-            core::ptr::write_volatile(link_ptr.add(1), (target >> 32) as u32);
-            core::ptr::write_volatile(link_ptr.add(2), 0);
-            let mut control = (TRB_TYPE_LINK << 10) | TRB_LINK_TOGGLE_CYCLE;
-            if self.cycle {
-                control |= TRB_CYCLE_BIT;
-            }
-            core::ptr::write_volatile(link_ptr.add(3), control);
-        }
-    }
-}
-
-impl EventRing {
-    /// Construct a new event ring wrapper with its associated ERST entry.
-    fn new(buffer: DmaBuffer, table: DmaBuffer) -> Self {
-        Self {
-            buffer: Some(buffer),
-            table,
-            index: 0,
-            cycle: true,
-        }
-    }
-
-    /// Physical base address of the event ring buffer.
-    fn phys_addr(&self) -> u64 {
-        self.buffer
-            .as_ref()
-            .expect("event ring buffer not initialised")
-            .phys_addr()
-    }
-
-    /// Physical address of the ERST entry.
-    fn table_phys_addr(&self) -> u64 {
-        self.table.phys_addr()
-    }
-
-    /// Pointer to the next TRB that software should inspect.
-    fn current_trb(&self) -> *mut u32 {
-        let buffer = self
-            .buffer
-            .as_ref()
-            .expect("event ring buffer not initialised");
-        (buffer.virt_addr() + (self.index * TRB_SIZE) as u64) as *mut u32
-    }
-
-    /// Advance the consumer pointer, toggling the expected cycle on wrap.
-    fn advance(&mut self) {
-        self.index += 1;
-        if self.index == EVENT_RING_TRBS {
-            self.index = 0;
-            self.cycle = !self.cycle;
-        }
-    }
-}
-
-impl Drop for EventRing {
-    fn drop(&mut self) {
-        if let Some(buffer) = self.buffer.take() {
-            recycle_ring_buffer(buffer, "event");
-        }
-    }
-}
 
 /// Round `value` up to the nearest multiple of `align`.
 ///
@@ -1898,7 +1597,7 @@ impl XhciDriver {
         };
 
         unsafe {
-            let entry_ptr = event_ring.table.virt_addr() as *mut u8;
+            let entry_ptr = event_ring.table_virt_addr() as *mut u8;
             core::ptr::write_volatile(entry_ptr as *mut u64, event_ring.phys_addr());
             core::ptr::write_volatile(entry_ptr.add(8) as *mut u32, EVENT_RING_TRBS as u32);
             core::ptr::write_volatile(entry_ptr.add(12) as *mut u32, 0);
