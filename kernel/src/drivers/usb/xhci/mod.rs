@@ -2451,42 +2451,53 @@ impl XhciDriver {
                 let parameter_hi = core::ptr::read_volatile(trb_ptr.add(1));
                 let parameter = ((parameter_hi as u64) << 32) | (parameter_lo as u64 & 0xFFFF_FFFF);
                 let status_snapshot = core::ptr::read_volatile(trb_ptr.add(2));
-                log_warn!(
-                    "xHCI {} event ring cycle mismatch (expected={} observed={:#x} index={} cycle={} iman={:#x} param={:#x} status={:#x})",
-                    ident,
-                    expected_cycle,
-                    control,
-                    event_ring.index,
-                    event_ring.cycle,
-                    iman_snapshot,
-                    parameter,
-                    status_snapshot
-                );
-                log_warn!(
-                    "xHCI {} USBSTS snapshot during mismatch: {:#010x}",
-                    ident,
-                    usbsts
-                );
-                let buffer = event_ring
-                    .buffer
-                    .as_ref()
-                    .expect("event ring buffer not initialised");
-                for sample in 0..8 {
-                    let sample_ptr =
-                        (buffer.virt_addr() + (sample * TRB_SIZE) as u64) as *const u32;
-                    let sample_parameter_lo = core::ptr::read_volatile(sample_ptr);
-                    let sample_parameter_hi = core::ptr::read_volatile(sample_ptr.add(1));
-                    let sample_status = core::ptr::read_volatile(sample_ptr.add(2));
-                    let sample_control = core::ptr::read_volatile(sample_ptr.add(3));
-                    let sample_parameter = ((sample_parameter_hi as u64) << 32)
-                        | (sample_parameter_lo as u64 & 0xFFFF_FFFF);
+                if config::USB_XHCI_EVENT_RING_DIAGNOSTICS {
                     log_warn!(
-                        "xHCI {} event ring entry {} snapshot: control={:#x} status={:#x} parameter={:#x}",
+                        "xHCI {} event ring cycle mismatch (expected={} observed={:#x} index={} cycle={} iman={:#x} param={:#x} status={:#x})",
                         ident,
-                        sample,
-                        sample_control,
-                        sample_status,
-                        sample_parameter
+                        expected_cycle,
+                        control,
+                        event_ring.index,
+                        event_ring.cycle,
+                        iman_snapshot,
+                        parameter,
+                        status_snapshot
+                    );
+                    log_warn!(
+                        "xHCI {} USBSTS snapshot during mismatch: {:#010x}",
+                        ident,
+                        usbsts
+                    );
+                    let buffer = event_ring
+                        .buffer
+                        .as_ref()
+                        .expect("event ring buffer not initialised");
+                    for sample in 0..8 {
+                        let sample_ptr =
+                            (buffer.virt_addr() + (sample * TRB_SIZE) as u64) as *const u32;
+                        let sample_parameter_lo = core::ptr::read_volatile(sample_ptr);
+                        let sample_parameter_hi = core::ptr::read_volatile(sample_ptr.add(1));
+                        let sample_status = core::ptr::read_volatile(sample_ptr.add(2));
+                        let sample_control = core::ptr::read_volatile(sample_ptr.add(3));
+                        let sample_parameter = ((sample_parameter_hi as u64) << 32)
+                            | (sample_parameter_lo as u64 & 0xFFFF_FFFF);
+                        log_warn!(
+                            "xHCI {} event ring entry {} snapshot: control={:#x} status={:#x} parameter={:#x}",
+                            ident,
+                            sample,
+                            sample_control,
+                            sample_status,
+                            sample_parameter
+                        );
+                    }
+                } else {
+                    log_warn!(
+                        "xHCI {} event ring did not produce an entry before timeout (expected_cycle={} control={:#x} iman={:#x} usbsts={:#x})",
+                        ident,
+                        expected_cycle,
+                        control,
+                        iman_snapshot,
+                        usbsts
                     );
                 }
                 return Err("event ring desync");
@@ -2547,12 +2558,8 @@ impl XhciDriver {
             let control = core::ptr::read_volatile(trb_ptr.add(3));
 
             if (control & TRB_CYCLE_BIT) != expected_cycle {
-                log_trace!(
-                    "xHCI {} event ring cycle mismatch: expected={} control={:#x}",
-                    controller.ident,
-                    expected_cycle,
-                    control
-                );
+                // This is the expected "ring is empty" signal: the consumer
+                // cycle bit doesn't match the producer's cycle yet.
                 let iman = core::ptr::read_volatile(iman_ptr);
                 if iman & IMAN_IP != 0 {
                     core::ptr::write_volatile(iman_ptr, iman | IMAN_IP);

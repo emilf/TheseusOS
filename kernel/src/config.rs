@@ -46,6 +46,13 @@ pub const USB_IDLE_IMAN_DIAGNOSTICS: bool = false;
 /// wired correctly, without requiring user input.
 pub const USB_RUN_MSIX_SELF_TEST: bool = true;
 
+/// When `true`, log additional xHCI event-ring diagnostics (including warnings
+/// and ring snapshots when cycle bits appear unexpected).
+///
+/// Leave this disabled for normal runs; enabling it is useful when debugging
+/// ring desynchronisation or missed interrupts.
+pub const USB_XHCI_EVENT_RING_DIAGNOSTICS: bool = false;
+
 /// When `true`, execute a software `int 0x50` once after interrupts are enabled.
 /// This validates the IDT handler wiring for the xHCI MSI vector independently
 /// of PCI/MSI delivery.
