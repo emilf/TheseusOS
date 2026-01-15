@@ -1,12 +1,14 @@
-//! xHCI host controller driver scaffold for the teaching kernel.
+//! xHCI host controller driver for the teaching kernel.
 //!
 //! The goal of this module is educational: it walks through the steps required
 //! to take ownership of a modern USB 3 controller on x86-64 while exercising
 //! Rust's safety features. The code demonstrates how to map MMIO regions,
 //! interpret capability structures, set up command/event rings, transition the
-//! controller to `RUN`, and submit a minimal NOOP command to verify the data
-//! path. Later lessons will extend this scaffolding to cover slot contexts and
-//! full USB enumeration.
+//! controller to `RUN`, and service the event ring via MSI/MSI-X when available.
+//! In addition to the core bring-up, the driver implements a minimal xHCI slot
+//! + endpoint configuration path sufficient to enumerate QEMU's virtual USB HID
+//! boot keyboard and deliver interrupt-driven key events through the shared
+//! `input::keyboard` hub.
 
 use alloc::string::ToString;
 use alloc::{format, string::String, vec::Vec};
@@ -21,7 +23,6 @@ use crate::config;
 use crate::drivers::manager::driver_manager;
 use crate::drivers::pci;
 use crate::drivers::traits::{Device, DeviceClass, DeviceId, DeviceResource, Driver};
-use crate::input::keyboard::{self, KeyEvent, KeyTransition};
 use crate::interrupts::{get_apic_base, read_apic_register, XHCI_MSI_VECTOR};
 use crate::memory::dma::DmaBuffer;
 use crate::memory::{
@@ -32,6 +33,17 @@ use crate::{log_debug, log_info, log_trace, log_warn};
 
 mod rings;
 use rings::{CommandRing, EventRing, TransferRing, RING_RECYCLER};
+mod hid;
+mod trb;
+
+pub(crate) use trb::{
+    RawCommandTrb, RawEventTrb, TRB_CHAIN, TRB_COMPLETION_SUCCESS, TRB_CYCLE_BIT, TRB_DIR_IN,
+    TRB_IDT, TRB_IOC, TRB_LINK_TOGGLE_CYCLE, TRB_TYPE_ADDRESS_DEVICE, TRB_TYPE_COMMAND_COMPLETION,
+    TRB_TYPE_CONFIGURE_ENDPOINT, TRB_TYPE_DATA_STAGE, TRB_TYPE_ENABLE_SLOT,
+    TRB_TYPE_EVALUATE_CONTEXT, TRB_TYPE_LINK, TRB_TYPE_NOOP_COMMAND, TRB_TYPE_NORMAL,
+    TRB_TYPE_PORT_STATUS_CHANGE_EVENT, TRB_TYPE_SET_TR_DEQUEUE_POINTER, TRB_TYPE_SETUP_STAGE,
+    TRB_TYPE_STATUS_STAGE, TRB_TYPE_TRANSFER_EVENT,
+ };
 
 /// Base virtual address used when mapping xHCI MMIO windows into the kernel.
 const XHCI_MMIO_WINDOW_BASE: u64 = 0xFFFF_FFB0_0000_0000;
@@ -55,32 +67,8 @@ const MAX_SLOTS_REGISTER_OFFSET: u32 = 0x2C;
 const USBCMD_ENABLE_SLOT: u32 = 1 << 8;
 const DCBAA_ENTRY_SIZE: usize = 8;
 const RUN_STOP_TIMEOUT: usize = 1_000_000;
-const TRB_TYPE_NOOP_COMMAND: u32 = 0x17;
-const TRB_TYPE_SETUP_STAGE: u32 = 0x02;
-const TRB_TYPE_DATA_STAGE: u32 = 0x03;
-const TRB_TYPE_STATUS_STAGE: u32 = 0x04;
-const TRB_TYPE_LINK: u32 = 0x06;
-const TRB_TYPE_TRANSFER_EVENT: u32 = 0x20;
-const TRB_TYPE_NORMAL: u32 = 0x01;
-const TRB_TYPE_SET_TR_DEQUEUE_POINTER: u32 = 0x10;
-const TRB_TYPE_EVALUATE_CONTEXT: u32 = 0x0D;
-const TRB_TYPE_CONFIGURE_ENDPOINT: u32 = 0x0C;
-const TRB_TYPE_PORT_STATUS_CHANGE_EVENT: u32 = 0x22;
-const TRB_COMPLETION_CODE_MASK: u32 = 0xFF << 24;
-const TRB_TYPE_MASK: u32 = 0x3F << 10;
-const TRB_TYPE_COMMAND_COMPLETION: u32 = 0x21;
-const TRB_COMPLETION_SUCCESS: u32 = 1;
-const TRB_CYCLE_BIT: u32 = 1;
 const DOORBELL_HOST: u32 = 0;
-const TRB_CHAIN: u32 = 1 << 4;
-const TRB_IOC: u32 = 1 << 5;
-const TRB_IDT: u32 = 1 << 6;
-const TRB_DIR_IN: u32 = 1 << 16;
-const TRB_LINK_TOGGLE_CYCLE: u32 = 1 << 1;
 const IMAN_IP: u32 = 1 << 0;
-const TRB_TYPE_ENABLE_SLOT: u32 = 0x09;
-#[allow(dead_code)]
-const TRB_TYPE_ADDRESS_DEVICE: u32 = 0x0B;
 const ENDPOINT_TYPE_CONTROL: u32 = 4;
 const ENDPOINT_TYPE_INTERRUPT_IN: u32 = 7;
 const DEFAULT_EP0_RING_TRBS: usize = 64;
@@ -138,29 +126,6 @@ const PORTSC_PLC: u32 = 1 << 22;
 const PORTSC_CEC: u32 = 1 << 23;
 const SCRATCHPAD_ENTRY_SIZE: usize = 8;
 const SCRATCHPAD_POINTER_ALIGN: usize = 64;
-/// Textual names for the modifier bits in the first byte of a boot keyboard report.
-const HID_MODIFIER_NAMES: [&str; 8] = [
-    "LeftCtrl",
-    "LeftShift",
-    "LeftAlt",
-    "LeftMeta",
-    "RightCtrl",
-    "RightShift",
-    "RightAlt",
-    "RightMeta",
-];
-const HID_MODIFIER_USAGE_BASE: u8 = 0xE0;
-/// Usage-code to string mapping for alphabetic keys in the boot protocol.
-const HID_LETTER_NAMES: [&str; 26] = [
-    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S",
-    "T", "U", "V", "W", "X", "Y", "Z",
-];
-/// Usage-code to string mapping for the number row keys.
-const HID_NUMBER_NAMES: [&str; 10] = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"];
-/// Lookup table for the F1..F12 usages.
-const HID_FUNCTION_NAMES: [&str; 12] = [
-    "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
-];
 static MMIO_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static XHCI_DRIVER: XhciDriver = XhciDriver;
 static CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
@@ -389,55 +354,6 @@ impl InputContext {
         let ptr = (self.buffer.virt_addr() + offset as u64) as *mut u32;
         let words = entry_size / core::mem::size_of::<u32>();
         Some(unsafe { slice::from_raw_parts_mut(ptr, words) })
-    }
-}
-
-/// Raw representation of a command TRB to be written to the command ring.
-#[derive(Debug, Clone, Copy)]
-struct RawCommandTrb {
-    /// Combined parameter value (typically pointer).
-    parameter: u64,
-    /// Third dword of the TRB (status field).
-    status: u32,
-    /// Control dword (type bits, interrupter toggle, etc.).
-    control: u32,
-}
-
-/// Raw representation of an event TRB consumed from the event ring.
-#[derive(Debug, Clone, Copy)]
-struct RawEventTrb {
-    /// Combined parameter payload, frequently a pointer back to the source TRB.
-    parameter: u64,
-    /// Event status dword containing residual length or contextual flags.
-    status: u32,
-    /// Control dword encoding cycle, completion code, TRB type, and routing IDs.
-    control: u32,
-}
-
-impl RawEventTrb {
-    /// Extract the TRB type field from the control dword.
-    fn trb_type(&self) -> u32 {
-        (self.control & TRB_TYPE_MASK) >> 10
-    }
-
-    /// Extract the completion code reported by hardware.
-    fn completion_code(&self) -> u32 {
-        (self.status & TRB_COMPLETION_CODE_MASK) >> 24
-    }
-
-    /// Slot identifier reported alongside the event (lower 8 bits of the control dword).
-    fn slot_id(&self) -> u8 {
-        (self.control & 0xFF) as u8
-    }
-
-    /// Endpoint identifier associated with the event.
-    fn endpoint_id(&self) -> u8 {
-        ((self.control >> 16) & 0xFF) as u8
-    }
-
-    /// Remaining bytes reported in the status dword for transfer events.
-    fn residual_length(&self) -> u32 {
-        self.status & 0x00FF_FFFF
     }
 }
 
@@ -2457,7 +2373,7 @@ impl XhciDriver {
                 report_len,
                 dump
             );
-            self.log_hid_keyboard_events(ident, &prev_bytes, prev_len, &report[..report_len]);
+            hid::emit_keyboard_events(ident, &prev_bytes, prev_len, &report[..report_len]);
         } else {
             log_trace!("xHCI {} HID report unchanged ({} bytes)", ident, report_len);
         }
@@ -2508,125 +2424,7 @@ impl XhciDriver {
         true
     }
 
-    /// Decode the delta between two HID boot protocol reports and emit key press/release logs.
-    fn log_hid_keyboard_events(
-        &self,
-        ident: &str,
-        previous: &[u8; 8],
-        previous_len: usize,
-        current: &[u8],
-    ) {
-        let prev_mod = if previous_len > 0 { previous[0] } else { 0 };
-        let curr_mod = current.get(0).copied().unwrap_or(0);
-        let changed_mod = prev_mod ^ curr_mod;
-        for bit in 0..8 {
-            if (changed_mod & (1 << bit)) != 0 {
-                let name = HID_MODIFIER_NAMES[bit as usize];
-                if (curr_mod & (1 << bit)) != 0 {
-                    log_info!("xHCI {} key pressed: {}", ident, name);
-                    Self::push_key_event(KeyEvent::new(
-                        KeyTransition::Pressed,
-                        HID_MODIFIER_USAGE_BASE + bit as u8,
-                        name,
-                    ));
-                } else {
-                    log_info!("xHCI {} key released: {}", ident, name);
-                    Self::push_key_event(KeyEvent::new(
-                        KeyTransition::Released,
-                        HID_MODIFIER_USAGE_BASE + bit as u8,
-                        name,
-                    ));
-                }
-            }
-        }
-
-        let prev_keys = Self::collect_usage_codes(previous, previous_len);
-        let curr_keys = Self::collect_usage_codes(current, current.len());
-
-        for usage in curr_keys.iter() {
-            if !prev_keys.contains(usage) {
-                log_info!(
-                    "xHCI {} key pressed: {}",
-                    ident,
-                    Self::hid_usage_to_name(*usage)
-                );
-                Self::push_key_event(KeyEvent::new(
-                    KeyTransition::Pressed,
-                    *usage,
-                    Self::hid_usage_to_name(*usage),
-                ));
-            }
-        }
-
-        for usage in prev_keys.iter() {
-            if !curr_keys.contains(usage) {
-                log_info!(
-                    "xHCI {} key released: {}",
-                    ident,
-                    Self::hid_usage_to_name(*usage)
-                );
-                Self::push_key_event(KeyEvent::new(
-                    KeyTransition::Released,
-                    *usage,
-                    Self::hid_usage_to_name(*usage),
-                ));
-            }
-        }
-    }
-
-    /// Collect unique, non-zero usage codes from the boot-report payload, ignoring modifiers.
-    fn collect_usage_codes(report: &[u8], len: usize) -> Vec<u8> {
-        let mut keys = Vec::new();
-        let usable_len = core::cmp::min(len, report.len());
-        for &usage in report.iter().take(usable_len).skip(2) {
-            if usage != 0 && !keys.contains(&usage) {
-                keys.push(usage);
-            }
-        }
-        keys
-    }
-
-    /// Translate a HID usage code into a human-readable label for debugging/teaching.
-    fn hid_usage_to_name(usage: u8) -> &'static str {
-        match usage {
-            0x04..=0x1d => HID_LETTER_NAMES[(usage - 0x04) as usize],
-            0x1e..=0x27 => HID_NUMBER_NAMES[(usage - 0x1e) as usize],
-            0x28 => "Enter",
-            0x29 => "Escape",
-            0x2a => "Backspace",
-            0x2b => "Tab",
-            0x2c => "Space",
-            0x2d => "Minus",
-            0x2e => "Equals",
-            0x2f => "LeftBracket",
-            0x30 => "RightBracket",
-            0x31 => "Backslash",
-            0x33 => "Semicolon",
-            0x34 => "Apostrophe",
-            0x35 => "Grave",
-            0x36 => "Comma",
-            0x37 => "Period",
-            0x38 => "Slash",
-            0x39 => "CapsLock",
-            0x3a..=0x45 => HID_FUNCTION_NAMES[(usage - 0x3a) as usize],
-            0x49 => "Insert",
-            0x4a => "Home",
-            0x4b => "PageUp",
-            0x4c => "Delete",
-            0x4d => "End",
-            0x4e => "PageDown",
-            0x4f => "Right",
-            0x50 => "Left",
-            0x51 => "Down",
-            0x52 => "Up",
-            _ => "Unknown",
-        }
-    }
-
-    /// Forward the event to the shared keyboard input hub.
-    fn push_key_event(event: KeyEvent) {
-        keyboard::publish_event(event);
-    }
+    // HID key transition decoding lives in `xhci::hid`.
 
     /// Drain pending runtime events for a controller without blocking.
     fn poll_runtime_events_for_controller(&self, controller: &mut XhciController) {

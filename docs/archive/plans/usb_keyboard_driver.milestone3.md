@@ -3,6 +3,7 @@
 Milestone 3 focuses on bringing the xHCI host controller online with modern practices so later stages can layer USB protocol support without revisiting firmware handoff or DMA plumbing.
 
 ## Completed Work This Iteration
+- **Refactor (merge-ready)**: Began splitting the monolithic xHCI driver into focused submodules while preserving behaviour. TRB encodings now live in `kernel/src/drivers/usb/xhci/trb.rs`, HID boot keyboard decoding lives in `kernel/src/drivers/usb/xhci/hid.rs`, and ring machinery lives in `kernel/src/drivers/usb/xhci/rings.rs`. This keeps bring-up logic readable while keeping hot-path code and spec-adjacent helpers easy to audit.
 - **Scratchpad infrastructure**: The driver now decodes `HCSParams2`, allocates the scratchpad pointer table, and provisions aligned DMA buffers when the controller advertises a non-zero count (`kernel/src/drivers/usb/xhci/mod.rs:1242`). DCBAA entry 0 is updated automatically so future slot/context setup can assume the scratchpad array is ready.
 - **Capability telemetry**: Capability logging now reports the required scratchpad count alongside slots, ports, and context size, making controller expectations visible in the serial log (`kernel/src/drivers/usb/xhci/mod.rs:1491`).
 - **Port diagnostics**: After RUN is asserted the driver walks each root port, emitting a structured summary (link state, speed, power, reset) and highlighting the first connected port to seed enumeration decisions (`kernel/src/drivers/usb/xhci/mod.rs:1569`).
