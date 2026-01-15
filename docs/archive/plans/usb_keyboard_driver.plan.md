@@ -9,6 +9,7 @@
 - [x] **Milestone 0 – Prerequisite Audit**: Baseline inventory captured; FADT-derived legacy USB knobs and XHCI descriptors are now mirrored in `PlatformInfo`.
 - [x] **Milestone 1 – PCI Discovery**: ECAM enumeration integrated with the driver system, and USB controllers are claimed via the new legacy handoff path.
 - [x] **Milestone 2 – ACPI & Controller Handoff**: Firmware ownership negotiation and monitor diagnostics are in place; documentation and policy wiring now cover the MSI/IOAPIC fallback story.
+- [x] **Milestone 3 – xHCI Bring-Up**: QEMU HID keyboard enumerates via the interrupt pipeline; follow-ups remain for hotplug, IRQ allocator integration, and cleanup.
 
 ## Milestone 0: Prerequisite Audit
 - Confirm interrupt delivery story: document current APIC/IOAPIC usage, available vectors, and whether MSI/MSI-X is viable for early use; define the fallback legacy IRQ path.
@@ -36,7 +37,7 @@
 - **Re-entrancy guard**: Interrupt-side servicing now routes through `service_runtime_interrupt()`, which uses a non-blocking `try_lock` around the controller list. When the lock is contended we set a deferred-service latch so the idle-time fallback poll forces a subsequent drain—eliminating the deadlock that starved HID reports after MSI-X was enabled.
 
 ## Milestone 3: xHCI Host Controller Bring-Up
-- ☐ Create an xHCI driver module that maps the controller MMIO region, parses capability/operational registers, and performs controller reset to a known state.
+- [x] Create an xHCI driver module that maps the controller MMIO region, parses capability/operational registers, and performs controller reset to a known state.
   - Stub driver now maps MMIO, performs the halt/reset handshake, reports capabilities, allocates command/event rings, programs CRCR/ERST for interrupter 0, stands up the DCBAA, enables the advertised slot count, transitions the controller to RUN, and verifies command submission/completion with a NOOP (`kernel/src/drivers/usb/xhci/mod.rs:1`); runtime bring-up remains (no device contexts yet).
   - Refactor note: the xHCI implementation is being modularized for merge-readiness. Ring plumbing is in `kernel/src/drivers/usb/xhci/rings.rs`, TRB constants/types in `kernel/src/drivers/usb/xhci/trb.rs`, and HID boot keyboard parsing in `kernel/src/drivers/usb/xhci/hid.rs`; the main `xhci/mod.rs` remains the integration point.
   - QEMU launch script pins `qemu-xhci` to the root bus so the virtual controller reliably enumerates during bring-up (`startQemu.sh:92`).
@@ -53,6 +54,13 @@
 - Ensure endpoint IDs match QEMU’s xHCI EPID encoding during bring-up (EP0=1, EPn IN=`n*2+1`, EPn OUT=`n*2`). If you ring the doorbell with `epid 4`, QEMU will issue tokens to USB endpoint 2 and the virtual keyboard will STALL (`CC_STALL_ERROR`).
 - Ensure “deferred MSI servicing” makes progress even when polling fallback is disabled: if the MSI handler cannot take the controller-list lock, it should latch a request that the idle loop later drains once the lock becomes available.
 - For the boot-time MSI/MSI-X NOOP self-test, perform a single forced drain pass after submission so the test cannot wedge forever (and so diagnostics remain stable even while interrupt delivery is still being tuned).
+
+### Milestone 3 Cleanup & Quality
+- Wire port-status-change events (PSCs) into the runtime path so new devices/hotplug enumerate instead of only the first connected port at init; use PSCs to trigger slot creation and port resets.
+- Integrate MSI/MSI-X vector selection with the interrupt allocator and connect the driver’s `irq_handler` to the event-ring drain path instead of the current fixed `0x50` vector and stub.
+- Add HID `SET_PROTOCOL` negotiation for boot keyboards that require 8-byte reports; confirm interrupt endpoint configuration still arms correctly after the protocol switch.
+- Split `kernel/src/drivers/usb/xhci/mod.rs` into smaller domains (capabilities/handoff, control-transfer + enumeration, runtime interrupt/polling, diagnostics) and tighten inline docs around the polling/IMAN diagnostic flags and event-ring drain rules.
+- Expand docs with a concise “how interrupts are serviced” note covering MSI enable, IMAN/IMOD interaction, and when to toggle `USB_ENABLE_POLLING_FALLBACK` during debugging.
 
 ## Milestone 4: USB Device Enumeration Stack
 - Implement basic USB request/response infrastructure (setup packets, control transfers, TRBs) sufficient to enumerate attached devices over the default control endpoint.
