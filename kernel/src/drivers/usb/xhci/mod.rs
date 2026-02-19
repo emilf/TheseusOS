@@ -191,6 +191,8 @@ struct XhciController {
     /// When set, we have queued an MSI/MSI-X self-test NOOP and are waiting for its completion
     /// to be observed via the interrupt-driven event ring path.
     msix_self_test_pending: bool,
+    /// Port-change notification latched for thread-context handling.
+    pending_port_change: Option<u8>,
 }
 
 /// Minimal description of the interrupt endpoint exposed by a HID boot keyboard.
@@ -300,6 +302,17 @@ impl UsbControlSetup {
             request: 0x09,      // SET_CONFIGURATION
             value: configuration_value as u16,
             index: 0,
+            length: 0,
+        }
+    }
+
+    /// Construct a SET_PROTOCOL request for HID interfaces.
+    fn set_protocol(interface: u8, boot_protocol: bool) -> Self {
+        Self {
+            request_type: 0x21, // Class | Interface | Host-to-device
+            request: 0x0B,      // SET_PROTOCOL
+            value: if boot_protocol { 0 } else { 1 },
+            index: interface as u16,
             length: 0,
         }
     }
@@ -930,6 +943,7 @@ impl XhciDriver {
                 msi_pending_logged: false,
                 msi_disarmed_logged: false,
                 msix_self_test_pending: false,
+                pending_port_change: None,
             };
 
             let mut list = CONTROLLERS.lock();
@@ -2426,6 +2440,162 @@ impl XhciDriver {
 
     // HID key transition decoding lives in `xhci::hid`.
 
+    /// Read the current PORTSC value for a specific port.
+    fn read_port_state(&self, controller: &XhciController, port_id: usize) -> Option<PortState> {
+        if port_id == 0 || port_id > controller.max_ports as usize {
+            return None;
+        }
+
+        unsafe {
+            let op_base = (controller.virt_base + controller.operational_offset as u64) as *const u8;
+            let portsc_ptr = op_base
+                .add(PORTSC_REGISTER_OFFSET + ((port_id - 1) * PORT_REGISTER_STRIDE))
+                as *const u32;
+            let portsc = core::ptr::read_volatile(portsc_ptr);
+            Some(PortState::from_register(port_id, portsc))
+        }
+    }
+
+    /// Clear the RW1C change bits for the given port so future notifications can fire.
+    fn acknowledge_port_change(&self, controller: &XhciController, port_id: usize, portsc: u32) {
+        unsafe {
+            let op_base = (controller.virt_base + controller.operational_offset as u64) as *mut u8;
+            let portsc_ptr = op_base
+                .add(PORTSC_REGISTER_OFFSET + ((port_id - 1) * PORT_REGISTER_STRIDE))
+                as *mut u32;
+            let clear_mask = PORTSC_CSC
+                | PORTSC_PEC
+                | PORTSC_WRC
+                | PORTSC_OCC
+                | PORTSC_PRC
+                | PORTSC_PLC
+                | PORTSC_CEC;
+            core::ptr::write_volatile(portsc_ptr, portsc | clear_mask);
+        }
+    }
+
+    /// Handle a port-status-change event by latching the port ID for thread-context handling.
+    fn handle_port_status_change_event(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+        event: &RawEventTrb,
+    ) {
+        let Some(port_id) = event.port_id() else {
+            log_warn!(
+                "xHCI {} PSC event missing port id (parameter={:#x} status={:#x})",
+                ident,
+                event.parameter,
+                event.status
+            );
+            return;
+        };
+
+        let Some(state) = self.read_port_state(controller, port_id as usize) else {
+            log_warn!(
+                "xHCI {} PSC for port {} ignored (out of range, max={})",
+                ident,
+                port_id,
+                controller.max_ports
+            );
+            return;
+        };
+
+        log_info!(
+            "xHCI {} port-status-change: port{:02} {}",
+            ident,
+            state.index,
+            state.summary()
+        );
+        self.acknowledge_port_change(controller, state.index, state.register);
+
+        controller.pending_port_change = Some(state.index as u8);
+        // Ensure the idle loop will revisit runtime polling so heavy work (reset/enumeration)
+        // runs outside interrupt context.
+        MSI_DEFERRED_RUNTIME_SERVICE.store(true, Ordering::Release);
+    }
+
+    /// Service any latched port changes in thread context, triggering enumeration for new devices.
+    fn service_pending_port_change(&self, controller: &mut XhciController, ident: &str) {
+        let Some(port_id) = controller.pending_port_change.take() else {
+            return;
+        };
+
+        let Some(state) = self.read_port_state(controller, port_id as usize) else {
+            log_warn!(
+                "xHCI {} pending port{:02} change could not be read (max={})",
+                ident,
+                port_id,
+                controller.max_ports
+            );
+            return;
+        };
+
+        if !state.connected || state.overcurrent {
+            log_info!(
+                "xHCI {} port{:02} now disconnected/overcurrent; skipping enumeration",
+                ident,
+                state.index
+            );
+            return;
+        }
+
+        if controller.active_slot.is_some() {
+            log_info!(
+                "xHCI {} port{:02} connected but slot {} already active; hotplug handling deferred until multi-slot support exists",
+                ident,
+                state.index,
+                controller.active_slot.unwrap()
+            );
+            return;
+        }
+
+        match self.reset_port(controller, ident, state) {
+            Ok(updated) => {
+                controller.attached_port = Some(updated.index as u8);
+                controller.attached_speed = Some(updated.speed);
+                log_info!(
+                    "xHCI {} port{:02} reset after PSC -> {}",
+                    ident,
+                    updated.index,
+                    updated.summary()
+                );
+                if let Err(err) = self.prepare_default_control_context(controller, ident, updated) {
+                    log_warn!(
+                        "xHCI {} failed to prepare control context for port{:02}: {}",
+                        ident,
+                        updated.index,
+                        err
+                    );
+                    return;
+                }
+                if let Err(err) = self.enable_device_slot(controller, ident) {
+                    log_warn!(
+                        "xHCI {} enable-slot failed after port{:02} change: {}",
+                        ident,
+                        updated.index,
+                        err
+                    );
+                    return;
+                }
+                if let Err(err) = self.enumerate_default_control_endpoint(controller, ident) {
+                    log_warn!(
+                        "xHCI {} enumeration failed after port{:02} change: {}",
+                        ident,
+                        updated.index,
+                        err
+                    );
+                }
+            }
+            Err(err) => log_warn!(
+                "xHCI {} port{:02} reset failed after PSC: {}",
+                ident,
+                state.index,
+                err
+            ),
+        }
+    }
+
     /// Drain pending runtime events for a controller without blocking.
     fn poll_runtime_events_for_controller(&self, controller: &mut XhciController) {
         let ident = controller.ident.clone();
@@ -2467,6 +2637,9 @@ impl XhciDriver {
                         );
                         controller.msix_self_test_pending = false;
                     }
+                }
+                TRB_TYPE_PORT_STATUS_CHANGE_EVENT => {
+                    self.handle_port_status_change_event(controller, &ident, &event);
                 }
                 other => log_debug!("xHCI {} runtime event ignored: type={}", ident, other),
             }
@@ -2529,8 +2702,7 @@ impl XhciDriver {
             }
 
             if trb_type == TRB_TYPE_PORT_STATUS_CHANGE_EVENT {
-                // Port-status-change events are expected while we are still
-                // enumerating and resetting ports; ignore and keep waiting.
+                self.handle_port_status_change_event(controller, ident, &event);
                 continue;
             }
             log_warn!(
@@ -2597,7 +2769,7 @@ impl XhciDriver {
             }
 
             if trb_type == TRB_TYPE_PORT_STATUS_CHANGE_EVENT {
-                // Ignore root-hub churn while waiting for control-transfer completion.
+                self.handle_port_status_change_event(controller, ident, &event);
                 continue;
             }
             log_warn!(
@@ -4027,6 +4199,10 @@ impl XhciDriver {
                 );
             });
 
+        if let Err(err) = self.send_hid_set_protocol(controller, ident, hid, true) {
+            log_warn!("xHCI {} failed to send HID SET_PROTOCOL(boot): {}", ident, err);
+        }
+
         if let Err(err) = self.send_hid_set_idle(controller, ident, hid) {
             log_warn!("xHCI {} failed to send HID SET_IDLE: {}", ident, err);
         }
@@ -4370,6 +4546,23 @@ impl XhciDriver {
         self.queue_control_transfer_no_data(controller, ident, setup, "SET_IDLE(HID)")
     }
 
+    /// Issue a HID `SET_PROTOCOL` request to select boot protocol (8-byte reports).
+    fn send_hid_set_protocol(
+        &self,
+        controller: &mut XhciController,
+        ident: &str,
+        hid: HidEndpoint,
+        boot_protocol: bool,
+    ) -> Result<(), &'static str> {
+        let setup = UsbControlSetup::set_protocol(hid.interface_number, boot_protocol);
+        let label = if boot_protocol {
+            "SET_PROTOCOL(boot)"
+        } else {
+            "SET_PROTOCOL(report)"
+        };
+        self.queue_control_transfer_no_data(controller, ident, setup, label)
+    }
+
     /// Decode USBSTS into a pipe-separated list of active flags.
     fn describe_status(&self, sts: u32) -> String {
         let mut parts = Vec::new();
@@ -4448,15 +4641,15 @@ impl XhciDriver {
     }
 
     /// Drain runtime events for the provided controller list, optionally skipping MSI-armed devices.
-    fn poll_runtime_events_locked(
-        &self,
-        controllers: &mut Vec<XhciController>,
-        _force: bool,
-    ) {
+    fn poll_runtime_events_locked(&self, controllers: &mut Vec<XhciController>, allow_heavy: bool) {
         for controller in controllers.iter_mut() {
             self.poll_runtime_events_for_controller(controller);
             controller.msi_pending_logged = false;
             controller.msi_disarmed_logged = false;
+            if allow_heavy {
+                let ident = controller.ident.clone();
+                self.service_pending_port_change(controller, &ident);
+            }
         }
     }
 
@@ -4489,7 +4682,7 @@ impl XhciDriver {
     fn poll_runtime_events_from_interrupt(&self) {
         if let Some(mut controllers) = CONTROLLERS.try_lock() {
             log_trace!("xHCI interrupt servicing event ring immediately");
-            self.poll_runtime_events_locked(&mut controllers, true);
+            self.poll_runtime_events_locked(&mut controllers, false);
         } else {
             log_trace!("xHCI interrupt handling deferred: controller list busy");
             MSI_DEFERRED_RUNTIME_SERVICE.store(true, Ordering::Release);
@@ -4582,8 +4775,8 @@ impl Driver for XhciDriver {
     }
 
     fn irq_handler(&'static self, _dev: &mut Device, _irq: u32) -> bool {
-        // Placeholder: mainline path will be implemented alongside interrupt allocator work.
-        false
+        self.poll_runtime_events_from_interrupt();
+        true
     }
 }
 

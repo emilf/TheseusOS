@@ -80,6 +80,15 @@ impl RawEventTrb {
     pub(crate) fn residual_length(&self) -> u32 {
         self.status & 0x00FF_FFFF
     }
-}
 
+    /// Port identifier reported by a port-status-change event (if present).
+    pub(crate) fn port_id(&self) -> Option<u8> {
+        let id = (self.parameter >> 24) as u8;
+        if id == 0 {
+            None
+        } else {
+            Some(id)
+        }
+    }
+}
 

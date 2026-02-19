@@ -56,9 +56,9 @@
 - For the boot-time MSI/MSI-X NOOP self-test, perform a single forced drain pass after submission so the test cannot wedge forever (and so diagnostics remain stable even while interrupt delivery is still being tuned).
 
 ### Milestone 3 Cleanup & Quality
-- Wire port-status-change events (PSCs) into the runtime path so new devices/hotplug enumerate instead of only the first connected port at init; use PSCs to trigger slot creation and port resets.
-- Integrate MSI/MSI-X vector selection with the interrupt allocator and connect the driver’s `irq_handler` to the event-ring drain path instead of the current fixed `0x50` vector and stub.
-- Add HID `SET_PROTOCOL` negotiation for boot keyboards that require 8-byte reports; confirm interrupt endpoint configuration still arms correctly after the protocol switch.
+- [x] Wire port-status-change events (PSCs) into the runtime path so new devices/hotplug enumerate instead of only the first connected port at init; use PSCs to trigger slot creation and port resets. (Port-change events are now decoded from event TRBs, acknowledged, and deferred into thread-context enumeration to avoid doing reset/enumeration work in interrupt context.)
+- [~] Integrate MSI/MSI-X vector selection with the interrupt allocator and connect the driver’s `irq_handler` to the event-ring drain path instead of the current fixed `0x50` vector and stub. (`irq_handler` now drains runtime events; allocator integration and dynamic vector assignment remain open.)
+- [x] Add HID `SET_PROTOCOL` negotiation for boot keyboards that require 8-byte reports; confirm interrupt endpoint configuration still arms correctly after the protocol switch. (`SET_PROTOCOL(boot)` is now issued before `SET_IDLE` and interrupt endpoint rearm.)
 - Split `kernel/src/drivers/usb/xhci/mod.rs` into smaller domains (capabilities/handoff, control-transfer + enumeration, runtime interrupt/polling, diagnostics) and tighten inline docs around the polling/IMAN diagnostic flags and event-ring drain rules.
 - Expand docs with a concise “how interrupts are serviced” note covering MSI enable, IMAN/IMOD interaction, and when to toggle `USB_ENABLE_POLLING_FALLBACK` during debugging.
 
