@@ -79,17 +79,42 @@ cargo run -p theseus-qemu -- --serial stdio
 cargo run -p theseus-qemu -- --serial unix --serial-path /tmp/theseus-serial.sock
 ```
 
-### QMP (recommended for automation)
+### Monitor + serial relays (recommended for interactive debugging)
+
+TheseusOS ships systemd user units (see `scripts/`) that create stable PTY endpoints under `/tmp`:
+
+- monitor: `/tmp/qemu-monitor` (QEMU side) and `/tmp/qemu-monitor-host` (your terminal/minicom)
+- serial: `/tmp/qemu-serial` (QEMU side) and `/tmp/qemu-serial-host` (your terminal/minicom)
+- debugcon: `/tmp/qemu-debugcon` (QEMU side) and `/tmp/qemu-debugcon-host` (tail/follow output)
+
+Enable them:
+
+```bash
+./scripts/install-qemu-relays.sh
+```
+
+Use them with the runner:
+
+```bash
+cargo run -p theseus-qemu -- --serial unix --serial-path /tmp/qemu-serial
+cargo run -p theseus-qemu -- --monitor-pty
+cargo run -p theseus-qemu -- --debugcon-pty
+```
+
+### QMP (machine control)
 
 ```bash
 # default path
 cargo run -p theseus-qemu -- --qmp
 
 # custom path
-cargo run -p theseus-qemu -- --qmp /tmp/theseus-qmp.sock
+cargo run -p theseus-qemu -- --qmp /tmp/qemu-qmp.sock
 ```
 
-### HMP monitor socket (optional)
+If you also enable the QMP relay unit, it exposes a stable host socket:
+- `/tmp/qemu-qmp-host.sock` → forwards to `/tmp/qemu-qmp.sock`
+
+### HMP unix socket (optional)
 
 ```bash
 # default path

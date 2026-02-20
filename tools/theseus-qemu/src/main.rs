@@ -83,20 +83,28 @@ pub struct Args {
     #[arg(long, default_value = "split")]
     pub irqchip: String,
 
-    /// Enable QMP socket. If provided without a value, defaults to `/tmp/theseus-qmp.sock`.
-    #[arg(long, num_args = 0..=1, default_missing_value = "/tmp/theseus-qmp.sock")]
+    /// Enable QMP socket. If provided without a value, defaults to `/tmp/qemu-qmp.sock`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "/tmp/qemu-qmp.sock")]
     pub qmp: Option<String>,
 
     /// Enable HMP monitor socket. If provided without a value, defaults to `/tmp/theseus-hmp.sock`.
     #[arg(long, num_args = 0..=1, default_missing_value = "/tmp/theseus-hmp.sock")]
     pub hmp: Option<String>,
 
+    /// Enable a PTY-backed QEMU monitor endpoint. If provided without a value, defaults to `/tmp/qemu-monitor`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "/tmp/qemu-monitor")]
+    pub monitor_pty: Option<String>,
+
+    /// Send isa-debugcon output to a PTY path. If provided without a value, defaults to `/tmp/qemu-debugcon`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "/tmp/qemu-debugcon")]
+    pub debugcon_pty: Option<String>,
+
     /// Serial mode.
     #[arg(long, value_enum, default_value_t = SerialMode::Off)]
     pub serial: SerialMode,
 
     /// Serial endpoint for unix mode (e.g. /tmp/theseus-serial.sock)
-    #[arg(long, default_value = "/tmp/theseus-serial.sock")]
+    #[arg(long, default_value = "/tmp/qemu-serial")]
     pub serial_path: String,
 
     /// Extra raw QEMU args appended verbatim
@@ -236,10 +244,18 @@ fn build_qemu_argv(args: &Args) -> Result<Vec<String>> {
 
     if args.headless {
         argv.extend(["-display".into(), "none".into()]);
-        argv.extend(["-chardev".into(), "stdio,id=debugcon".into()]);
+        if let Some(path) = &args.debugcon_pty {
+            argv.extend(["-chardev".into(), format!("file,id=debugcon,path={}", path)]);
+        } else {
+            argv.extend(["-chardev".into(), "stdio,id=debugcon".into()]);
+        }
         argv.extend(["-d".into(), "int,guest_errors,cpu_reset".into()]);
     } else {
-        argv.extend(["-chardev".into(), "file,id=debugcon,path=debug.log".into()]);
+        if let Some(path) = &args.debugcon_pty {
+            argv.extend(["-chardev".into(), format!("file,id=debugcon,path={}", path)]);
+        } else {
+            argv.extend(["-chardev".into(), "file,id=debugcon,path=debug.log".into()]);
+        }
         // default: provide a monitor on stdio if headed.
         argv.extend(["-monitor".into(), "stdio".into()]);
     }
@@ -258,11 +274,15 @@ fn build_qemu_argv(args: &Args) -> Result<Vec<String>> {
         }
     }
 
-    // Optional QMP/HMP
+    // Optional QMP/HMP / monitor PTY
     if let Some(qmp) = &args.qmp {
         argv.extend(["-qmp".into(), format!("unix:{},server,nowait", qmp)]);
     }
-    if let Some(hmp) = &args.hmp {
+
+    // If monitor_pty is set, use it. Otherwise fall back to HMP unix socket if configured.
+    if let Some(mon) = &args.monitor_pty {
+        argv.extend(["-monitor".into(), mon.clone()]);
+    } else if let Some(hmp) = &args.hmp {
         argv.extend(["-monitor".into(), format!("unix:{},server,nowait", hmp)]);
     }
 
