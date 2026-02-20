@@ -96,6 +96,10 @@ Enable them:
 Use them with the runner:
 
 ```bash
+# single convenience flag
+cargo run -p theseus-qemu -- --relays
+
+# or explicit flags
 cargo run -p theseus-qemu -- --serial unix --serial-path /tmp/qemu-serial
 cargo run -p theseus-qemu -- --monitor-pty
 cargo run -p theseus-qemu -- --debugcon-pty

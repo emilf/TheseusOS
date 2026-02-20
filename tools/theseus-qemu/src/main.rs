@@ -107,6 +107,18 @@ pub struct Args {
     #[arg(long, default_value = "/tmp/qemu-serial")]
     pub serial_path: String,
 
+    /// Enable the standard /tmp relays used for interactive debugging.
+    ///
+    /// This is a convenience flag equivalent to enabling:
+    /// - --serial unix --serial-path /tmp/qemu-serial
+    /// - --monitor-pty /tmp/qemu-monitor
+    /// - --debugcon-pty /tmp/qemu-debugcon
+    /// - --qmp /tmp/qemu-qmp.sock
+    ///
+    /// Explicit flags always win (e.g., passing your own --serial/stdio overrides this).
+    #[arg(long)]
+    pub relays: bool,
+
     /// Extra raw QEMU args appended verbatim
     #[arg(long)]
     pub extra: Vec<String>,
@@ -196,7 +208,33 @@ fn repo_root() -> Result<PathBuf> {
     ))
 }
 
+fn apply_relay_defaults(args: &mut Args) {
+    if !args.relays {
+        return;
+    }
+
+    // Enable defaults only when the user hasn't explicitly set alternatives.
+    if matches!(args.serial, SerialMode::Off) {
+        args.serial = SerialMode::Unix;
+    }
+
+    if args.monitor_pty.is_none() {
+        args.monitor_pty = Some("/tmp/qemu-monitor".to_string());
+    }
+
+    if args.debugcon_pty.is_none() {
+        args.debugcon_pty = Some("/tmp/qemu-debugcon".to_string());
+    }
+
+    if args.qmp.is_none() {
+        args.qmp = Some("/tmp/qemu-qmp.sock".to_string());
+    }
+}
+
 fn build_qemu_argv(args: &Args) -> Result<Vec<String>> {
+    let mut args = args.clone();
+    apply_relay_defaults(&mut args);
+
     let root = repo_root()?;
 
     // Paths matching startQemu.sh
