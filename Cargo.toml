@@ -1,5 +1,5 @@
 [workspace]
-members = ["bootloader", "kernel", "shared"]
+members = ["bootloader", "kernel", "shared", "tools/theseus-qemu"]
 resolver = "2"
 
 [workspace.dependencies]
