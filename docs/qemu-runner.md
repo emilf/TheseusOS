@@ -99,6 +99,8 @@ Use them with the runner:
 # single convenience flag
 cargo run -p theseus-qemu -- --relays
 
+Note: `--relays` assumes you have the relay PTYs running (see `./scripts/install-qemu-relays.sh`). It routes QEMU monitor/serial/debugcon into the QEMU-side PTYs under `/tmp/qemu-*`.
+
 # or explicit flags
 cargo run -p theseus-qemu -- --serial unix --serial-path /tmp/qemu-serial
 cargo run -p theseus-qemu -- --monitor-pty

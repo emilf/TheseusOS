@@ -132,6 +132,9 @@ pub enum SerialMode {
     Stdio,
     /// Expose a unix socket at --serial-path
     Unix,
+    /// Use an existing PTY/tty at --serial-path (pairs well with socat PTY relays)
+    /// Use an existing PTY at --serial-path by opening it as a file chardev.
+    PseudoTtyFile,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,7 +218,8 @@ fn apply_relay_defaults(args: &mut Args) {
 
     // Enable defaults only when the user hasn't explicitly set alternatives.
     if matches!(args.serial, SerialMode::Off) {
-        args.serial = SerialMode::Unix;
+        // For the standard relay setup, QEMU should use the QEMU-side PTY.
+        args.serial = SerialMode::PseudoTtyFile;
     }
 
     if args.monitor_pty.is_none() {
@@ -310,6 +314,16 @@ fn build_qemu_argv(args: &Args) -> Result<Vec<String>> {
                 format!("unix:{},server,nowait", args.serial_path),
             ]);
         }
+        SerialMode::PseudoTtyFile => {
+            // QEMU does not always include a `tty` chardev backend, but the `file` backend
+            // can open an existing PTY device node just fine.
+            argv.extend([
+                "-chardev".into(),
+                format!("file,id=serial0,path={}", args.serial_path),
+                "-serial".into(),
+                "chardev:serial0".into(),
+            ]);
+        }
     }
 
     // Optional QMP/HMP / monitor PTY
@@ -317,9 +331,15 @@ fn build_qemu_argv(args: &Args) -> Result<Vec<String>> {
         argv.extend(["-qmp".into(), format!("unix:{},server,nowait", qmp)]);
     }
 
-    // If monitor_pty is set, use it. Otherwise fall back to HMP unix socket if configured.
+    // If monitor_pty is set, use it via a tty chardev. Otherwise fall back to HMP unix socket if configured.
     if let Some(mon) = &args.monitor_pty {
-        argv.extend(["-monitor".into(), mon.clone()]);
+        // Use file backend so it can open an existing PTY device node.
+        argv.extend([
+            "-chardev".into(),
+            format!("file,id=mon0,path={}", mon),
+            "-monitor".into(),
+            "chardev:mon0".into(),
+        ]);
     } else if let Some(hmp) = &args.hmp {
         argv.extend(["-monitor".into(), format!("unix:{},server,nowait", hmp)]);
     }
