@@ -1,6 +1,9 @@
 use std::{
+    io::{Read, Write},
+    os::unix::process::ExitStatusExt,
     path::{Path, PathBuf},
-    process::{Command, ExitStatus},
+    process::{Command, ExitStatus, Stdio},
+    thread,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -47,6 +50,15 @@ pub struct Args {
     #[arg(long)]
     pub dry: bool,
 
+    /// Build the project before running QEMU (equivalent to `make all`).
+    /// Enabled by default for human convenience.
+    #[arg(long, default_value_t = true)]
+    pub build: bool,
+
+    /// Skip building before running QEMU.
+    #[arg(long)]
+    pub no_build: bool,
+
     /// Profile (selects device set and defaults)
     #[arg(long, default_value = "default")]
     pub profile: Profile,
@@ -58,6 +70,10 @@ pub struct Args {
     /// Add a timeout wrapper (seconds). Only applies to run mode.
     #[arg(long, default_value_t = 0)]
     pub timeout_secs: u64,
+
+    /// Kernel success marker string. If present in QEMU output, exit code is forced to 0.
+    #[arg(long, default_value = "Kernel environment test completed successfully")]
+    pub success_marker: String,
 
     /// QEMU accelerator (e.g. kvm:tcg, tcg)
     #[arg(long, default_value = "kvm:tcg")]
@@ -302,20 +318,48 @@ fn build_qemu_argv(args: &Args) -> Result<Vec<String>> {
 }
 
 fn run_qemu(args: &Args, argv: &[String]) -> Result<ExitStatus> {
-    let mut cmd = Command::new(&argv[0]);
-    cmd.args(&argv[1..]);
+    // Normalize build flags: --no-build wins.
+    let build = if args.no_build { false } else { args.build };
 
-    if args.timeout_secs > 0 {
-        // crude timeout wrapper (Linux). If you want portable, we can add a Rust timer.
+    if build {
+        run_make_all()?;
+    }
+
+    // We run QEMU and capture its combined stdout/stderr to a temp file, while also printing.
+    // This enables success-marker detection similar to startQemu.sh.
+    let out_path =
+        std::env::temp_dir().join(format!("theseus-qemu-output-{}.log", std::process::id()));
+
+    let status = if args.timeout_secs > 0 {
+        // Use `timeout` for simplicity (Linux). Keep output merged.
         let mut t = Command::new("timeout");
         t.arg("--foreground")
             .arg(format!("{}s", args.timeout_secs))
             .arg(&argv[0])
             .args(&argv[1..]);
-        return t.status().context("run qemu (timeout)");
+        run_with_tee(t, &out_path).context("run qemu (timeout)")?
+    } else {
+        let mut cmd = Command::new(&argv[0]);
+        cmd.args(&argv[1..]);
+        run_with_tee(cmd, &out_path).context("run qemu")?
+    };
+
+    // Success marker override: if kernel prints it, force exit code 0.
+    if output_contains(&out_path, &args.success_marker)? {
+        eprintln!("✓ Detected success marker from kernel");
+        return Ok(ExitStatus::from_raw(0));
     }
 
-    cmd.status().context("run qemu")
+    // Match startQemu.sh messaging a bit.
+    if let Some(code) = status.code() {
+        if code == 1 {
+            eprintln!("✓ QEMU exited gracefully from guest");
+        } else if code == 124 {
+            eprintln!("⚠ QEMU timed out after {}s", args.timeout_secs);
+        }
+    }
+
+    Ok(status)
 }
 
 fn ensure_exists(path: &Path, what: &str) -> Result<()> {
@@ -327,6 +371,68 @@ fn ensure_exists(path: &Path, what: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn run_make_all() -> Result<()> {
+    let root = repo_root()?;
+    eprintln!("Building project (make all)...");
+    let status = Command::new("make")
+        .arg("all")
+        .current_dir(root)
+        .status()
+        .context("run make all")?;
+    if !status.success() {
+        bail!("make all failed with status {status}");
+    }
+    Ok(())
+}
+
+fn run_with_tee(mut cmd: Command, out_path: &Path) -> Result<ExitStatus> {
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawn")?;
+
+    let mut out_file = std::fs::File::create(out_path)
+        .with_context(|| format!("create {}", out_path.display()))?;
+
+    let mut stdout = child.stdout.take().context("take stdout")?;
+    let mut stderr = child.stderr.take().context("take stderr")?;
+
+    let t1 = thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = stdout.read_to_end(&mut b);
+        b
+    });
+
+    let t2 = thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = stderr.read_to_end(&mut b);
+        b
+    });
+
+    let status = child.wait().context("wait")?;
+
+    let stdout_buf = t1.join().unwrap_or_default();
+    let stderr_buf = t2.join().unwrap_or_default();
+
+    // Write combined output to file and to our stdout/stderr.
+    out_file.write_all(&stdout_buf).ok();
+    out_file.write_all(&stderr_buf).ok();
+    std::io::stdout().write_all(&stdout_buf).ok();
+    std::io::stderr().write_all(&stderr_buf).ok();
+
+    Ok(status)
+}
+
+fn output_contains(path: &Path, needle: &str) -> Result<bool> {
+    let mut s = String::new();
+    std::fs::File::open(path)
+        .with_context(|| format!("open {}", path.display()))?
+        .read_to_string(&mut s)
+        .ok();
+    Ok(s.contains(needle))
 }
 
 fn shell_join(argv: &[String]) -> String {

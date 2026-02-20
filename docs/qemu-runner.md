@@ -101,11 +101,19 @@ cargo run -p theseus-qemu -- artifact --out build/qemu-argv.json
 
 ## Relationship with `startQemu.sh`
 
-Right now `startQemu.sh` remains the reference implementation and includes build + timeout + success-marker parsing.
+Right now `startQemu.sh` remains the historical reference implementation.
 
-The Rust runner currently focuses on:
+As of the `feat/theseus-qemu-parity` work, the Rust runner supports several of the practical conveniences from `startQemu.sh`:
+- **Build-before-run** (default): runs `make all` before launching QEMU. Disable with `--no-build`.
+- **Timeout**: `--timeout-secs N` runs QEMU under `timeout --foreground`.
+- **Success marker**: if QEMU output contains the marker string (default: `Kernel environment test completed successfully`), the runner forces exit code 0. Override via `--success-marker`.
+
+The runner still focuses on:
 - stable argv generation
 - profile selection
 - explicit socket toggles
 
-We’ll incrementally migrate the remaining features (build orchestration, success-marker exit normalization, richer device profiles) into the Rust runner.
+Next steps for parity:
+- richer profiles (net/storage variants)
+- optional log cleanup and artifact capture
+- first-class QMP/HMP helpers (later skills will consume these)
