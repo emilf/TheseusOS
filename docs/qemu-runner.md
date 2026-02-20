@@ -82,12 +82,20 @@ cargo run -p theseus-qemu -- --serial unix --serial-path /tmp/theseus-serial.soc
 ### QMP (recommended for automation)
 
 ```bash
+# default path
+cargo run -p theseus-qemu -- --qmp
+
+# custom path
 cargo run -p theseus-qemu -- --qmp /tmp/theseus-qmp.sock
 ```
 
 ### HMP monitor socket (optional)
 
 ```bash
+# default path
+cargo run -p theseus-qemu -- --hmp
+
+# custom path
 cargo run -p theseus-qemu -- --hmp /tmp/theseus-hmp.sock
 ```
 

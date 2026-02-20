@@ -83,12 +83,12 @@ pub struct Args {
     #[arg(long, default_value = "split")]
     pub irqchip: String,
 
-    /// Enable QMP socket. If omitted, disabled.
-    #[arg(long)]
+    /// Enable QMP socket. If provided without a value, defaults to `/tmp/theseus-qmp.sock`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "/tmp/theseus-qmp.sock")]
     pub qmp: Option<String>,
 
-    /// Enable HMP monitor socket. If omitted, disabled.
-    #[arg(long)]
+    /// Enable HMP monitor socket. If provided without a value, defaults to `/tmp/theseus-hmp.sock`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "/tmp/theseus-hmp.sock")]
     pub hmp: Option<String>,
 
     /// Serial mode.
