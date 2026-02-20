@@ -149,7 +149,7 @@ fn efi_main() -> Status {
         "Output driver initialized: {}",
         drivers::manager::current_driver_name()
     ));
-    let msg = format!("efi_main @ {:#x}", efi_main as usize);
+    let msg = format!("efi_main @ {:#x}", efi_main as *const () as usize);
     theseus_shared::qemu_println!(msg);
 
     // Test panic handler (uncomment to test)

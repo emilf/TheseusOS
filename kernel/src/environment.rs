@@ -101,7 +101,7 @@ pub extern "C" fn after_high_half_entry() -> ! {
     unsafe {
         crate::stack::switch_to_kernel_stack_and_jump(
             top_aligned,
-            continue_after_stack_switch as usize as u64,
+            continue_after_stack_switch as *const () as usize as u64,
         )
     }
 }

@@ -174,14 +174,15 @@ pub fn runtime_kernel_phys_base(handoff: &theseus_shared::handoff::Handoff) -> u
     let virt_base = handoff.kernel_virtual_base;
     let virt_entry = handoff.kernel_virtual_entry;
 
-    let entry_phys = crate::kernel_entry as usize as u64;
-    let stack_switch_phys = crate::stack::switch_to_kernel_stack_and_jump as usize as u64;
-    let disable_irqs_phys = crate::interrupts::disable_all_interrupts as usize as u64;
-    let setup_idt_phys = crate::interrupts::setup_idt as usize as u64;
-    let setup_gdt_phys = crate::gdt::setup_gdt as usize as u64;
-    let setup_ctrl_phys = crate::cpu::setup_control_registers as usize as u64;
-    let after_entry_phys = after_high_half_entry as usize as u64;
-    let cont_entry_phys = continue_after_stack_switch as usize as u64;
+    let entry_phys = crate::kernel_entry as *const () as usize as u64;
+    let stack_switch_phys =
+        crate::stack::switch_to_kernel_stack_and_jump as *const () as usize as u64;
+    let disable_irqs_phys = crate::interrupts::disable_all_interrupts as *const () as usize as u64;
+    let setup_idt_phys = crate::interrupts::setup_idt as *const () as usize as u64;
+    let setup_gdt_phys = crate::gdt::setup_gdt as *const () as usize as u64;
+    let setup_ctrl_phys = crate::cpu::setup_control_registers as *const () as usize as u64;
+    let after_entry_phys = after_high_half_entry as *const () as usize as u64;
+    let cont_entry_phys = continue_after_stack_switch as *const () as usize as u64;
 
     let mut min_phys = u64::MAX;
     let mut consider = |addr: u64| {
@@ -493,7 +494,7 @@ impl MemoryManager {
         }
 
         // Compute target virtual address of the provided entry symbol
-        let sym: u64 = entry as usize as u64;
+        let sym: u64 = entry as *const () as usize as u64;
         let target: u64 = sym
             .wrapping_sub(phys_base)
             .wrapping_add(KERNEL_VIRTUAL_BASE);

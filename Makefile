@@ -4,7 +4,7 @@ BOOTLOADER_TARGET := x86_64-unknown-uefi-dwarf
 BOOTLOADER_TARGET_SPEC := $(BOOTLOADER_TARGET).json
 KERNEL_TARGET := x86_64-unknown-none
 PROFILE ?= release
-BOOTLOADER_CARGO_FLAGS := -Z build-std=core,alloc
+BOOTLOADER_CARGO_FLAGS := -Z build-std=core,alloc -Z json-target-spec
 BOOTLOADER_BUILD_DIR := target/$(BOOTLOADER_TARGET)/$(PROFILE)
 EFI_DIR := build/EFI/BOOT
 ESP_DIR := build
