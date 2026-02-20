@@ -18,6 +18,7 @@ UNITS=(
   qemu_monitor_relay.service
   qemu_debugcon_relay.service
   qemu_qmp_relay.service
+  qemu_debugcon_logger.service
 )
 
 mkdir -p "${HOME}/.config/systemd/user"

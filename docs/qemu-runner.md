@@ -85,7 +85,8 @@ TheseusOS ships systemd user units (see `scripts/`) that create stable PTY endpo
 
 - monitor: `/tmp/qemu-monitor` (QEMU side) and `/tmp/qemu-monitor-host` (your terminal/minicom)
 - serial: `/tmp/qemu-serial` (QEMU side) and `/tmp/qemu-serial-host` (your terminal/minicom)
-- debugcon: `/tmp/qemu-debugcon` (QEMU side) and `/tmp/qemu-debugcon-host` (tail/follow output)
+- debugcon: `/tmp/qemu-debugcon` (QEMU side) and `/tmp/qemu-debugcon-host` (PTY stream; use `cat`, not `tail -f`)
+  - optional log file (enable `qemu_debugcon_logger.service`): `/tmp/qemu-debugcon.log` (then you can `tail -f`)
 
 Enable them:
 
