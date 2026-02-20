@@ -14,17 +14,19 @@ use serde::{Deserialize, Serialize};
     about = "Build and run TheseusOS under QEMU with profiles"
 )]
 pub struct Cli {
+    /// Default action: run QEMU with the provided args.
+    #[command(flatten)]
+    pub run: Args,
+
     #[command(subcommand)]
-    pub cmd: Cmd,
+    pub cmd: Option<Cmd>,
 }
 
 #[derive(clap::Subcommand, Debug)]
 pub enum Cmd {
-    /// Print the resolved QEMU argv (no execution)
+    /// Print the resolved QEMU argv (no execution). Implies --dry.
     Print(Args),
-    /// Run QEMU
-    Run(Args),
-    /// Emit a JSON artifact containing the resolved configuration + argv
+    /// Emit a JSON artifact containing the resolved configuration + argv (implies --dry).
     Artifact(ArtifactArgs),
 }
 
@@ -40,6 +42,11 @@ pub struct ArtifactArgs {
 
 #[derive(Parser, Debug, Clone)]
 pub struct Args {
+    /// Do not require build artifacts to exist (OVMF vars, disk image, etc.).
+    /// Useful for printing commands in locked-down environments.
+    #[arg(long)]
+    pub dry: bool,
+
     /// Profile (selects device set and defaults)
     #[arg(long, default_value = "default")]
     pub profile: Profile,
@@ -48,7 +55,7 @@ pub struct Args {
     #[arg(long)]
     pub headless: bool,
 
-    /// Add a timeout wrapper (seconds). Only applies to `run`.
+    /// Add a timeout wrapper (seconds). Only applies to run mode.
     #[arg(long, default_value_t = 0)]
     pub timeout_secs: u64,
 
@@ -113,22 +120,20 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.cmd {
-        Cmd::Print(args) => {
+        Some(Cmd::Print(mut args)) => {
+            args.dry = true;
             let argv = build_qemu_argv(&args)?;
             println!("{}", shell_join(&argv));
+            Ok(())
         }
-        Cmd::Run(args) => {
+        Some(Cmd::Artifact(artifact)) => {
+            let mut args = artifact.args;
+            args.dry = true;
             let argv = build_qemu_argv(&args)?;
-            let status = run_qemu(&args, &argv)?;
-            // forward exit code
-            std::process::exit(status.code().unwrap_or(1));
-        }
-        Cmd::Artifact(artifact) => {
-            let argv = build_qemu_argv(&artifact.args)?;
             let cwd = std::env::current_dir()?;
             let doc = Artifact {
-                profile: artifact.args.profile,
-                headless: artifact.args.headless,
+                profile: args.profile,
+                headless: args.headless,
                 argv: argv.clone(),
                 cwd,
             };
@@ -138,10 +143,15 @@ fn main() -> Result<()> {
             std::fs::write(&artifact.out, serde_json::to_string_pretty(&doc)?)
                 .with_context(|| format!("write artifact {}", artifact.out.display()))?;
             println!("Wrote {}", artifact.out.display());
+            Ok(())
+        }
+        None => {
+            // Default behavior: run.
+            let argv = build_qemu_argv(&cli.run)?;
+            let status = run_qemu(&cli.run, &argv)?;
+            std::process::exit(status.code().unwrap_or(1));
         }
     }
-
-    Ok(())
 }
 
 fn repo_root() -> Result<PathBuf> {
@@ -171,9 +181,11 @@ fn build_qemu_argv(args: &Args) -> Result<Vec<String>> {
     let disk_img = root.join("build/disk.img");
 
     // We intentionally do NOT auto-build here (runner should be usable even when build is blocked).
-    ensure_exists(&ovmf_code, "OVMF code")?;
-    ensure_exists(&ovmf_vars, "OVMF vars")?;
-    ensure_exists(&disk_img, "disk image")?;
+    if !args.dry {
+        ensure_exists(&ovmf_code, "OVMF code")?;
+        ensure_exists(&ovmf_vars, "OVMF vars")?;
+        ensure_exists(&disk_img, "disk image")?;
+    }
 
     let mut argv: Vec<String> = vec!["qemu-system-x86_64".into()];
     argv.extend([
