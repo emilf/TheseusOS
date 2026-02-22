@@ -119,6 +119,20 @@ pub struct Args {
     #[arg(long)]
     pub relays: bool,
 
+    /// QEMU debug flags passed via `-d <flags>` (comma-separated).
+    ///
+    /// In headless mode we default to a minimal, high-signal set (`guest_errors`) to
+    /// avoid massive log output (e.g. from `cpu_reset`).
+    ///
+    /// Pass `--qemu-debug-flags int,guest_errors,cpu_reset` when you explicitly
+    /// want the noisy bring-up output.
+    #[arg(long, num_args = 0..=1, default_missing_value = "guest_errors")]
+    pub qemu_debug_flags: Option<String>,
+
+    /// Disable QEMU debug output entirely (omit `-d`).
+    #[arg(long)]
+    pub no_qemu_debug: bool,
+
     /// Extra raw QEMU args appended verbatim
     #[arg(long)]
     pub extra: Vec<String>,
@@ -291,7 +305,20 @@ fn build_qemu_argv(args: &Args) -> Result<Vec<String>> {
         } else {
             argv.extend(["-chardev".into(), "stdio,id=debugcon".into()]);
         }
-        argv.extend(["-d".into(), "int,guest_errors,cpu_reset".into()]);
+
+        // Keep headless output high-signal by default.
+        // Users can opt into noisy bring-up flags explicitly.
+        let debug_flags = if args.no_qemu_debug {
+            None
+        } else {
+            args.qemu_debug_flags
+                .clone()
+                .or(Some("guest_errors".to_string()))
+        };
+
+        if let Some(flags) = debug_flags {
+            argv.extend(["-d".into(), flags]);
+        }
     } else {
         if let Some(path) = &args.debugcon_pty {
             argv.extend(["-chardev".into(), format!("file,id=debugcon,path={}", path)]);

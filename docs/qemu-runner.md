@@ -147,6 +147,7 @@ As of the `feat/theseus-qemu-parity` work, the Rust runner supports several of t
 - **Build-before-run** (default): runs `make all` before launching QEMU. Disable with `--no-build`.
 - **Timeout**: `--timeout-secs N` runs QEMU under `timeout --foreground`.
 - **Success marker**: if QEMU output contains the marker string (default: `Kernel environment test completed successfully`), the runner forces exit code 0. Override via `--success-marker`.
+- **High-signal QEMU debug output by default** (headless): uses `-d guest_errors` unless you opt into noisier flags.
 
 The runner still focuses on:
 - stable argv generation
