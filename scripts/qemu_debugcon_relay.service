@@ -1,12 +1,11 @@
 [Unit]
-Description=Persistent QEMU Debugcon Relay (named pipe pair)
+Description=Persistent QEMU debugcon relay (PTY pair)
 After=default.target
 
 [Service]
-Type=simple
-ExecStartPre=/usr/bin/rm -f /tmp/qemu-debugcon.in /tmp/qemu-debugcon.out
-ExecStart=/usr/bin/mkfifo /tmp/qemu-debugcon.in /tmp/qemu-debugcon.out; \
-           exec /usr/bin/socat -u PIPE:/tmp/qemu-debugcon.in PIPE:/tmp/qemu-debugcon.out
+ExecStart=/usr/bin/socat \
+    PTY,link=/tmp/qemu-debugcon,raw,echo=0,mode=666 \
+    PTY,link=/tmp/qemu-debugcon-host,raw,echo=0,mode=666
 Restart=always
 RestartSec=1
 
