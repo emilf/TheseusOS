@@ -133,6 +133,27 @@ impl OutputDriver {
 /// Write a line to the global output driver
 /// This is the main function to use for output throughout the codebase
 pub fn write_line(message: &str) -> bool {
+    // Keep default boot output high-signal to conserve context.
+    // Verbose output can be re-enabled by toggling `VERBOSE_OUTPUT`.
+    if !crate::VERBOSE_OUTPUT {
+        let trimmed = message.trim_start();
+        let noisy_prefixes = [
+            "✓ ",
+            "Collecting ",
+            "Getting ",
+            "Setting ",
+            "Allocating ",
+            "Copying ",
+            "Exiting ",
+            "Entering ",
+            "Finalizing ",
+            "Found ",
+        ];
+        if noisy_prefixes.iter().any(|p| trimmed.starts_with(p)) {
+            return true;
+        }
+    }
+
     let driver_ptr = GLOBAL_OUTPUT_DRIVER.load(Ordering::SeqCst);
     if driver_ptr.is_null() {
         return false;

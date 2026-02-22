@@ -2812,7 +2812,7 @@ impl XhciDriver {
 
         let mut first_connected = None;
         for state in &states {
-            log_info!("xHCI {} port{:02} {}", ident, state.index, state.summary());
+            log_debug!("xHCI {} port{:02} {}", ident, state.index, state.summary());
             if first_connected.is_none() && state.connected && !state.overcurrent {
                 first_connected = Some(*state);
             }
@@ -3753,7 +3753,7 @@ impl XhciDriver {
                 product_id,
                 device_release
             );
-            log_info!(
+            log_debug!(
                 "xHCI {} class={:#04x} subclass={:#04x} protocol={:#04x} max_packet_ep0={}",
                 ident,
                 device_class,
@@ -3761,7 +3761,7 @@ impl XhciDriver {
                 device_protocol,
                 max_packet_size
             );
-            log_info!(
+            log_debug!(
                 "xHCI {} strings: manufacturer={} product={} serial={} configurations={}",
                 ident,
                 manufacturer_index,
@@ -3775,14 +3775,14 @@ impl XhciDriver {
                 .map(|byte| format!("{:02x}", byte))
                 .collect::<Vec<_>>()
                 .join(" ");
-            log_info!(
+            log_debug!(
                 "xHCI {} device descriptor (first {} bytes): {}",
                 ident,
                 descriptor.len(),
                 partial
             );
         } else {
-            log_info!(
+            log_debug!(
                 "xHCI {} device descriptor returned {} byte(s): {:02x?}",
                 ident,
                 descriptor.len(),
