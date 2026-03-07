@@ -9,5 +9,6 @@ Welcome! This living wiki covers how the unified TheseusOS bootloader and kernel
 - [Hardware & Drivers](hardware-and-drivers.md) — device inventory, driver manager, serial stack, and interrupts.
 - [Driver Systems Deep Dive](driver-systems-deep-dive.md) — comprehensive technical guide to DMA, PCI discovery, and driver framework.
 - [Development & Debugging](development-and-debugging.md) — building, running under QEMU, logging, and the serial monitor.
+- [QEMU Runner](qemu-runner.md) — the `theseus-qemu` Rust runner (profiles, opt-in sockets, reproducible argv).
 
 Looking for historical notes? Everything that pre-dates this rewrite now lives in [docs/archive](archive/).
