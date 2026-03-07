@@ -5,14 +5,20 @@
 //! configuration in a single place.
 
 /// When `true` enable verbose kernel debug output (many debug traces).
-pub const VERBOSE_KERNEL_OUTPUT: bool = true;
+///
+/// Default is `false` to keep boot logs high-signal and conserve context when
+/// iterating with AI tooling.
+pub const VERBOSE_KERNEL_OUTPUT: bool = false;
 
 /// When `true` the kernel will idle (keep running) after initialization.
 /// When `false` the kernel will exit QEMU immediately (useful for CI).
 pub const KERNEL_SHOULD_IDLE: bool = true;
 
 /// When `true`, dump the UEFI hardware inventory entries during driver init.
-pub const PRINT_HARDWARE_INVENTORY: bool = true;
+///
+/// Default is `false` to avoid logspam; use the monitor or enable verbose logs
+/// when actively debugging device discovery.
+pub const PRINT_HARDWARE_INVENTORY: bool = false;
 
 /// When `true`, enable serial output to COM1.
 pub const ENABLE_SERIAL_OUTPUT: bool = true;
@@ -64,8 +70,11 @@ pub const USB_RUN_SW_INT_SELF_TEST: bool = false;
 
 use crate::logging::{LogLevel, OutputTarget};
 
-/// Default log level for modules without specific configuration
-pub const DEFAULT_LOG_LEVEL: LogLevel = LogLevel::Trace;
+/// Default log level for modules without specific configuration.
+///
+/// Keep this relatively quiet by default; enable DEBUG/TRACE via the kernel
+/// monitor (`loglevel ...`) or by changing this constant when doing deep bring-up.
+pub const DEFAULT_LOG_LEVEL: LogLevel = LogLevel::Info;
 
 /// Per-module log level overrides
 ///

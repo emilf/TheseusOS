@@ -40,7 +40,10 @@ if [[ "$HEADLESS" == "true" || "$HEADLESS" == "headless" ]]; then
 #  QEMU_MONITOR_ARGS=( -chardev pipe,id=mon0,path=/tmp/qemu-monitor -monitor chardev:mon0  -chardev pipe,id=serial0,path=/tmp/qemu-serial -serial chardev:serial0)
   QEMU_PAUSE_ARGS=()
   QEMU_DEBUG_ARGS=( -device isa-debugcon,chardev=debugcon )
-  QEMU_DEBUG_CHAR_ARGS=( -chardev stdio,id=debugcon -d int,guest_errors,cpu_reset) #,trace:usb_* )
+  # QEMU debug flags can create *massive* log output. Keep defaults high-signal.
+  # Override with: QEMU_DEBUG_FLAGS="int,guest_errors,cpu_reset" ./startQemu.sh headless 10
+  QEMU_DEBUG_FLAGS=${QEMU_DEBUG_FLAGS:-guest_errors}
+  QEMU_DEBUG_CHAR_ARGS=( -chardev stdio,id=debugcon -d "${QEMU_DEBUG_FLAGS}" ) #,trace:usb_* )
 else
   echo "Starting QEMU in headed mode..."
   echo "  QEMU Debug Driver output: debug.log"
