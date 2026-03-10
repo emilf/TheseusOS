@@ -50,14 +50,19 @@
 mod commands;
 mod parsing;
 
+use alloc::collections::VecDeque;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
+use spin::Mutex;
+use x86_64::instructions::interrupts;
+
 use crate::config;
 use crate::drivers::manager::driver_manager;
 use crate::drivers::serial;
 use crate::drivers::traits::DeviceClass;
-use alloc::format;
-use alloc::string::String;
-use alloc::vec::Vec;
-use spin::Mutex;
+use crate::input::keyboard::{pop_event as keyboard_pop_event, KeyTransition};
 
 use crate::log_debug;
 
@@ -69,6 +74,8 @@ const MAX_LINE: usize = 128;
 
 /// Shared monitor instance guarded by a spin mutex.
 static MONITOR: Mutex<Option<Monitor>> = Mutex::new(None);
+static SERIAL_INPUT_QUEUE: Mutex<VecDeque<u8>> = Mutex::new(VecDeque::new());
+static SERIAL_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Prepare the monitor subsystem
 ///
@@ -121,16 +128,81 @@ pub fn push_serial_byte(byte: u8) {
         return;
     }
 
-    let mut guard = MONITOR.lock();
-    if guard.is_none() {
+    {
+        let mut queue = SERIAL_INPUT_QUEUE.lock();
+        queue.push_back(byte);
+    }
+    SERIAL_PENDING.store(true, Ordering::Release);
+}
+
+pub fn process_pending_serial() {
+    if !config::ENABLE_KERNEL_MONITOR {
+        return;
+    }
+    if !SERIAL_PENDING.swap(false, Ordering::AcqRel) {
+        return;
+    }
+
+    let drained = {
+        let mut queue = SERIAL_INPUT_QUEUE.lock();
+        let mut items = Vec::with_capacity(queue.len());
+        while let Some(byte) = queue.pop_front() {
+            items.push(byte);
+        }
+        items
+    };
+
+    if drained.is_empty() {
+        return;
+    }
+
+    with_monitor(move |monitor| {
+        for byte in drained {
+            monitor.handle_char(byte);
+        }
+    });
+}
+
+fn with_monitor<F>(f: F)
+where
+    F: FnOnce(&mut Monitor),
+{
+    let _guard = InterruptGuard::new();
+
+    let mut monitor_guard = MONITOR.lock();
+    if monitor_guard.is_none() {
         let mut monitor = Monitor::new();
         monitor.activate();
-        *guard = Some(monitor);
+        *monitor_guard = Some(monitor);
         log_debug!("Monitor interactive console ready");
     }
 
-    if let Some(monitor) = guard.as_mut() {
-        monitor.handle_char(byte);
+    if let Some(monitor) = monitor_guard.as_mut() {
+        f(monitor);
+    }
+}
+
+struct InterruptGuard {
+    restore: bool,
+}
+
+impl InterruptGuard {
+    fn new() -> Self {
+        let was_enabled = interrupts::are_enabled();
+        if !was_enabled {
+            interrupts::enable();
+        }
+        Self {
+            restore: !was_enabled,
+        }
+    }
+}
+
+impl Drop for InterruptGuard {
+    fn drop(&mut self) {
+        if self.restore {
+            interrupts::disable();
+        }
     }
 }
 
@@ -146,6 +218,7 @@ pub fn push_serial_byte(byte: u8) {
 pub fn start_monitor() -> ! {
     init();
     loop {
+        process_pending_serial();
         x86_64::instructions::hlt();
     }
 }
@@ -192,9 +265,9 @@ impl Monitor {
 
     pub(crate) fn write_bytes(&self, bytes: &[u8]) {
         if serial::write_bytes_direct(bytes).is_err() {
-            let _ = driver_manager()
-                .lock()
-                .write_class(self.serial_class, bytes);
+            if let Some(mut mgr) = driver_manager().try_lock() {
+                let _ = mgr.write_class(self.serial_class, bytes);
+            }
         }
     }
 
@@ -287,6 +360,7 @@ impl Monitor {
             "ptwalk" | "pt" => self.cmd_ptwalk(&parts[1..]),
             "ptdump" => self.cmd_ptdump(&parts[1..]),
             "devices" | "dev" => self.cmd_devices(),
+            "pci" => self.cmd_pci(&parts[1..]),
             "acpi" => self.cmd_acpi(),
             "phys" | "physmem" => self.cmd_phys(),
             "stack" | "bt" => self.cmd_stack_trace(),
@@ -302,6 +376,8 @@ impl Monitor {
             "reset" => self.cmd_reset(),
             "halt" => self.cmd_halt(),
             "clear" | "cls" => self.cmd_clear(),
+            "usb" => self.cmd_usb(&parts[1..]),
+            "kbd" => self.cmd_kbd(),
             _ => {
                 self.writeln(&format!("Unknown command: '{}'", parts[0]));
                 self.writeln("Type 'help' for available commands");
@@ -326,6 +402,9 @@ impl Monitor {
         self.writeln("  acpi                - Display ACPI information");
         self.writeln("  phys|physmem        - Display physical memory statistics");
         self.writeln("  devices|dev         - List registered devices");
+        self.writeln("  pci                 - Enumerate PCI functions and BARs");
+        self.writeln("  usb [OPTIONS]       - USB/xHCI diagnostics (use 'usb help' for options)");
+        self.writeln("  kbd                 - Dump buffered keyboard events");
         self.writeln("");
         self.writeln("Tables & Maps:");
         self.writeln("  idt [VECTOR]        - Display IDT information");
@@ -349,5 +428,46 @@ impl Monitor {
         self.writeln("  halt                - Halt CPU");
         self.writeln("  clear|cls           - Clear screen");
         self.writeln("  help|?              - Show this help");
+    }
+
+    /// Drain the shared keyboard input queue and print each transition.
+    ///
+    /// This remains a handy teaching aid: students can validate the keyboard stack before they
+    /// wire higher-level input routing.
+    fn cmd_kbd(&mut self) {
+        let mut count = 0;
+        loop {
+            match keyboard_pop_event() {
+                Some(event) => {
+                    count += 1;
+                    let state = match event.transition {
+                        KeyTransition::Pressed => "press",
+                        KeyTransition::Released => "release",
+                    };
+                    if let Some(ch) = event.ascii {
+                        let ascii_repr = match ch {
+                            '\n' => String::from("\\n"),
+                            '\t' => String::from("\\t"),
+                            ' ' => String::from("' '"),
+                            _ => format!("'{}'", ch),
+                        };
+                        self.writeln(&format!(
+                            "{:>7} usage=0x{:02x} label={} ascii={}",
+                            state, event.usage, event.label, ascii_repr
+                        ));
+                    } else {
+                        self.writeln(&format!(
+                            "{:>7} usage=0x{:02x} label={}",
+                            state, event.usage, event.label
+                        ));
+                    }
+                }
+                None => break,
+            }
+        }
+
+        if count == 0 {
+            self.writeln("(keyboard buffer empty)");
+        }
     }
 }

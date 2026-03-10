@@ -303,7 +303,7 @@ pub unsafe fn install_timer_vector_runtime() {
     let ent = base + ((APIC_TIMER_VECTOR as u64) * 16);
 
     // Get handler address and code segment selector
-    let handler = handler_timer as usize as u64;
+    let handler = handler_timer as *const () as usize as u64;
     let selector = crate::gdt::KERNEL_CS as u64;
 
     // Build IDT entry low 64 bits

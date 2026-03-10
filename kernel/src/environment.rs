@@ -101,7 +101,7 @@ pub extern "C" fn after_high_half_entry() -> ! {
     unsafe {
         crate::stack::switch_to_kernel_stack_and_jump(
             top_aligned,
-            continue_after_stack_switch as usize as u64,
+            continue_after_stack_switch as *const () as usize as u64,
         )
     }
 }
@@ -383,6 +383,15 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
 
     log_info!("Timer configured and interrupts enabled");
 
+    if crate::config::USB_RUN_SW_INT_SELF_TEST {
+        // Validate that the IDT entry for the xHCI MSI vector is installed and
+        // callable. This does *not* validate PCI MSI delivery, only our own
+        // interrupt/handler plumbing.
+        unsafe {
+            core::arch::asm!("int 0x50");
+        }
+    }
+
     // Small delay to ensure all debug bytes are emitted
     for _ in 0..1_000_00 {
         core::hint::spin_loop();
@@ -403,8 +412,16 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
         log_warn!("Entering idle loop - heart animation active");
         log_warn!("Kill QEMU to stop the kernel");
 
+        // Kick a one-shot MSI/MSI-X self-test after IF is enabled so we can
+        // verify interrupt delivery without any user input.
+        crate::drivers::usb::kick_msix_self_test();
+
         // Idle loop - the timer interrupt will handle the heart animation
         loop {
+            crate::monitor::process_pending_serial();
+            crate::drivers::usb::service_deferred_runtime();
+            // If the full polling fallback is enabled (debug mode), keep calling it.
+            crate::drivers::usb::poll_runtime_events_fallback();
             // Use halt instruction to reduce CPU usage while waiting for interrupts
             x86_64::instructions::hlt();
         }

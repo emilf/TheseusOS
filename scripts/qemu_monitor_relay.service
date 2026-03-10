@@ -1,12 +1,11 @@
 [Unit]
-Description=Persistent QEMU Monitor Relay (named pipe pair)
+Description=Persistent QEMU monitor relay (PTY pair)
 After=default.target
 
 [Service]
-Type=simple
-ExecStartPre=/usr/bin/rm -f /tmp/qemu-monitor.in /tmp/qemu-monitor.out
-ExecStart=/usr/bin/mkfifo /tmp/qemu-monitor.in /tmp/qemu-monitor.out; \
-           exec /usr/bin/socat -u PIPE:/tmp/qemu-monitor.in PIPE:/tmp/qemu-monitor.out
+ExecStart=/usr/bin/socat \
+    PTY,link=/tmp/qemu-monitor,raw,echo=0,mode=666 \
+    PTY,link=/tmp/qemu-monitor-host,raw,echo=0,mode=666
 Restart=always
 RestartSec=1
 

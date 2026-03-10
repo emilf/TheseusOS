@@ -1,0 +1,15 @@
+[Unit]
+Description=Persistent QEMU QMP relay (unix socket host → qemu socket)
+After=default.target
+
+[Service]
+# Listens on /tmp/qemu-qmp-host.sock and forwards each connection to /tmp/qemu-qmp.sock.
+# This lets tooling connect to a stable path even if QEMU restarts.
+ExecStart=/usr/bin/socat \
+  UNIX-LISTEN:/tmp/qemu-qmp-host.sock,fork,reuseaddr,mode=666 \
+  UNIX-CONNECT:/tmp/qemu-qmp.sock
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=default.target

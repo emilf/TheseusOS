@@ -19,7 +19,6 @@
 //! - NMI: IST stack for non-maskable interrupts
 //! - Machine Check (MC): IST stack for hardware errors
 
-use core::sync::atomic::Ordering;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
 
@@ -30,6 +29,9 @@ use super::{DOUBLE_FAULT_CONTEXT, TIMER_TICKS};
 use super::get_handoff_for_timer;
 use super::{get_apic_base, write_apic_register};
 use super::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9}; // # TODO: Remove this and get framebuffer via driver subsystem
+use crate::drivers::usb;
+use crate::log_trace;
+use core::sync::atomic::AtomicBool;
 
 // ============================================================================
 // Exception Handlers
@@ -306,7 +308,7 @@ pub(super) extern "x86-interrupt" fn handler_timer(_stack: InterruptStackFrame) 
     }
 
     // Record the tick atomically
-    TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
+    TIMER_TICKS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
     // Update heart animation if handoff is available
     // # TODO: Update this to get framebuffer via driver subsystem
@@ -350,6 +352,28 @@ pub(super) extern "x86-interrupt" fn handler_serial_rx(_stack: InterruptStackFra
             print_str_0xe9("[serial] irq but no handler\n");
         }
     }
+}
+
+/// xHCI MSI interrupt handler (Vector 0x50)
+///
+/// This handler services message-signalled interrupts delivered by xHCI host controllers.
+/// It clears the LAPIC in-service state and forwards processing to the USB driver so
+/// controller completions are drained promptly.
+pub(super) extern "x86-interrupt" fn handler_usb_xhci(_stack: InterruptStackFrame) {
+    unsafe {
+        let apic_base = get_apic_base();
+        write_apic_register(apic_base, 0xB0, 0);
+    }
+
+    static FIRST_XHCI_MSI: AtomicBool = AtomicBool::new(true);
+    if FIRST_XHCI_MSI.swap(false, core::sync::atomic::Ordering::AcqRel) {
+        // This is intentionally INFO-level and one-shot so it's visible even
+        // when TRACE output is noisy or filtered.
+        crate::log_info!("xHCI MSI handler invoked (first delivery)");
+    } else {
+        log_trace!("xHCI MSI handler invoked");
+    }
+    usb::service_runtime_interrupt();
 }
 
 /// Spurious interrupt handler (Vector 0xFF and APIC error vector 0xFE)

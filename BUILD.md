@@ -185,7 +185,7 @@ make PROFILE=debug debug
 - The Makefile copies the unified `BOOTX64.EFI` binary to `EFI/BOOT/BOOTX64.EFI`
 - When you build with `PROFILE=debug`, the debug artifact from `target/x86_64-unknown-uefi/debug` is copied
 - No separate kernel file needed; everything is in `BOOTX64.EFI`
-- Bootloader builds use the workspace target spec `x86_64-unknown-uefi-dwarf.json`, which is a copy of the upstream UEFI target tweaked to emit DWARF debug info instead of PDB. Cargo is invoked with `-Z build-std=core,alloc` (nightly toolchain and `rust-src` component) so no manual setup is required beyond `rustup toolchain install` handled in `rust-toolchain.toml`.
+- Bootloader builds use the workspace target spec `x86_64-unknown-uefi-dwarf.json`, which is a copy of the upstream UEFI target tweaked to emit DWARF debug info instead of PDB. Cargo is invoked with `-Z build-std=core,alloc -Z json-target-spec` (nightly toolchain and `rust-src` component) so no manual setup is required beyond `rustup toolchain install` handled in `rust-toolchain.toml`.
 
 ### OVMF / Firmware handling
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=QEMU debugcon logger (reads PTY host end → log file)
+After=default.target
+
+[Service]
+# Requires qemu_debugcon_relay.service to be running (creates /tmp/qemu-debugcon-host)
+# Writes an append-only log you can `tail -f`.
+ExecStart=/usr/bin/bash -lc 'set -euo pipefail; mkdir -p /tmp; : > /tmp/qemu-debugcon.log; exec stdbuf -o0 cat /tmp/qemu-debugcon-host >> /tmp/qemu-debugcon.log'
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=default.target

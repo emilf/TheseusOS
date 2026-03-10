@@ -38,7 +38,7 @@ use theseus_shared::handoff::{Handoff, HANDOFF};
 /// - `kernel_virtual_entry`: Virtual address where kernel will start execution
 pub fn set_kernel_image_from_loaded_image() {
     theseus_shared::qemu_println!("Setting kernel image fields (single binary, no UEFI)");
-    let entry_low = theseus_kernel::kernel_entry as usize as u64;
+    let entry_low = theseus_kernel::kernel_entry as *const () as usize as u64;
     let align_2mb: u64 = 2 * 1024 * 1024;
     let img_base = entry_low & !(align_2mb - 1);
     let aligned_size = 16 * 1024 * 1024; // 16 MiB span to cover code+data

@@ -10,7 +10,8 @@ Milestone 0 was about auditing prerequisites before writing any USB code. This n
 
 ## DMA-Capable Memory Inventory
 - The persistent allocator now exposes contiguous allocation/free helpers for DMA workloads (`kernel/src/physical_memory.rs:755`), and `kernel/src/memory/dma.rs:1` wraps them in a zeroed, kernel-mapped `DmaBuffer`.
-- Follow-up work: surface cache policy flags (write-back vs write-combining) and add pooled buffer lifetimes so drivers can recycle DMA memory rather than dropping to the global allocator.
+- Buffer helpers now expose cache-policy flags (write-back, write-combining, uncached) so drivers can request write-combining descriptors or uncached bounce buffers explicitly.
+- Added a simple fixed-size DMA pool helper (`kernel/src/memory/dma_pool.rs`) to recycle descriptor/ring allocations instead of constantly hitting the global contiguous allocator.
 - MMIO regions already use PCD/PWT flags when mapped (`kernel/src/memory/mapping.rs:258`), which is good for controllers, but we still need explicit APIs to map DMA buffers with the write-back policy xHCI expects.
 
 ## Hardware Inventory Logging Improvements
@@ -18,7 +19,10 @@ Milestone 0 was about auditing prerequisites before writing any USB code. This n
 - Kernel logging of the firmware-provided inventory is enabled by default (`kernel/src/config.rs:15`), which means every boot will emit the device list needed to correlate PCI bus IDs with USB endpoints during early debugging.
 - With the new summaries (USB port/interface, PCI device/function numbering), we can sanity-check the QEMU topology before writing any enumeration code and confirm the keyboard is actually visible at boot.
 
-## Next Steps Toward Milestone 1
-- Add MSI/MSI-X enablement helpers (and IO-APIC fallback policy) so future USB drivers can opt into edge-triggered interrupts cleanly.
-- Extend the new DMA helper with cache hints and pooled lifetimes, then start migrating upcoming drivers to it.
-- Refine PCI bridge resource windows based on BAR sizing (I/O + MEM) so downstream devices decode correctly without wasting aperture space.
+## ACPI Legacy Ownership Inputs
+- `PlatformInfo::legacy_usb` now captures the FADT-provided SMI command port, SCI line, and ownership bytes so firmware handoff sequencing is documented alongside other prerequisites.
+- Any ACPI `XHCI` tables are mirrored into `PlatformInfo::xhci_descriptors`, preserving controller-specific hints for later milestones.
+
+## Follow-Up Actions
+- ✅ Integrated the `pci::enable_msi` helper with the xHCI driver. A dedicated MSI vector (0x50) is now wired into the IDT, a lightweight handler drains controller events, and the driver programs the capability whenever firmware exposes it—falling back to polling only when MSI is absent.
+- ✅ Added a ring recycler atop the DMA helper so command and event rings reuse zeroed, aligned buffers across controller resets instead of re-allocating from the global contiguous allocator.

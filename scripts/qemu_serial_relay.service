@@ -1,12 +1,11 @@
 [Unit]
-Description=Persistent QEMU Serial Relay (named pipe pair)
+Description=Persistent QEMU serial relay (PTY pair)
 After=default.target
 
 [Service]
-Type=simple
-ExecStartPre=/usr/bin/rm -f /tmp/qemu-serial.in /tmp/qemu-serial.out
-ExecStart=/usr/bin/mkfifo /tmp/qemu-serial.in /tmp/qemu-serial.out; \
-           exec /usr/bin/socat -u PIPE:/tmp/qemu-serial.in PIPE:/tmp/qemu-serial.out
+ExecStart=/usr/bin/socat \
+    PTY,link=/tmp/qemu-serial,raw,echo=0,mode=666 \
+    PTY,link=/tmp/qemu-serial-host,raw,echo=0,mode=666
 Restart=always
 RestartSec=1
 

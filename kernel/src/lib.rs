@@ -21,6 +21,7 @@ pub mod environment;
 pub mod framebuffer;
 pub mod gdt;
 pub mod handoff;
+pub mod input;
 pub mod interrupts;
 pub mod logging;
 pub mod memory;

@@ -58,7 +58,7 @@ use debug::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9};
 // Make handlers available to submodules and IDT setup
 use handlers::{
     handler_bp, handler_de, handler_df, handler_gp, handler_mc, handler_nmi, handler_pf,
-    handler_serial_rx, handler_spurious, handler_timer, handler_ud,
+    handler_serial_rx, handler_spurious, handler_timer, handler_ud, handler_usb_xhci,
 };
 
 use core::sync::atomic::AtomicU32;
@@ -74,6 +74,9 @@ pub const APIC_TIMER_VECTOR: u8 = 0x40; // 64
 
 /// Serial RX interrupt vector number  
 pub const SERIAL_RX_VECTOR: u8 = APIC_TIMER_VECTOR + 1; // 65
+
+/// Default MSI vector assigned to xHCI controllers.
+pub const XHCI_MSI_VECTOR: u8 = 0x50;
 
 /// APIC error interrupt vector
 const APIC_ERROR_VECTOR: u8 = 0xFE; // 254
@@ -242,6 +245,7 @@ pub unsafe fn setup_idt() {
         // Install hardware interrupt handlers
         idt[APIC_TIMER_VECTOR as usize].set_handler_fn(handler_timer);
         idt[SERIAL_RX_VECTOR as usize].set_handler_fn(handler_serial_rx);
+        idt[XHCI_MSI_VECTOR as usize].set_handler_fn(handler_usb_xhci);
         idt[0xFF].set_handler_fn(handler_spurious);
         idt[APIC_ERROR_VECTOR as usize].set_handler_fn(handler_spurious);
 
