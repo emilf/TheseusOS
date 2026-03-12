@@ -1,7 +1,30 @@
-//! Test Environment Specifications
+//! Module: shared::test_environments
 //!
-//! This module defines the different environments that tests can run in,
-//! and what services are available in each environment.
+//! SOURCE OF TRUTH:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/memory.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//! - docs/axioms/memory.md#A3:-The-boot-path-keeps-a-temporary-heap-before-switching-to-a-permanent-kernel-heap
+//! - docs/axioms/arch-x86_64.md#A1:-The-kernel-runs-in-a-no_std-x86_64-environment-with-explicit-CPU-and-descriptor-table-setup
+//!
+//! INVARIANTS:
+//! - This module classifies tests by the execution environment they assume rather than by individual subsystem details.
+//! - The distinctions here reflect real bring-up boundaries: bare-metal handoff time, post-kernel-initialization time, and future user-space time.
+//! - These definitions are descriptive metadata for tests; they do not themselves enforce sandboxing or capability checks.
+//!
+//! SAFETY:
+//! - Mislabeling a test environment can hide invalid assumptions about heap, interrupts, or mapping availability.
+//! - Any future enforcement tied to these enums must stay synchronized with the actual boot and kernel bring-up phases.
+//!
+//! PROGRESS:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/memory.md
+//!
+//! Test environment specifications.
 
 use core::fmt;
 

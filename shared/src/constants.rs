@@ -1,7 +1,27 @@
-//! Constants and magic numbers used throughout the UEFI loader
+//! Module: shared::constants
 //!
-//! This module centralizes all magic numbers, I/O port addresses, and other
-//! constants to improve code readability and maintainability.
+//! SOURCE OF TRUTH:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/observability.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/boot.md#A1:-The-kernel-boots-as-a-single-UEFI-executable
+//! - docs/axioms/debug.md#A1:-Kernel-logging-is-initialized-at-kernel-entry-and-is-designed-to-work-without-heap-allocation
+//!
+//! INVARIANTS:
+//! - This module centralizes stable cross-crate constants used by the single-binary boot path and low-level debug/exit helpers.
+//! - QEMU debug and debug-exit port assignments live here so bootloader and shared macros agree on the same I/O contract.
+//! - These values are support definitions, not an alternate source of architectural truth.
+//!
+//! SAFETY:
+//! - Low-level port constants must match the code that performs raw I/O; changing them silently breaks debug output or QEMU exit behavior.
+//! - Constants that encode ABI or firmware assumptions must stay synchronized with the boot/handoff code that consumes them.
+//!
+//! PROGRESS:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/observability.md
+//!
+//! Constants and magic numbers shared across the boot path.
 
 /// I/O Port Addresses
 pub mod io_ports {

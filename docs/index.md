@@ -8,6 +8,7 @@ Use it in this order:
 - Read [`docs/axioms/`](axioms/) for binding truths the current code relies on.
 - Read [`docs/plans/`](plans/) for evolving work, mismatch notes, and risks.
 - Use [`docs/map.md`](map.md) to jump between plans, axioms, and implementing modules.
+- Read [`docs/bootstrap-status.md`](bootstrap-status.md) for an audit of what the reality-first documentation bootstrap completed versus what remains maintenance work.
 - Read the repo rules in [`../AGENTS.md`](../AGENTS.md) before making architectural changes.
 - Use [`development-and-debugging.md`](development-and-debugging.md) for build/debug workflow details.
 
@@ -20,6 +21,7 @@ TheseusOS currently boots as a single UEFI executable. The bootloader gathers fi
 ### Evidence
 
 - [`_inventory.md`](_inventory.md) — evidence-only repository inventory built from current code.
+- [`bootstrap-status.md`](bootstrap-status.md) — audit of bootstrap-complete work versus follow-on cleanup.
 
 ### Axioms
 

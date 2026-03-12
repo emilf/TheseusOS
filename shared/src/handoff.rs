@@ -1,3 +1,28 @@
+//! Module: shared::handoff
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/memory.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/boot.md#A1:-The-kernel-boots-as-a-single-UEFI-executable
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//! - docs/axioms/memory.md#A3:-The-boot-path-keeps-a-temporary-heap-before-switching-to-a-permanent-kernel-heap
+//!
+//! INVARIANTS:
+//! - `Handoff` is the stable bootloader-to-kernel ABI used by the current single-binary UEFI boot path.
+//! - The structure carries framebuffer, memory-map, ACPI, firmware, boot-time, CPU, hardware-inventory, kernel-image, temporary-heap, and boot-service-exit state.
+//! - `HANDOFF` is mutable only during the single-threaded bootloader phase; the kernel receives a copied snapshot before boot services are exited.
+//!
+//! SAFETY:
+//! - `#[repr(C)]` layout stability is part of the boot ABI and must not drift casually.
+//! - Pointer/length fields are only sound if producers and consumers agree about ownership, alignment, and mapping state.
+//! - Reusing or mutating the bootloader-side static after handoff would invalidate kernel assumptions about copied boot state.
+//!
+//! PROGRESS:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/memory.md
+//!
 /// Handoff structure passed from bootloader to kernel.
 ///
 /// This structure contains all the system information collected during UEFI boot

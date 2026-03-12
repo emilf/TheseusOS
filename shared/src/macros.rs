@@ -1,8 +1,28 @@
-//! Macros for QEMU debug output and exit
+//! Module: shared::macros
 //!
-//! These macros centralize low-level I/O port sequences so callers can
-//! print to QEMU's debug port (0xE9) and exit via isa-debug-exit (0xF4)
-//! without duplicating inline assembly.
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//! - docs/plans/boot-flow.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A1:-Kernel-logging-is-initialized-at-kernel-entry-and-is-designed-to-work-without-heap-allocation
+//! - docs/axioms/debug.md#A2:-Panic-handling-reports-failure-through-kernel-logging-and-exits-QEMU-with-error-status
+//!
+//! INVARIANTS:
+//! - These macros provide the shared raw QEMU debug-port and debug-exit helpers used by early boot and ultra-low-level instrumentation.
+//! - They remain available for bootloader and emergency use, but they are not the kernel's preferred steady-state logging surface.
+//! - Port assignments come from `shared::constants` so the I/O contract stays centralized.
+//!
+//! SAFETY:
+//! - Every macro here performs raw port I/O and assumes the target environment is x86-compatible and permits those operations.
+//! - Using these helpers in the wrong execution context can fault or create misleading output ordering relative to the main logging stack.
+//! - Because these macros bypass richer logging policy, they should stay narrow and mechanically obvious.
+//!
+//! PROGRESS:
+//! - docs/plans/observability.md
+//! - docs/plans/boot-flow.md
+//!
+//! Macros for QEMU debug output and exit.
 //!
 //! # Deprecation Notice
 //!

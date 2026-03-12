@@ -1,13 +1,31 @@
 #![allow(clippy::missing_safety_doc)]
 
-//! Global allocator shim with pre-/post-ExitBootServices backends.
+//! Module: shared::allocator
 //!
-//! - Before ExitBootServices: forwards to UEFI Boot Services via function pointers set by the
-//!   bootloader at startup.
-//! - After kernel maps its permanent heap: switched to a `linked_list_allocator::Heap`.
+//! SOURCE OF TRUTH:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/memory.md
 //!
-//! The shim is installed as `#[global_allocator]` by the bootloader crate. The kernel uses it
-//! transparently; no crate should define another global allocator.
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//! - docs/axioms/memory.md#A3:-The-boot-path-keeps-a-temporary-heap-before-switching-to-a-permanent-kernel-heap
+//!
+//! INVARIANTS:
+//! - This crate exposes the single global allocator shim shared by bootloader and kernel code.
+//! - Before `ExitBootServices`, allocation forwards through bootloader-installed firmware callbacks.
+//! - After the kernel maps a writable heap and calls `switch_to_kernel_heap`, allocation uses a local `linked_list_allocator::Heap`.
+//! - No crate in this workspace should install a competing global allocator.
+//!
+//! SAFETY:
+//! - Bootloader-installed pre-exit function pointers must remain valid for the entire pre-exit phase.
+//! - `init_kernel_heap` is only sound when the supplied region is already mapped, writable, and exclusively owned as heap backing.
+//! - Switching to the kernel heap too early or reusing the same backing for another purpose corrupts allocator state globally.
+//!
+//! PROGRESS:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/memory.md
+//!
+//! Global allocator shim with pre-/post-`ExitBootServices` backends.
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
