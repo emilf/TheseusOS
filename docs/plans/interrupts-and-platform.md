@@ -6,7 +6,7 @@ Track descriptor-table setup, APIC interrupt routing, timer bring-up, ACPI platf
 
 ## Plan vs Repo
 
-- The repo clearly implements GDT/TSS/IDT/APIC bring-up, but current docs do not make it obvious which interrupt truths are binding and which SMP pieces are still just discovery.
+- The repo clearly implements GDT/TSS/IDT/APIC bring-up, but earlier docs did not make it obvious which interrupt truths were binding and which SMP pieces were still just discovery.
 
 ## Implemented Invariants
 

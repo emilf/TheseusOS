@@ -21,9 +21,6 @@
 //! - docs/plans/boot-flow.md
 //!
 //! TheseusOS UEFI bootloader (single-binary).
-//!
-//! This is the unified UEFI application for TheseusOS. It combines the bootloader
-//! and kernel into a single binary.
 
 #![no_std]
 #![no_main]

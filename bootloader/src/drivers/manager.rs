@@ -22,8 +22,6 @@
 //! - docs/plans/observability.md
 //!
 //! Bootloader output-driver manager.
-//!
-//! Manages different output drivers and automatically selects the best available one.
 
 use core::sync::atomic::{AtomicPtr, Ordering};
 

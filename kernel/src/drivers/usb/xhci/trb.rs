@@ -18,9 +18,6 @@
 //! - docs/plans/drivers-and-io.md
 //!
 //! TRB encodings and helpers for the xHCI driver.
-//!
-//! This module centralizes the TRB type constants and the small helper structs
-//! used when writing to the command ring or consuming from the event ring.
 
 /// TRB types (subset used by the teaching driver).
 pub(crate) const TRB_TYPE_NOOP_COMMAND: u32 = 0x17;

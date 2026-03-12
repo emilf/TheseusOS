@@ -19,9 +19,6 @@
 //! - docs/plans/interrupts-and-platform.md
 //!
 //! MADT (Multiple APIC Description Table) parser.
-//!
-//! This module parses the MADT table to extract APIC controllers, CPU entries,
-//! and related interrupt-topology information.
 
 use crate::{log_debug, log_error, log_info};
 use acpi::AcpiTables;
@@ -50,19 +47,7 @@ pub struct IoApicEntry {
     pub gsi_base: u32,
 }
 
-/// Parse MADT information from ACPI tables
-///
-/// This function extracts MADT information including CPU APIC IDs,
-/// Local APIC address, and IO APIC entries.
-///
-/// # Arguments
-///
-/// * `tables` - Parsed ACPI tables
-///
-/// # Returns
-///
-/// * `Ok(MadtInfo)` - MADT information extracted successfully
-/// * `Err(&'static str)` - If parsing failed
+/// Parse MADT information from ACPI tables.
 pub fn parse_madt(tables: &AcpiTables<impl acpi::AcpiHandler>) -> Result<MadtInfo, &'static str> {
     log_info!("Parsing MADT (Multiple APIC Description Table)...");
 

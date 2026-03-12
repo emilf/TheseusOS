@@ -18,10 +18,7 @@
 //! PROGRESS:
 //! - docs/plans/memory.md
 //!
-//! Page table types and helpers moved out of `memory.rs` to reduce file size
-//! and separate low-level table layout from mapping logic.
-//!
-//! This module is intentionally narrow: representation and primitive table access.
+//! Page table types and helpers moved out of `memory.rs` to reduce file size and separate low-level table layout from mapping logic.
 
 use super::{
     phys_offset_is_active, phys_to_virt_pa, PAGE_MASK, PAGE_SIZE, PTE_PRESENT, PTE_WRITABLE,

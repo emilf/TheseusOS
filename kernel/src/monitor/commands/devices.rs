@@ -21,8 +21,6 @@
 //! - docs/plans/drivers-and-io.md
 //!
 //! Device enumeration command.
-//!
-//! This module implements the `devices` command for listing registered hardware devices.
 
 use crate::acpi;
 use crate::drivers::manager::driver_manager;
@@ -31,26 +29,7 @@ use crate::monitor::Monitor;
 use alloc::{format, string::String, vec::Vec};
 
 impl Monitor {
-    /// List all registered devices
-    ///
-    /// Enumerates all hardware devices registered with the driver manager,
-    /// showing their class, status, physical address, and IRQ assignments.
-    ///
-    /// # Examples
-    /// ```text
-    /// devices           # List all devices
-    /// dev               # Short alias
-    /// ```
-    ///
-    /// # Output Format
-    /// For each device, displays:
-    /// - Index number
-    /// - Device ID
-    /// - Device class (Serial, Storage, etc.)
-    /// - Status (bound/pending)
-    /// - Physical address (if any)
-    /// - IRQ number (if any)
-    /// - Driver state pointer (if bound)
+    /// List all registered devices.
     pub(in crate::monitor) fn cmd_devices(&self) {
         let devices: Vec<_> = {
             let mgr = driver_manager().lock();

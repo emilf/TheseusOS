@@ -20,8 +20,6 @@
 //! - docs/plans/boot-flow.md
 //!
 //! QEMU debug driver.
-//!
-//! Uses QEMU's debug output port (0xe9) for simple output.
 
 /// Bootloader output driver backed by QEMU's debug port.
 pub struct QemuDebugDriver;

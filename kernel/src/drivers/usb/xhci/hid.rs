@@ -21,10 +21,6 @@
 //! - docs/plans/observability.md
 //!
 //! HID boot keyboard helpers for the xHCI driver.
-//!
-//! This module keeps the boot-protocol keyboard support isolated from the rest
-//! of the controller bring-up so the xHCI core can remain focused on rings,
-//! events, and enumeration.
 
 use crate::input::keyboard::{KeyEvent, KeyTransition};
 use crate::input::keyboard::{self};

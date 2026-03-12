@@ -2,6 +2,8 @@
 
 Binding architectural truths for the current boot flow.
 
+These are the invariants the boot path relies on today.
+
 ## A1: The kernel boots as a single UEFI executable
 
 **REQUIRED**

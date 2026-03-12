@@ -21,9 +21,6 @@
 //! - docs/plans/boot-flow.md
 //!
 //! Boot-sequence orchestration for the current single-binary path.
-//!
-//! This module gathers boot-time state, prepares the handoff, and performs the
-//! final boot-services exit and direct kernel transfer.
 
 use uefi::boot::{MemoryType, SearchType};
 use uefi::mem::memory_map::MemoryMap;

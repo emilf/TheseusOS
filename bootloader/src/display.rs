@@ -21,9 +21,6 @@
 //! - docs/plans/observability.md
 //!
 //! Firmware-side display helpers.
-//!
-//! These helpers format boot-time state for humans; they are not part of the
-//! boot contract by themselves.
 
 extern crate alloc;
 

@@ -24,9 +24,6 @@
 //! - docs/plans/memory.md
 //!
 //! Table inspection commands (IDT, GDT, memory map).
-//!
-//! This module implements commands for inspecting system tables such as the
-//! IDT, GDT, and boot/runtime memory map.
 
 use crate::monitor::parsing::parse_number;
 use crate::monitor::Monitor;

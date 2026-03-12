@@ -20,9 +20,6 @@
 //! - docs/plans/drivers-and-io.md
 //!
 //! TRB ring helpers for the xHCI driver.
-//!
-//! Encapsulates command, transfer, and event rings plus a tiny recycler so
-//! DMA buffers can be reused across controller restarts during bring-up.
 
 use alloc::vec;
 use alloc::vec::Vec;

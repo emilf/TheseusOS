@@ -60,7 +60,7 @@ Affected modules:
 
 **REQUIRED**
 
-The current repo parses ACPI processor/APIC topology and records CPU counts, but does not yet document an implemented AP startup path.
+The current repo parses ACPI processor/APIC topology and records CPU counts, but it does not yet document an implemented AP startup path.
 
 Implements / evidence:
 - `kernel/src/acpi/mod.rs#initialize_acpi`

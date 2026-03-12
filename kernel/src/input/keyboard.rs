@@ -23,11 +23,8 @@
 //!
 //! Shared keyboard event distribution.
 //!
-//! The USB keyboard driver originally buffered key transition events in a
-//! driver-local queue that the kernel monitor could poll. That was useful for
-//! early bring-up, but it forced consumers to depend on `drivers::usb`. This
-//! module lifts the queue into a tiny input hub so future subsystems can
-//! subscribe without caring about the underlying transport.
+//! This module lifts keyboard events into a tiny shared input hub so consumers
+//! do not depend directly on transport-specific drivers.
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;

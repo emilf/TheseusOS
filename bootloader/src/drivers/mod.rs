@@ -20,9 +20,6 @@
 //!
 //! Bootloader output-driver subsystem.
 //!
-//! This module tree contains the firmware-phase output paths used before the kernel's
-//! own logging stack becomes authoritative.
-//!
 //! It is deliberately tiny and boot-phase-specific.
 
 pub mod manager;

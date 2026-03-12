@@ -20,8 +20,6 @@
 //! - docs/plans/boot-flow.md
 //!
 //! QEMU exit utilities.
-//!
-//! Provides functions for exiting QEMU with proper debug output.
 
 use theseus_shared::constants::exit_codes;
 

@@ -4,6 +4,8 @@
 
 Track the current driver framework, PCI enumeration, USB controller handoff/bring-up, and input-facing runtime inspection surfaces.
 
+This plan records what is already implemented, not aspirational design.
+
 ## Plan vs Repo
 
 - The merged repo now contains materially more driver-system reality than the older docs reflected: PCI bridge refinement, USB/xHCI code, keyboard input modules, and monitor commands for PCI/USB inspection.

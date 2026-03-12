@@ -23,9 +23,6 @@
 //! - docs/plans/interrupts-and-platform.md
 //!
 //! High-level driver system initialization.
-//!
-//! This module glues together ACPI discovery, PCI enumeration, firmware inventory processing,
-//! USB ownership handoff, and driver-manager seeding so concrete drivers can bind.
 
 use alloc::format;
 use alloc::vec::Vec;

@@ -20,10 +20,8 @@
 //!
 //! Input subsystem entry points.
 //!
-//! The input module exposes shared services for keyboard, mouse, and other
-//! human-interface devices as they come online. Each submodule owns its own
-//! buffering policy and fan-out strategy so teaching examples can focus on the
-//! device driver while still providing ergonomic hooks for higher layers.
+//! This module exposes shared services for human-interface devices as they come
+//! online.
 
 /// Keyboard-centric primitives such as event queues and listener registration.
 pub mod keyboard;

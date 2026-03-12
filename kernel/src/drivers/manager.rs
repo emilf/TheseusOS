@@ -23,10 +23,6 @@
 //! - docs/plans/observability.md
 //!
 //! Driver manager implementation.
-//!
-//! The driver manager maintains registries of available drivers and discovered devices,
-//! runs the probe/bind flow, dispatches IRQs, and exposes class-based I/O helpers used
-//! by logging, monitor, and bring-up code.
 
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -81,23 +77,6 @@ impl DriverManager {
     }
 
     /// Add a discovered device and run probe logic.
-    ///
-    /// This method adds a new device to the device registry and attempts
-    /// to bind it to a compatible driver. If a device with the same ID
-    /// already exists, the new device's information is merged into the
-    /// existing device descriptor.
-    ///
-    /// # Arguments
-    /// * `device` - Device descriptor to add
-    ///
-    /// # Behavior
-    /// 1. Check if device already exists (by ID)
-    /// 2. If exists: merge new information into existing device
-    /// 3. If new: add to device list
-    /// 4. Run probe logic to find compatible driver
-    ///
-    /// # Thread Safety
-    /// This method must be called while holding the driver manager lock.
     pub fn add_device(&mut self, device: Device) {
         log_trace!("Discovered device");
 

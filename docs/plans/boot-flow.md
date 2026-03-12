@@ -4,6 +4,8 @@
 
 Track the documented boot flow from UEFI entry through `kernel_entry` and into the validated handoff boundary.
 
+This plan records what is already implemented, not aspirational design.
+
 ## Plan vs Repo
 
 - Older narrative docs described the flow correctly at a high level, but they did not distinguish binding truths from implementation risks.

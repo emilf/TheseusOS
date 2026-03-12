@@ -6,7 +6,7 @@ Binding architectural truths for paging, heaps, and physical-memory management.
 
 **REQUIRED**
 
-The kernel’s linked and runtime higher-half base is `0xFFFF_FFFF_8000_0000`.
+The kernel's linked and runtime higher-half base is `0xFFFF_FFFF_8000_0000`.
 
 Implements / evidence:
 - `kernel/src/memory.rs#KERNEL_VIRTUAL_BASE`

@@ -20,8 +20,6 @@
 //! - docs/plans/drivers-and-io.md
 //!
 //! Monitor command module tree.
-//!
-//! This module groups the privileged interactive commands exposed by the kernel monitor.
 
 pub mod control;
 pub mod cpu;

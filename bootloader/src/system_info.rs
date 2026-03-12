@@ -18,9 +18,6 @@
 //! - docs/plans/boot-flow.md
 //!
 //! Boot-time system-information collection helpers.
-//!
-//! This module gathers firmware, boot-time, boot-device, and conservative CPU
-//! context while UEFI services are still available.
 
 // TODO: Re-enable when ACPI parsing is fixed
 // use acpi::AcpiTables;

@@ -28,15 +28,8 @@
 //!
 //! xHCI host controller driver for the teaching kernel.
 //!
-//! The goal of this module is educational: it walks through the steps required
-//! to take ownership of a modern USB 3 controller on x86-64 while exercising
-//! Rust's safety features. The code demonstrates how to map MMIO regions,
-//! interpret capability structures, set up command/event rings, transition the
-//! controller to `RUN`, and service the event ring via MSI/MSI-X when available.
-//! In addition to the core bring-up, the driver implements a minimal xHCI slot
-//! + endpoint configuration path sufficient to enumerate QEMU's virtual USB HID
-//! boot keyboard and deliver interrupt-driven key events through the shared
-//! `input::keyboard` hub.
+//! This module covers MMIO setup, ring bring-up, controller run-state changes,
+//! and the minimal endpoint path needed for QEMU HID keyboard support.
 
 use alloc::string::ToString;
 use alloc::{format, string::String, vec::Vec};

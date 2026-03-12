@@ -23,9 +23,6 @@
 //! - docs/plans/memory.md
 //!
 //! Memory operation commands.
-//!
-//! This module implements commands for examining and modifying memory,
-//! including page-table inspection helpers.
 
 use crate::memory::{
     self, pd_index, pdpt_index, pml4_index, pt_index, PageTable, PAGE_SIZE, PAGE_SIZE_1GB,

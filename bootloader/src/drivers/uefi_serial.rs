@@ -20,8 +20,6 @@
 //! - docs/plans/observability.md
 //!
 //! UEFI serial driver.
-//!
-//! Uses the UEFI Serial I/O protocol for output. Only works during boot services.
 
 use crate::serial::serial_write_line;
 use uefi::boot::SearchType;

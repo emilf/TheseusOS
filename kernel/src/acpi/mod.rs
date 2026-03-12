@@ -28,7 +28,7 @@
 //! ACPI (Advanced Configuration and Power Interface) support module.
 //!
 //! This module provides ACPI table parsing for the kernel using the `acpi` crate
-//! and the kernel’s current physical-to-virtual mapping strategy.
+//! and the kernel's current physical-to-virtual mapping strategy.
 
 use crate::handoff::handoff_phys_ptr;
 use crate::memory::{
@@ -51,11 +51,7 @@ const ACPI_WINDOW_BASE: u64 = 0xFFFF_FF80_0000_0000;
 static ACPI_MAPPING_LOCK: Mutex<()> = Mutex::new(());
 static PHYS_OFFSET_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
 
-/// ACPI Handler for kernel environment
-///
-/// This implements the AcpiHandler trait to allow the acpi crate to map physical memory
-/// in the kernel environment. We use PHYS_OFFSET mapping to convert physical addresses
-/// to virtual addresses.
+/// ACPI handler for the kernel environment.
 #[derive(Clone)]
 pub struct KernelAcpiHandler;
 

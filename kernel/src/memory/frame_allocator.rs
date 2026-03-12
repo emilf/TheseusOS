@@ -23,8 +23,6 @@
 //! - docs/plans/boot-flow.md
 //!
 //! Frame allocator built from the UEFI memory map with a reserved pool for critical structures.
-//!
-//! It exists to bridge firmware memory discovery into early kernel paging work.
 
 use crate::physical_memory::{self, ConsumedRegion};
 use crate::{log_debug, log_trace};

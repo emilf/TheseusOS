@@ -22,9 +22,6 @@
 //! - docs/plans/memory.md
 //!
 //! Firmware-side memory allocation helpers for the boot path.
-//!
-//! This module wraps the UEFI allocation/free primitives used before the kernel's
-//! own memory-management world becomes authoritative.
 
 use crate::drivers::manager::write_line;
 use alloc::format;

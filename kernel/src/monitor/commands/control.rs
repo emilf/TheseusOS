@@ -21,9 +21,6 @@
 //! - docs/plans/boot-flow.md
 //!
 //! System control commands.
-//!
-//! This module implements system control commands such as reset, halt, clear,
-//! and arbitrary function call.
 
 use crate::monitor::parsing::parse_number;
 use crate::monitor::Monitor;

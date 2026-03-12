@@ -21,6 +21,8 @@
 //! - docs/plans/drivers-and-io.md
 //!
 //! Boot-time hardware inventory collection.
+//!
+//! The inventory built here is a handoff input, not a runtime ownership model.
 
 extern crate alloc;
 

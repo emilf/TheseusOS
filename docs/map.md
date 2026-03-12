@@ -2,6 +2,8 @@
 
 Bidirectional map between plans, axioms, and implementing modules.
 
+Treat this as a synchronization checklist as much as a navigation aid.
+
 This file is meant to be a maintenance surface, not polished prose: if a module or doc moves, update the mapping here in the same change.
 
 ## Plans → Implementations

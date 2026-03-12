@@ -6,7 +6,7 @@ Track logging, panic reporting, runtime inspection, and debugging surfaces.
 
 ## Plan vs Repo
 
-- Current docs already explain logging and monitor usage fairly well, but they are still mostly narrative docs rather than architecture-tracking docs.
+- Current docs already explain logging and monitor usage fairly well, but they were still mostly narrative docs rather than architecture-tracking docs.
 - After the bootloader driver/output sweep, observability in this repo is clearly not just a kernel concern: firmware-side output selection, serial helpers, and QEMU-exit behavior are also part of the real debug surface.
 
 ## Implemented Invariants

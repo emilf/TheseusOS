@@ -20,8 +20,6 @@
 //! - docs/plans/boot-flow.md
 //!
 //! Raw serial driver.
-//!
-//! Direct hardware access to serial ports. Fallback option when other drivers fail.
 
 use theseus_shared::constants::{hardware, io_ports::com1};
 use x86_64::instructions::port::Port;

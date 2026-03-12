@@ -4,6 +4,8 @@
 
 Track paging, heap bring-up, handoff memory-map access, and runtime physical-memory allocation.
 
+This plan records what is already implemented, not aspirational design.
+
 ## Plan vs Repo
 
 - Existing docs explained the layout fairly well, but they blended current truth with forward-looking cleanup work.

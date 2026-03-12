@@ -21,9 +21,6 @@
 //! - docs/plans/interrupts-and-platform.md
 //!
 //! I/O and interrupt commands.
-//!
-//! This module implements low-level I/O operations such as port read/write and
-//! software interrupt triggering.
 
 use crate::monitor::parsing::parse_number;
 use crate::monitor::Monitor;

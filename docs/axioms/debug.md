@@ -2,6 +2,8 @@
 
 Binding truths for logging, panic reporting, and runtime inspection.
 
+These are the invariants the observability stack relies on today.
+
 ## A1: Kernel logging is initialized at kernel entry and is designed to work without heap allocation
 
 **REQUIRED**

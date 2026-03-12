@@ -49,7 +49,7 @@ These remain useful as human-oriented guides, but they are subordinate to the ax
 - [`qemu-runner.md`](qemu-runner.md) — the `theseus-qemu` Rust runner and its reproducible QEMU profiles.
 - [`logging.md`](logging.md) — current logging behavior and routing notes.
 
-Bootloader-side observability and output plumbing now also lives in the new architecture split (see `plans/boot-flow.md`, `plans/observability.md`, and `axioms/debug.md`), rather than only in the older narrative guides. The same is now true for the bootloader-side memory/handoff story via `plans/memory.md` and `axioms/memory.md`.
+Bootloader-side observability and output plumbing now also live in the architecture split (see `plans/boot-flow.md`, `plans/observability.md`, and `axioms/debug.md`), rather than only in the older narrative guides. The same is true for the bootloader-side memory/handoff story via `plans/memory.md` and `axioms/memory.md`.
 
 ### Historical Material
 

@@ -19,10 +19,8 @@
 //! PROGRESS:
 //! - docs/plans/memory.md
 //!
-//! TemporaryWindow scoped helper moved out of `memory.rs` to clarify
-//! responsibilities. This module provides a small temporary mapper that maps a
-//! single physical frame into a fixed virtual window for safe access (e.g., to
-//! zero newly allocated page-table frames).
+//! `TemporaryWindow` scoped helper moved out of `memory.rs` to clarify
+//! responsibilities.
 
 use crate::memory::{
     pd_index, pdpt_index, pml4_index, pt_index, FrameSource, PageTable, PageTableEntry, PAGE_SIZE,
@@ -40,12 +38,7 @@ pub struct TemporaryWindow {
 }
 
 impl TemporaryWindow {
-    /// Create a new TemporaryWindow backed by the provided PML4 physical address.
-    ///
-    /// # Safety
-    /// Caller must ensure `pml4_phys` is the physical address of the current PML4
-    /// and that PHYS_OFFSET mapping is available (or identity mapping exists for
-    /// low physical frames during early boot).
+    /// Create a new `TemporaryWindow` backed by the provided PML4 physical address.
     pub unsafe fn new(pml4_phys: u64) -> Self {
         let pml4_va = crate::memory::phys_to_virt_pa(pml4_phys) as *mut PageTable;
         Self {
@@ -54,14 +47,7 @@ impl TemporaryWindow {
         }
     }
 
-    /// Map a single 4KiB physical frame into the temporary window and return the VA.
-    ///
-    /// The helper issues an `invlpg` via `tlb::flush` so callers always observe the
-    /// fresh translation even if the window previously pointed somewhere else.
-    /// # Safety
-    /// `fa` must implement `FrameSource` used to allocate intermediate page
-    /// tables if they are missing. This function will overwrite any existing mapping
-    /// at the temporary window.
+    /// Map a single 4 KiB physical frame into the temporary window and return the VA.
     pub unsafe fn map_phys_frame(&mut self, phys_frame_pa: u64, fa: &mut impl FrameSource) -> u64 {
         let pml4 = &mut *self.pml4;
         // If an existing mapping is present, simply overwrite the PT entry

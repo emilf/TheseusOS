@@ -37,7 +37,7 @@ pub enum DeviceClass {
     Unknown,
 }
 
-/// Minimal device identifier
+/// Minimal device identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DeviceId {
     /// ACPI hardware ID (HID) such as "PNP0A08"
@@ -75,7 +75,7 @@ impl fmt::Display for DeviceId {
     }
 }
 
-/// Device descriptor tracked by the driver manager
+/// Device descriptor tracked by the driver manager.
 #[derive(Debug, Clone)]
 pub struct Device {
     /// Device identity (ACPI, PCI or raw)

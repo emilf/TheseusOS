@@ -21,8 +21,8 @@
 //!
 //! USB driver subsystem helpers.
 //!
-//! This module exposes primitives required for taking ownership of USB host
-//! controllers from firmware and registering current USB-class drivers.
+//! This module exposes the top-level USB ownership-handoff and driver
+//! registration entry points.
 
 pub mod handoff;
 mod xhci;

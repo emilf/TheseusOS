@@ -20,8 +20,6 @@
 //! - docs/plans/observability.md
 //!
 //! Bootloader serial utilities.
-//!
-//! This module provides simple serial output helpers for the UEFI bootloader phase.
 
 use uefi::{boot, prelude::*, proto::console::serial::Serial};
 

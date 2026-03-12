@@ -22,9 +22,6 @@
 //! - docs/plans/interrupts-and-platform.md
 //!
 //! CPU inspection commands.
-//!
-//! This module implements commands for inspecting CPU features and state,
-//! including CPUID information and MSR access.
 
 use crate::monitor::parsing::parse_number;
 use crate::monitor::Monitor;

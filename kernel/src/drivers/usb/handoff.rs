@@ -25,10 +25,7 @@
 //! USB legacy ownership handoff helpers.
 //!
 //! These routines release USB host controllers from firmware emulation so the
-//! kernel can safely program them. Both EHCI and xHCI controllers expose a
-//! "USB Legacy Support" capability that coordinates BIOS- and OS-owned
-//! semaphores; we locate that capability, assert OS ownership, and clear any
-//! lingering SMI traps before higher-level drivers begin initialization.
+//! kernel can safely program them before higher-level drivers begin initialization.
 
 use alloc::collections::BTreeSet;
 use core::convert::TryFrom;
@@ -58,10 +55,6 @@ struct LegacyResult {
 }
 
 /// Ensure the kernel owns all USB controllers that advertise a legacy handoff path.
-///
-/// The routine walks the enumerated PCI functions, looks for EHCI (prog_if 0x20)
-/// and xHCI (prog_if 0x30) controllers, and performs the standard ownership
-/// handshake if a legacy capability is present.
 pub fn ensure_legacy_usb_handoff(devices: &[PciDeviceInfo]) {
     let mut visited_mmio = BTreeSet::new();
 

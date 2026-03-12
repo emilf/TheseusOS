@@ -24,9 +24,6 @@
 //! - docs/plans/memory.md
 //!
 //! System inspection commands.
-//!
-//! This module implements commands for inspecting system state, including
-//! physical memory statistics, registers, stack traces, and ACPI information.
 
 use crate::monitor::Monitor;
 use crate::{acpi, memory, physical_memory};

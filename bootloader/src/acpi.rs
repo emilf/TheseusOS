@@ -21,9 +21,6 @@
 //! - docs/plans/interrupts-and-platform.md
 //!
 //! Firmware-side ACPI discovery and parsing helpers.
-//!
-//! This module finds ACPI table roots and extracts boot-time ACPI context for the
-//! handoff while UEFI services are still available.
 
 use crate::drivers::manager::write_line;
 use acpi::{AcpiHandler, AcpiTables, PhysicalMapping};

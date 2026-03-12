@@ -25,8 +25,9 @@
 //!
 //! PCI Express enhanced configuration access (ECAM) support.
 //!
-//! This module enumerates PCI/PCIe devices through the ECAM windows described by the ACPI MCFG table,
-//! decodes BARs and capabilities, tracks bridge topology, and provides MSI/MSI-X configuration helpers.
+//! This module enumerates PCI/PCIe devices through ACPI MCFG-described ECAM
+//! windows, decodes BARs and capabilities, tracks bridge topology, and provides
+//! MSI/MSI-X configuration helpers.
 
 use crate::acpi::{PciBridgeInfo, PciConfigRegion};
 use crate::{log_debug, log_trace, log_warn};
@@ -47,23 +48,6 @@ const FUNCTION_STRIDE: u64 = 0x1000; // 4 KiB per function
 const MSI_ADDR_BASE: u32 = 0xFEE0_0000; // MSI message address base
 
 /// Decoded Base Address Register (BAR) entry.
-///
-/// PCI devices use BARs to declare their memory and I/O resource requirements.
-/// This enum represents the different types of BARs that can be found in a
-/// PCI device's configuration space.
-///
-/// # BAR Types
-///
-/// - **Memory32**: 32-bit memory space BAR (up to 4GB)
-/// - **Memory64**: 64-bit memory space BAR (up to 16EB)
-/// - **Io**: I/O space BAR (up to 64KB)
-/// - **None**: Unused or invalid BAR
-///
-/// # Prefetchable Memory
-///
-/// Memory BARs can be marked as prefetchable, which means the device can
-/// safely prefetch data from the memory region. This allows for optimizations
-/// like write-combining and read-ahead.
 #[derive(Clone, Copy, Debug)]
 pub enum PciBar {
     /// Unused or invalid BAR
