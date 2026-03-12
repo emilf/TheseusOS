@@ -1,8 +1,29 @@
-//! ACPI (Advanced Configuration and Power Interface) support module
+//! Module: bootloader::acpi
 //!
-//! This module provides ACPI table discovery and parsing capabilities for the UEFI bootloader.
-//! It implements the AcpiHandler trait required by the acpi crate to map physical memory
-//! regions in the UEFI environment.
+//! SOURCE OF TRUTH:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//! - docs/axioms/arch-x86_64.md#A4:-SMP-discovery-exists-but-AP-startup-is-not-yet-a-documented-implemented-invariant
+//!
+//! INVARIANTS:
+//! - This module is the firmware-side ACPI discovery path used during bootloader handoff preparation.
+//! - The bootloader records table roots/derived ACPI information for later kernel use; it does not become the long-term owner of ACPI runtime behavior.
+//!
+//! SAFETY:
+//! - Firmware table pointers are structured input, not sacred truth.
+//! - Identity-style access in the UEFI environment is a boot-time convenience, not a statement about later kernel mapping behavior.
+//!
+//! PROGRESS:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! Firmware-side ACPI discovery and parsing helpers.
+//!
+//! This module finds ACPI table roots and extracts boot-time ACPI context for the
+//! handoff while UEFI services are still available.
 
 use crate::drivers::manager::write_line;
 use acpi::{AcpiHandler, AcpiTables, PhysicalMapping};
@@ -46,42 +67,19 @@ impl AcpiHandler for UefiAcpiHandler {
     }
 }
 
-/// Find the ACPI RSDP (Root System Description Pointer) table
+/// Find the ACPI RSDP in the UEFI configuration table.
 ///
-/// This function searches for the ACPI RSDP table in the UEFI configuration table.
-/// The RSDP is the entry point for all ACPI tables. It searches for both ACPI 1.0
-/// and ACPI 2.0 RSDP tables, preferring ACPI 2.0 if both are available.
-///
-/// # Arguments
-///
-/// * `verbose` - Whether to output debug information
-///
-/// # Returns
-///
-/// * `Some(u64)` - Physical address of the RSDP table if found
-/// * `None` - If the RSDP table is not found
-///
-/// # Safety
-///
-/// This function accesses the UEFI system table and configuration table.
-/// It is safe to call during UEFI boot services phase.
+/// This prefers ACPI 2.0 entries when both legacy and newer roots are present.
 pub fn find_acpi_rsdp(verbose: bool) -> Option<u64> {
     use core::slice;
     use uefi::table;
     use uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID, ACPI_GUID};
 
-    // Debug: Function called
-    if verbose {
-        write_line("  Debug: find_acpi_rsdp function called");
-    }
 
     // Get the system table
     let system_table = match table::system_table_raw() {
         Some(st) => st,
         None => {
-            if verbose {
-                write_line("  Debug: System table not available");
-            }
             return None;
         }
     };
@@ -91,9 +89,6 @@ pub fn find_acpi_rsdp(verbose: bool) -> Option<u64> {
 
     // Check if configuration table is available
     if st.configuration_table.is_null() || st.number_of_configuration_table_entries == 0 {
-        if verbose {
-            write_line("  Debug: Configuration table not available");
-        }
         return None;
     }
 
@@ -108,19 +103,12 @@ pub fn find_acpi_rsdp(verbose: bool) -> Option<u64> {
     // Search for ACPI 2.0 RSDP first (preferred)
     for (i, entry) in config_entries.iter().enumerate() {
         if verbose {
-            write_line(&alloc::format!(
-                "  Debug: Entry {} - GUID: {:?}",
-                i,
-                entry.guid
-            ));
+            write_line(&alloc::format!("  ACPI cfg entry {} GUID: {:?}", i, entry.guid));
         }
 
         if entry.guid == ACPI2_GUID {
             if verbose {
-                write_line(&alloc::format!(
-                    "  Debug: Found ACPI 2.0 RSDP at 0x{:016X}",
-                    entry.address as u64
-                ));
+                write_line(&alloc::format!("  Found ACPI 2.0 RSDP at 0x{:016X}", entry.address as u64));
             }
             return Some(entry.address as u64);
         }
@@ -130,37 +118,23 @@ pub fn find_acpi_rsdp(verbose: bool) -> Option<u64> {
     for entry in config_entries {
         if entry.guid == ACPI_GUID {
             if verbose {
-                write_line(&alloc::format!(
-                    "  Debug: Found ACPI 1.0 RSDP at 0x{:016X}",
-                    entry.address as u64
-                ));
+                write_line(&alloc::format!("  Found ACPI 1.0 RSDP at 0x{:016X}", entry.address as u64));
             }
             return Some(entry.address as u64);
         }
     }
 
     if verbose {
-        write_line("  Debug: No ACPI RSDP table found in configuration table");
+        write_line("  No ACPI RSDP table found in configuration table");
     }
 
     // No ACPI table found
     None
 }
 
-/// Parse ACPI tables from an RSDP address
+/// Parse ACPI tables from a discovered RSDP address.
 ///
-/// This function attempts to parse ACPI tables using the acpi crate,
-/// given a valid RSDP table address.
-///
-/// # Arguments
-///
-/// * `serial_handle` - Optional handle for serial output
-/// * `rsdp_address` - Physical address of the RSDP table
-///
-/// # Returns
-///
-/// * `Ok(())` - If ACPI tables were successfully parsed
-/// * `Err(&'static str)` - If parsing failed
+/// This is a best-effort firmware-phase validation step using the `acpi` crate.
 pub fn parse_acpi_tables(rsdp_address: u64) -> Result<(), &'static str> {
     if rsdp_address == 0 {
         return Err("Invalid RSDP address");

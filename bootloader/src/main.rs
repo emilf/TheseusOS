@@ -1,40 +1,29 @@
-//! TheseusOS UEFI Bootloader (Single-Binary)
+//! Module: bootloader::main
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/boot-flow.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/boot.md#A1:-The-kernel-boots-as-a-single-UEFI-executable
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//! - docs/axioms/boot.md#A3:-Kernel-image-metadata-is-derived-from-the-live-binary-not-a-separately-parsed-on-disk-image
+//!
+//! INVARIANTS:
+//! - This file is the UEFI entrypoint for the current single-binary boot flow.
+//! - The bootloader gathers boot-time platform state, prepares the handoff, and eventually transfers control directly to `kernel_entry`.
+//! - The current boot path derives kernel image metadata from the live binary instead of loading a separate kernel ELF.
+//!
+//! SAFETY:
+//! - Firmware-side allocation and handoff preparation must stay aligned with the later kernel expectations documented in the boot/memory plans.
+//! - Comments here must not drift into describing an older multi-binary/ELF-loader architecture as if it were still current truth.
+//!
+//! PROGRESS:
+//! - docs/plans/boot-flow.md
+//!
+//! TheseusOS UEFI bootloader (single-binary).
 //!
 //! This is the unified UEFI application for TheseusOS. It combines the bootloader
-//! and kernel into a single binary, eliminating the need for separate ELF loading.
-//!
-//! ## Responsibilities
-//!
-//! 1. **System Information Collection**: Gathering memory maps, ACPI tables,
-//!    graphics information, hardware inventory, and other system details
-//! 2. **Memory Management**: Allocating memory for temporary heap and handoff structure
-//! 3. **Handoff Preparation**: Computing kernel image base/size from loaded binary
-//! 4. **Boot Services Exit**: Calling UEFI's `ExitBootServices` to transition
-//!    from firmware to kernel control
-//! 5. **Kernel Entry**: Direct function call to `kernel_entry` in the same binary
-//!
-//! ## Architecture
-//!
-//! The bootloader is organized into several modules:
-//! - `boot_sequence`: Main boot sequence orchestration and kernel entry
-//! - `memory`: Memory map collection and allocation helpers
-//! - `acpi`: ACPI table discovery and parsing
-//! - `hardware`: Hardware detection and inventory
-//! - `display`: Console output formatting
-//! - `drivers`: Output driver management (UEFI serial, raw serial, QEMU debug)
-//! - `system_info`: Firmware, boot time, and CPU information collection
-//! - `serial`: Serial communication primitives
-//! - `qemu_exit`: QEMU exit device integration for testing
-//!
-//! ## Single-Binary Boot Flow
-//!
-//! 1. UEFI firmware loads `BOOTX64.EFI` into memory
-//! 2. Bootloader phase: collect system information using UEFI Boot Services
-//! 3. Compute kernel image base/size from the loaded binary's entry symbol
-//! 4. Allocate non-overlapping temporary heap for kernel use
-//! 5. Call `ExitBootServices` to leave UEFI control
-//! 6. Call `kernel_entry` directly (same binary, different function)
-//! 7. Kernel establishes higher-half mapping and continues execution
+//! and kernel into a single binary.
 
 #![no_std]
 #![no_main]
@@ -49,27 +38,17 @@ use theseus_shared::handoff::{Handoff, HANDOFF};
 // Configuration Options
 //
 
-/// Global verbose output control
+/// Global verbose-output policy for the bootloader.
 ///
-/// This constant is used throughout the bootloader to control debug output.
-/// When set to false, only essential information is displayed.
-/// When set to true, detailed debug information is shown including:
-/// - Complete memory maps and ACPI information
-/// - Detailed hardware inventory
-/// - Verbose boot device path information
-/// - Full system information dumps
-///
-/// # Usage
-///
-/// Pass this constant to information collection functions to control
-/// their verbosity level. All display functions check this flag before
-/// showing detailed information.
+/// The default is intentionally `false` so normal development/test runs stay
+/// high-signal. Turning it on enables extra firmware/boot-time dumps such as
+/// memory-map, ACPI, hardware-inventory, and boot-device detail.
 pub const VERBOSE_OUTPUT: bool = false;
 
-/// Memory allocation testing flag
+/// Bootloader memory-allocation test toggle.
 ///
-/// When `true`, runs UEFI memory allocation tests during boot.
-/// When `false`, skips tests for faster boot time.
+/// When enabled, the UEFI-phase allocator tests run during startup. The default
+/// stays off because the normal repo workflow prefers faster, less noisy boots.
 const RUN_MEMORY_TESTS: bool = false;
 
 // Include our modules
@@ -107,30 +86,10 @@ core::arch::global_asm!(".globl __chkstk", "__chkstk:", "    jmp ___chkstk_ms",)
 
 // Note: Panic handler is provided by the kernel library to avoid duplicate lang items
 
-/// Main UEFI entry point for the unified bootloader+kernel binary
+/// Main UEFI entry point for the unified bootloader+kernel binary.
 ///
-/// This function orchestrates the single-binary boot sequence:
-/// 1. Initializes UEFI environment and output drivers
-/// 2. Collects comprehensive system information (memory map, ACPI, GOP, hardware)
-/// 3. Computes kernel image base/size from the loaded binary
-/// 4. Allocates non-overlapping temporary heap for kernel use
-/// 5. Exits UEFI Boot Services
-/// 6. Calls directly into `kernel_entry` within the same binary
-///
-/// # Returns
-///
-/// This function never returns normally. It either:
-/// - Successfully transitions to kernel via `kernel_entry` (does not return)
-/// - Panics on fatal errors during boot sequence
-///
-/// # Panics
-///
-/// Panics if the kernel handoff fails unexpectedly (should never happen).
-///
-/// # Safety
-///
-/// This function assumes UEFI boot services are active. It calls `ExitBootServices`
-/// before transferring control to the kernel.
+/// This performs the current firmware-side discovery, handoff preparation, and
+/// direct `ExitBootServices` → `kernel_entry` transfer.
 #[entry]
 fn efi_main() -> Status {
     // Install pre-exit allocators that forward to UEFI Boot Services
@@ -181,7 +140,7 @@ fn efi_main() -> Status {
 
     // Allocate temporary heap for kernel (non-overlapping with kernel image)
     write_line("=== Allocating Temporary Heap for Kernel ===");
-    const TEMP_HEAP_SIZE: u64 = 1024 * 1024; // 1MB
+    const TEMP_HEAP_SIZE: u64 = 1024 * 1024; // 1 MiB
                                              // Defer actual allocation until after kernel image fields are computed
 
     // Finalize handoff structure
@@ -230,7 +189,7 @@ fn efi_main() -> Status {
     }
 
     // If we reach here, it means there was an error in the handoff process
-    // This should never happen since we jump to the kernel on success
+    // Reaching this point means the expected kernel transfer did not happen.
     write_line("✗ ERROR: Unexpected bootloader completion - kernel handoff failed");
     panic!("Bootloader should never reach this point");
 }

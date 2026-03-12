@@ -1,3 +1,24 @@
+//! Module: drivers::usb::xhci::rings
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/drivers-and-io.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/memory.md#A4:-The-persistent-physical-allocator-is-initialized-from-the-UEFI-memory-map-after-the-permanent-heap-exists
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//!
+//! INVARIANTS:
+//! - This module owns the software-side ring abstractions used by the xHCI driver.
+//! - Command, transfer, and event rings are DMA-backed structures whose lifecycle must stay aligned with controller ownership.
+//! - The recycler is a performance/debug convenience, not a separate memory-safety model.
+//!
+//! SAFETY:
+//! - Ring buffers must remain DMA-visible, correctly aligned, and not be reused while hardware may still observe them.
+//! - Cycle-bit and wraparound bookkeeping errors here directly corrupt controller/driver synchronization.
+//!
+//! PROGRESS:
+//! - docs/plans/drivers-and-io.md
+//!
 //! TRB ring helpers for the xHCI driver.
 //!
 //! Encapsulates command, transfer, and event rings plus a tiny recycler so

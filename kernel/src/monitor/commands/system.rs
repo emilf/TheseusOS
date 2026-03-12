@@ -1,10 +1,32 @@
-//! System inspection commands
+//! Module: monitor::commands::system
 //!
-//! This module implements commands for inspecting system state:
-//! - `phys`: Display physical memory manager statistics
-//! - `regs`: Display CPU registers (GPRs, control, segment)
-//! - `stack`/`bt`: Display stack backtrace
-//! - `acpi`: Display ACPI information
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/memory.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//! - docs/axioms/memory.md#A4:-The-persistent-physical-allocator-is-initialized-from-the-UEFI-memory-map-after-the-permanent-heap-exists
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//!
+//! INVARIANTS:
+//! - This module implements monitor commands for inspecting current system/platform state.
+//! - Commands here are observational tools for live kernel state, not separate authorities over that state.
+//!
+//! SAFETY:
+//! - Register snapshots, backtraces, and ACPI/physical-memory summaries are best-effort diagnostics that can still mislead if the system is already corrupted.
+//! - Command output should stay readable and bounded; giant debug dumps make the monitor less useful exactly when it matters.
+//!
+//! PROGRESS:
+//! - docs/plans/observability.md
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/memory.md
+//!
+//! System inspection commands.
+//!
+//! This module implements commands for inspecting system state, including
+//! physical memory statistics, registers, stack traces, and ACPI information.
 
 use crate::monitor::Monitor;
 use crate::{acpi, memory, physical_memory};

@@ -1,55 +1,49 @@
-//! Debugging utilities for interrupt subsystem
+//! Module: interrupts::debug
 //!
-//! This module provides functions for debugging and diagnosing interrupt-related issues:
-//! - IDT (Interrupt Descriptor Table) inspection
-//! - GDT (Global Descriptor Table) inspection
-//! - Low-level QEMU debug port output (0xE9)
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//! - docs/plans/interrupts-and-platform.md
 //!
-//! ## QEMU Debug Port (0xE9)
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
 //!
-//! Port 0xE9 is a special QEMU feature that writes bytes directly to stdout.
-//! This is useful for early boot debugging before serial drivers are initialized.
+//! INVARIANTS:
+//! - This module provides low-level interrupt-oriented debug helpers, including IDT/GDT inspection and direct 0xE9 output helpers.
+//! - These helpers support observability and diagnosis; they are not the primary long-term logging abstraction.
 //!
-//! Enable in QEMU with: `-debugcon file:debug.log -global isa-debugcon.iobase=0xE9`
+//! SAFETY:
+//! - Direct 0xE9 writes and descriptor-table inspection are low-level debugging tools whose usefulness depends on the surrounding platform/QEMU configuration.
+//! - Debug helpers here should stay simple enough to remain trustworthy during failure diagnosis.
+//!
+//! PROGRESS:
+//! - docs/plans/observability.md
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! Interrupt-oriented debug helpers.
+//!
+//! This module contains low-level inspection/output helpers used when debugging
+//! IDT/GDT state and interrupt bring-up.
 
 use super::{IdtEntry, APIC_TIMER_VECTOR};
 use x86_64::instructions::port::Port;
 use x86_64::instructions::tables::sgdt;
 
-/// Write a single byte to QEMU debug port (0xE9)
-///
-/// # Arguments
-/// * `byte` - Byte to write
-///
-/// # Note
-/// Only works in QEMU. On real hardware, writes to 0xE9 are ignored.
+/// Write one byte to QEMU debug port `0xE9`.
 #[inline(always)]
 pub(super) unsafe fn out_char_0xe9(byte: u8) {
     let mut port: Port<u8> = Port::new(0xE9);
     port.write(byte);
 }
 
-/// Write a string to QEMU debug port
-///
-/// # Arguments
-/// * `s` - String to write (sent byte-by-byte)
+/// Write a string to the QEMU debug port byte-by-byte.
 pub(super) unsafe fn print_str_0xe9(s: &str) {
     for b in s.bytes() {
         out_char_0xe9(b);
     }
 }
 
-/// Print a 64-bit value as hex to QEMU debug port
-///
-/// Format: "0x" followed by 16 hex digits (uppercase)
-///
-/// # Arguments
-/// * `v` - 64-bit value to print
-///
-/// # Examples
-/// ```rust
-/// unsafe { print_hex_u64_0xe9(0xDEADBEEF); }  // Prints: 0x00000000DEADBEEF
-/// ```
+/// Print a 64-bit value as uppercase hex to the QEMU debug port.
 pub(super) unsafe fn print_hex_u64_0xe9(v: u64) {
     out_char_0xe9(b'0');
     out_char_0xe9(b'x');

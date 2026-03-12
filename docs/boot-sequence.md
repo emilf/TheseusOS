@@ -1,11 +1,11 @@
 # Boot Sequence & Handoff
 
-TheseusOS boots as a single UEFI application. The executable starts in firmware mode, performs all discovery while boot services are live, and then jumps straight into the Rust kernel entry point. This page walks you through the major stages and the data that flows into the handoff structure shared with the kernel.
+TheseusOS boots as a single UEFI application. The executable starts in firmware mode, performs discovery while boot services are live, and then jumps into the Rust kernel entry point. This page walks through the major stages and the data that flows into the shared handoff structure.
 
 ## 1. UEFI Entrypoint
 - `bootloader/src/main.rs` exposes `efi_main`, the firmware entry symbol.
 - The shared allocator shim is installed immediately so both bootloader and kernel can use `alloc`.
-- `drivers::manager::OutputDriver` selects between console, serial, and QEMU debug-con outputs before logging begins.
+- `drivers::manager::OutputDriver` currently prefers the QEMU debug-port path for normal development/test runs, with firmware/raw serial treated as fallback observability helpers.
 - Configuration toggles such as `VERBOSE_OUTPUT` (see `bootloader/src/main.rs`) control how much diagnostic text is printed.
 
 ## 2. System Discovery While Services Are Live
@@ -19,18 +19,19 @@ The bootloader queries firmware APIs in a predictable order so that dependencies
 | Hardware inventory | `bootloader::hardware` | Enumerate device handles and classify them (PCI, USB, storage, etc.). |
 | System info | `bootloader::system_info` | Capture firmware vendor strings, boot timestamps, and CPU feature flags. |
 
-Each stage appends structured data into the global `HANDOFF` instance (`theseus_shared::handoff::Handoff`), which is later passed to the kernel verbatim.
+Each stage appends structured data into the global `HANDOFF` instance (`theseus_shared::handoff::Handoff`), which is later copied into persistent `LOADER_DATA` and passed to the kernel.
 
 ## 3. Preparing the Handoff Structure
-- **Image accounting** — The bootloader looks up the symbol for `kernel_entry` to compute the kernel image's physical base, virtual base, and size. This avoids parsing the on-disk ELF at runtime.
+- **Image accounting** — The bootloader looks up the symbol for `kernel_entry` to compute the kernel image's physical base and virtual entry information. The current code uses a conservative fixed image span rather than exact section-extents accounting.
 - **Temporary heap** — A non-overlapping heap region is reserved and stored in `temp_heap_base`/`temp_heap_size`. The kernel maps it into the higher-half at `TEMP_HEAP_VIRTUAL_BASE` for early allocations.
 - **Memory map copy** — The raw descriptor list from firmware is copied into bootloader-owned memory so the kernel can iterate without calling UEFI.
 - **Debug signatures** — `THESEUS_DEBUG_SIGNATURE` (see `bootloader/src/main.rs`) provides a recognizable marker for tooling and GDB sessions.
 
-You can inspect the populated structure during debugging by pausing before `ExitBootServices` and dumping the pointer that gets passed to `kernel_entry`.
+You can inspect the populated structure during debugging by pausing before `ExitBootServices` and dumping the copied handoff pointer that is later passed to `kernel_entry`.
 
 ## 4. Leaving Firmware
-- `ExitBootServices` is invoked once the memory map key is refreshed; failure to recapture the key results in an abort.
+- In the current mainline code path, `bootloader/src/boot_sequence.rs::jump_to_kernel_with_handoff` calls `uefi::boot::exit_boot_services(None)` directly after copying the handoff into persistent `LOADER_DATA` memory.
+- That means this page should not be read as promising a richer memory-map-key refresh/retry loop than the code actually implements today.
 - Control transfers directly to the kernel via a function call (`kernel_entry(handoff_addr)`), no trampoline or boot protocol switching required.
 - After this point all firmware services are gone—every piece of state the kernel needs must be inside the handoff.
 

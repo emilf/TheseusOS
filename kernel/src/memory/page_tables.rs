@@ -1,5 +1,27 @@
+//! Module: memory::page_tables
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/memory.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/memory.md#A2:-Physical-memory-is-accessed-through-a-fixed-PHYS_OFFSET-linear-mapping-after-paging-is-active
+//! - docs/axioms/memory.md#A4:-The-persistent-physical-allocator-is-initialized-from-the-UEFI-memory-map-after-the-permanent-heap-exists
+//!
+//! INVARIANTS:
+//! - This module owns the low-level page-table entry/table representations used by the early kernel memory code.
+//! - Helper paths here either reuse an existing lower-level table or allocate/zero a new one through the provided frame source.
+//!
+//! SAFETY:
+//! - Returning mutable references into physical memory is only sound when the caller is operating under the correct translation context and exclusivity assumptions.
+//! - A wrong present/flags/physical-address combination here poisons everything built on top of it.
+//!
+//! PROGRESS:
+//! - docs/plans/memory.md
+//!
 //! Page table types and helpers moved out of `memory.rs` to reduce file size
 //! and separate low-level table layout from mapping logic.
+//!
+//! This module is intentionally narrow: representation and primitive table access.
 
 use super::{
     phys_offset_is_active, phys_to_virt_pa, PAGE_MASK, PAGE_SIZE, PTE_PRESENT, PTE_WRITABLE,

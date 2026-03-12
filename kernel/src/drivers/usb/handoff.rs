@@ -1,3 +1,27 @@
+//! Module: drivers::usb::handoff
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/boot-flow.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//! - docs/axioms/memory.md#A2:-Physical-memory-is-accessed-through-a-fixed-PHYS_OFFSET-linear-mapping-after-paging-is-active
+//!
+//! INVARIANTS:
+//! - USB controller ownership handoff runs after firmware boot services are gone and before higher-level USB runtime use depends on the controller.
+//! - EHCI/xHCI legacy-support capability traversal must only act on controllers identified from the live PCI inventory.
+//! - Controller MMIO windows are mapped into a fixed kernel region before capability registers are touched.
+//!
+//! SAFETY:
+//! - MMIO mappings and raw-pointer arithmetic must target the controller BAR actually reported by PCI enumeration.
+//! - Volatile register access prevents the compiler from eliding the handshake, but it does not guarantee the controller accepted ownership or that posted writes are globally observed without the required polling/ordering.
+//! - The legacy capability linked list is device-controlled input and must be bounded to avoid wandering through invalid MMIO.
+//!
+//! PROGRESS:
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/boot-flow.md
+//!
 //! USB legacy ownership handoff helpers.
 //!
 //! These routines release USB host controllers from firmware emulation so the

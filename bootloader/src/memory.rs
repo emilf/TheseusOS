@@ -1,8 +1,30 @@
-//! UEFI Memory Management Module
+//! Module: bootloader::memory
 //!
-//! This module provides safe wrappers around UEFI memory allocation and virtual memory
-//! mapping functions. It implements proper memory management using UEFI Boot Services
-//! before calling exit_boot_services.
+//! SOURCE OF TRUTH:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/memory.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//! - docs/axioms/memory.md#A3:-The-boot-path-keeps-a-temporary-heap-before-switching-to-a-permanent-kernel-heap
+//!
+//! INVARIANTS:
+//! - This module owns the firmware-side allocation helpers used before boot services are exited.
+//! - Temporary-heap allocation and handoff-copy memory allocation are part of the current single-binary boot contract.
+//! - Allocation helpers here operate on UEFI boot-services semantics, not on the later kernel memory model.
+//!
+//! SAFETY:
+//! - Firmware-side allocations must remain valid across the exact transition paths that depend on them.
+//! - The non-overlapping allocation helper is a pragmatic boot-time strategy, not proof that the kernel image extent accounting is exact.
+//!
+//! PROGRESS:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/memory.md
+//!
+//! Firmware-side memory allocation helpers for the boot path.
+//!
+//! This module wraps the UEFI allocation/free primitives used before the kernel's
+//! own memory-management world becomes authoritative.
 
 use crate::drivers::manager::write_line;
 use alloc::format;
@@ -11,47 +33,31 @@ use uefi::mem::memory_map::{MemoryAttribute, MemoryDescriptor, MemoryMap, Memory
 use uefi::runtime;
 use uefi::Status;
 
-/// Memory allocation result
+/// Result type for bootloader-side UEFI memory operations.
 pub type MemoryResult<T> = Result<T, Status>;
 
-/// Allocated memory region information
+/// Metadata describing an allocated firmware memory region.
 #[derive(Debug, Clone, Copy)]
 pub struct MemoryRegion {
-    /// Physical address of the allocated memory
+    /// Physical start address of the allocation.
     pub physical_address: u64,
-    /// Size of the allocated memory in bytes
+    /// Allocation size in bytes.
     pub size: u64,
-    /// Number of pages allocated
+    /// Number of 4 KiB pages backing the allocation.
     pub page_count: u64,
 }
 
-/// Allocate memory using UEFI Boot Services
+/// Allocate a contiguous firmware-managed memory region.
 ///
-/// This function allocates a contiguous block of memory using UEFI's allocate_pages
-/// function. The memory is allocated in pages (4KB each) and must be freed before
-/// calling exit_boot_services.
-///
-/// # Arguments
-///
-/// * `size` - Size in bytes to allocate
-/// * `memory_type` - Type of memory to allocate (e.g., LOADER_DATA, CONVENTIONAL)
-///
-/// # Returns
-///
-/// * `Ok(MemoryRegion)` - Information about the allocated memory region
-/// * `Err(Status)` - UEFI error status if allocation failed
-///
-/// # Safety
-///
-/// This function is safe to call before exit_boot_services. The returned memory
-/// must be freed using free_memory before calling exit_boot_services.
+/// The returned region follows UEFI boot-services lifetime rules; callers must
+/// free it or intentionally carry it across the handoff boundary by design.
 pub fn allocate_memory(size: u64, memory_type: MemoryType) -> MemoryResult<MemoryRegion> {
     write_line(&format!(
         "Allocating {} bytes using UEFI allocate_pages (type: {:?})",
         size, memory_type
     ));
 
-    let page_size = 4096u64; // UEFI page size is 4KB
+    let page_size = 4096u64; // UEFI page size is 4 KiB
     let page_count = (size + page_size - 1) / page_size;
 
     write_line(&format!(
@@ -86,36 +92,10 @@ pub fn allocate_memory(size: u64, memory_type: MemoryType) -> MemoryResult<Memor
     })
 }
 
-/// Allocate memory ensuring it does not overlap a forbidden physical range
+/// Allocate a region that avoids a forbidden physical-address range.
 ///
-/// This function is used in single-binary boot to allocate a temporary heap that
-/// doesn't overlap with the kernel image. It uses a retry strategy with incrementally
-/// larger requests to perturb UEFI's allocator into returning different page runs.
-///
-/// # Arguments
-///
-/// * `size` - Minimum size in bytes to allocate
-/// * `memory_type` - UEFI memory type (typically `LOADER_DATA`)
-/// * `forbid_start` - Start of forbidden physical address range (inclusive)
-/// * `forbid_end` - End of forbidden physical address range (exclusive)
-///
-/// # Returns
-///
-/// * `Ok(MemoryRegion)` - Allocated region that doesn't overlap `[forbid_start, forbid_end)`
-/// * `Err(Status::OUT_OF_RESOURCES)` - Failed to find non-overlapping region after 8 attempts
-///
-/// # Algorithm
-///
-/// 1. Attempt allocation with requested size
-/// 2. Check if allocated region overlaps forbidden range
-/// 3. If overlap: free the region, increment size by 4K, and retry
-/// 4. If no overlap: return the region
-/// 5. Repeat up to 8 times
-///
-/// # Safety
-///
-/// Safe to call before `ExitBootServices`. The returned memory must be freed or
-/// marked as persistent before calling `ExitBootServices`.
+/// This is a boot-time mitigation strategy, not proof that the forbidden range is
+/// an exact kernel-image extent.
 pub fn allocate_memory_non_overlapping(
     size: u64,
     memory_type: MemoryType,
@@ -133,7 +113,7 @@ pub fn allocate_memory_non_overlapping(
                 if !overlap {
                     return Ok(region);
                 }
-                // Free and retry with a different size to perturb allocator
+                // Free and retry with a slightly different size to perturb the allocator.
                 let _ = free_memory(region);
             }
             Err(_) => {
@@ -146,10 +126,7 @@ pub fn allocate_memory_non_overlapping(
     Err(Status::OUT_OF_RESOURCES)
 }
 
-/// Free memory using UEFI Boot Services
-///
-/// This function frees memory that was previously allocated using allocate_memory.
-/// The memory must be freed before calling exit_boot_services.
+/// Free a region previously allocated through the bootloader UEFI wrappers.
 ///
 /// # Arguments
 ///
@@ -157,13 +134,12 @@ pub fn allocate_memory_non_overlapping(
 ///
 /// # Returns
 ///
-/// * `Ok(())` - Memory successfully freed
-/// * `Err(Status)` - UEFI error status if freeing failed
+/// * `Ok(())` - Memory was freed successfully
+/// * `Err(Status)` - UEFI free failed
 ///
-/// # Safety
+/// # Note
 ///
-/// This function is safe to call before exit_boot_services. The memory region
-/// must have been allocated using allocate_memory.
+/// The region must originate from the matching bootloader allocation path.
 pub fn free_memory(region: MemoryRegion) -> MemoryResult<()> {
     write_line(&format!(
         "Freeing UEFI memory region: 0x{:016X} ({} bytes)",
@@ -196,27 +172,24 @@ pub fn free_memory(region: MemoryRegion) -> MemoryResult<()> {
     Ok(())
 }
 
-/// Allocate persistent memory for handoff structure
-///
-/// This function allocates memory that will remain accessible after exit_boot_services.
-/// The memory is allocated as LOADER_DATA type as per UEFI specifications.
+/// Allocate `LOADER_DATA` intended to remain usable across the handoff boundary.
 ///
 /// # Arguments
 ///
-/// * `size` - Size in bytes to allocate
+/// * `size` - Minimum size in bytes to allocate
 ///
 /// # Returns
 ///
-/// * `Ok(MemoryRegion)` - Information about the allocated memory region
-/// * `Err(Status)` - UEFI error status if allocation failed
+/// * `Ok(MemoryRegion)` - Information about the allocated region
+/// * `Err(Status)` - UEFI allocation failed
 #[allow(dead_code)]
 pub fn allocate_persistent_memory(size: u64) -> MemoryResult<MemoryRegion> {
     write_line(&format!(
-        "Allocating {} bytes of persistent memory for handoff structure",
+        "Allocating {} bytes of persistent LOADER_DATA for the handoff structure",
         size
     ));
 
-    let page_size = 4096u64; // UEFI page size is 4KB
+    let page_size = 4096u64; // UEFI page size is 4 KiB
     let page_count = (size + page_size - 1) / page_size;
 
     write_line(&format!(
@@ -225,8 +198,7 @@ pub fn allocate_persistent_memory(size: u64) -> MemoryResult<MemoryRegion> {
         page_count * page_size
     ));
 
-    // Allocate memory using UEFI Boot Services as LOADER_DATA
-    // This ensures the memory remains accessible after exit_boot_services
+    // Allocate `LOADER_DATA` so the region remains suitable for the handoff path.
     let memory_ptr = match boot::allocate_pages(
         AllocateType::AnyPages,
         MemoryType::LOADER_DATA,
@@ -255,27 +227,12 @@ pub fn allocate_persistent_memory(size: u64) -> MemoryResult<MemoryRegion> {
     })
 }
 
-/// Set up virtual memory mapping using UEFI Runtime Services
+/// Attempt UEFI runtime virtual-address-map setup.
 ///
-/// This function sets up virtual memory mapping using UEFI's set_virtual_address_map
-/// function. This is typically called after exit_boot_services to establish
-/// virtual memory mappings for runtime services.
-///
-/// # Arguments
-///
-/// * `memory_map` - The UEFI memory map to use for virtual mapping
-/// * `kernel_physical_base` - Physical base address of the kernel
-/// * `kernel_virtual_base` - Virtual base address where kernel should be mapped
-///
-/// # Returns
-///
-/// * `Ok(())` - Virtual memory mapping successfully established
-/// * `Err(Status)` - UEFI error status if mapping failed
-///
-/// # Safety
-///
-/// This function should be called after exit_boot_services. It modifies the
-/// virtual memory mapping of the system.
+/// This helper prepares a descriptor array for `set_virtual_address_map()` and is
+/// intended for firmware-runtime mapping experiments after boot services are gone.
+/// It is not the main architectural path the current kernel relies on for its own
+/// higher-half paging model.
 #[allow(dead_code)]
 pub fn setup_virtual_memory_mapping(
     memory_map: &uefi::mem::memory_map::MemoryMapOwned,
@@ -304,8 +261,8 @@ pub fn setup_virtual_memory_mapping(
 
     write_line("  ✓ Runtime services available");
 
-    // Create a memory descriptor array for set_virtual_address_map
-    // We need to avoid heap allocations after exit_boot_services, so we'll use a fixed-size array
+    // Build a fixed-size descriptor array because this path is meant for the
+    // post-boot-services phase where ad-hoc heap use is undesirable.
     const MAX_DESCRIPTORS: usize = 200; // Should be enough for most systems
     let mut descriptors: [MemoryDescriptor; MAX_DESCRIPTORS] = unsafe { core::mem::zeroed() };
     let mut descriptor_count = 0;
@@ -320,13 +277,7 @@ pub fn setup_virtual_memory_mapping(
         descriptors[descriptor_count] = MemoryDescriptor {
             ty: entry.ty,
             phys_start: entry.phys_start,
-            virt_start: if entry.ty == MemoryType::CONVENTIONAL {
-                // Map conventional memory 1:1 (identity mapping)
-                entry.phys_start
-            } else {
-                // Keep other memory types at their physical addresses
-                entry.phys_start
-            },
+            virt_start: entry.phys_start,
             page_count: entry.page_count,
             att: entry.att,
         };
@@ -335,7 +286,7 @@ pub fn setup_virtual_memory_mapping(
 
     write_line("  Created memory descriptors");
 
-    // Set up kernel mapping: map kernel physical address to virtual address
+    // Add a simple kernel mapping descriptor for the runtime-services experiment.
     if descriptor_count < MAX_DESCRIPTORS {
         descriptors[descriptor_count] = MemoryDescriptor {
             ty: MemoryType::LOADER_DATA,
@@ -373,20 +324,15 @@ pub fn setup_virtual_memory_mapping(
     Ok(())
 }
 
-/// Test memory allocation and deallocation
+/// Run a small UEFI allocation/free smoke test.
 ///
-/// This function tests the memory allocation system by allocating and freeing
-/// various sizes of memory. It's useful for debugging and validation.
-///
-/// # Returns
-///
-/// * `Ok(())` - All tests passed
-/// * `Err(Status)` - Test failed with UEFI error status
+/// This is optional boot-time validation for the firmware allocator wrappers.
+/// The normal repo workflow keeps it disabled for faster, quieter boots.
 pub fn test_memory_allocation() -> MemoryResult<()> {
     write_line("=== Testing Memory Allocation ===");
 
     // Test 1: Allocate small block (1 page)
-    write_line("Test 1: Allocating 1 page (4KB)");
+    write_line("Test 1: Allocating 1 page (4 KiB)");
     match allocate_memory(4096, MemoryType::LOADER_DATA) {
         Ok(region) => {
             write_line(&format!(
@@ -405,7 +351,7 @@ pub fn test_memory_allocation() -> MemoryResult<()> {
     }
 
     // Test 2: Allocate medium block (16 pages)
-    write_line("Test 2: Allocating 16 pages (64KB)");
+    write_line("Test 2: Allocating 16 pages (64 KiB)");
     match allocate_memory(65536, MemoryType::LOADER_DATA) {
         Ok(region) => {
             write_line(&format!(
@@ -423,8 +369,8 @@ pub fn test_memory_allocation() -> MemoryResult<()> {
         }
     }
 
-    // Test 3: Allocate large block (256 pages = 1MB)
-    write_line("Test 3: Allocating 256 pages (1MB)");
+    // Test 3: Allocate large block (256 pages = 1 MiB)
+    write_line("Test 3: Allocating 256 pages (1 MiB)");
     match allocate_memory(1048576, MemoryType::LOADER_DATA) {
         Ok(region) => {
             write_line(&format!(

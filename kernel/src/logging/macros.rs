@@ -1,59 +1,29 @@
-//! Logging macros
+//! Module: logging::macros
 //!
-//! This module provides convenient logging macros with automatic context capture:
-//! - `log_error!` - Critical errors that may cause system failure
-//! - `log_warn!` - Warning conditions that should be investigated
-//! - `log_info!` - Informational messages about normal operation
-//! - `log_debug!` - Debugging information for development
-//! - `log_trace!` - Detailed trace information for deep debugging
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
 //!
-//! ## Usage
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A1:-Kernel-logging-is-initialized-at-kernel-entry-and-is-designed-to-work-without-heap-allocation
 //!
-//! ```rust
-//! use crate::{log_error, log_warn, log_info, log_debug, log_trace};
+//! INVARIANTS:
+//! - This module provides the user-facing logging macros and helper macro glue for the kernel logging system.
+//! - Macro expansion captures call-site context without forcing callers to hand-write module/file/line plumbing.
 //!
-//! log_error!("Failed to allocate frame");
-//! log_warn!("Memory fragmentation detected");
-//! log_info!("Kernel initialization complete");
-//! log_debug!("Mapping {} bytes at {:#x}", size, addr);
-//! log_trace!("Page table walk: level {}", level);
-//! ```
+//! SAFETY:
+//! - Macro convenience must not smuggle in allocation-heavy or context-sensitive behavior that would break panic/interrupt-adjacent logging assumptions.
+//! - Changes here affect log callsites across the kernel, so even small macro tweaks can have wide observability fallout.
 //!
-//! ## Context Capture
+//! PROGRESS:
+//! - docs/plans/observability.md
 //!
-//! All macros automatically capture:
-//! - Module path (from `module_path!()`)
-//! - File name (from `file!()`)
-//! - Line number (from `line!()`)
-//! - Function name (for DEBUG/TRACE levels, via type introspection)
+//! Logging macros.
 //!
-//! ## Allocation-Free
-//!
-//! All macros use stack-allocated 256-byte buffers for formatting.
-//! This makes them safe to use in:
-//! - Panic handlers
-//! - Interrupt handlers
-//! - Early boot code (before heap is initialized)
-//! - Any critical code path
+//! This module provides the user-facing logging macros that capture call-site
+//! context and forward into the core logging implementation without requiring
+//! callers to hand-write module/file/line plumbing.
 
-/// Log an ERROR level message
-///
-/// Use for critical errors that may cause system failure or indicate
-/// serious problems requiring immediate attention.
-///
-/// # Examples
-///
-/// ```rust
-/// log_error!("Failed to allocate frame");
-/// log_error!("Invalid address: {:#x}", addr);
-/// log_error!("Panic in {}: {}", module, message);
-/// ```
-///
-/// # Output Format
-///
-/// ```text
-/// [ERROR module] message
-/// ```
+/// Log an ERROR-level message.
 #[macro_export]
 macro_rules! log_error {
     ($($arg:tt)*) => {{
@@ -78,24 +48,7 @@ macro_rules! log_error {
     }};
 }
 
-/// Log a WARN level message
-///
-/// Use for warning conditions that should be investigated but don't
-/// prevent normal operation.
-///
-/// # Examples
-///
-/// ```rust
-/// log_warn!("Memory fragmentation detected");
-/// log_warn!("Unexpected value: {}", value);
-/// log_warn!("Retrying operation {} of {}", attempt, max);
-/// ```
-///
-/// # Output Format
-///
-/// ```text
-/// [WARN module] message
-/// ```
+/// Log a WARN-level message.
 #[macro_export]
 macro_rules! log_warn {
     ($($arg:tt)*) => {{
@@ -120,24 +73,7 @@ macro_rules! log_warn {
     }};
 }
 
-/// Log an INFO level message
-///
-/// Use for informational messages about normal operation, major milestones,
-/// and system state changes.
-///
-/// # Examples
-///
-/// ```rust
-/// log_info!("Kernel initialization complete");
-/// log_info!("Loaded {} drivers", count);
-/// log_info!("System ready");
-/// ```
-///
-/// # Output Format
-///
-/// ```text
-/// [INFO module] message
-/// ```
+/// Log an INFO-level message.
 #[macro_export]
 macro_rules! log_info {
     ($($arg:tt)*) => {{
@@ -162,24 +98,9 @@ macro_rules! log_info {
     }};
 }
 
-/// Log a DEBUG level message (includes function name)
+/// Log a DEBUG-level message.
 ///
-/// Use for debugging information during development. Includes function name
-/// in the output for better context.
-///
-/// # Examples
-///
-/// ```rust
-/// log_debug!("Entering high-half transition");
-/// log_debug!("Frame allocated: {:#x}", frame_addr);
-/// log_debug!("Mapping {} bytes at {:#x}", size, addr);
-/// ```
-///
-/// # Output Format
-///
-/// ```text
-/// [DEBUG module::function@file:line] message
-/// ```
+/// DEBUG output includes the inferred function name when available.
 #[macro_export]
 macro_rules! log_debug {
     ($($arg:tt)*) => {{
@@ -213,24 +134,9 @@ macro_rules! log_debug {
     }};
 }
 
-/// Log a TRACE level message (includes function name)
+/// Log a TRACE-level message.
 ///
-/// Use for detailed trace information during deep debugging. Most verbose level.
-/// Includes function name for maximum context.
-///
-/// # Examples
-///
-/// ```rust
-/// log_trace!("Page table walk: level {}", level);
-/// log_trace!("Register value: CR3={:#x}", cr3);
-/// log_trace!("Processing entry {} of {}", i, total);
-/// ```
-///
-/// # Output Format
-///
-/// ```text
-/// [TRACE module::function@file:line] message
-/// ```
+/// TRACE is the most verbose logging level and includes function context when available.
 #[macro_export]
 macro_rules! log_trace {
     ($($arg:tt)*) => {{

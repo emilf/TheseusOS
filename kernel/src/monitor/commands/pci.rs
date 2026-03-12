@@ -1,3 +1,25 @@
+//! Module: monitor::commands::pci
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//! - docs/plans/drivers-and-io.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//!
+//! INVARIANTS:
+//! - This module implements monitor commands for inspecting the current ACPI/PCI view of the platform.
+//! - PCI listings are derived from live enumeration/cached platform state, not from static expectations.
+//!
+//! SAFETY:
+//! - Re-enumeration and config-space inspection are debugging operations over privileged hardware state and should remain read-mostly and explicit.
+//! - Output here is a snapshot, not proof that every listed device is successfully bound or healthy.
+//!
+//! PROGRESS:
+//! - docs/plans/observability.md
+//! - docs/plans/drivers-and-io.md
+//!
 //! PCI inspection command.
 
 use alloc::format;
@@ -7,6 +29,7 @@ use crate::drivers::pci;
 use crate::monitor::Monitor;
 
 impl Monitor {
+    /// Inspect the current PCI/platform view.
     pub(crate) fn cmd_pci(&self, _args: &[&str]) {
         let Some(platform_info) = acpi::cached_platform_info() else {
             self.writeln("No cached ACPI platform info; PCI config regions unavailable.");

@@ -1,7 +1,36 @@
-//! Kernel environment setup module
+//! Module: environment
 //!
-//! This module provides functions for setting up the complete kernel environment
-//! including interrupts, GDT, CPU features, virtual memory, and UEFI runtime hooks.
+//! SOURCE OF TRUTH:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/memory.md
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//! - docs/axioms/memory.md#A2:-Physical-memory-is-accessed-through-a-fixed-PHYS_OFFSET-linear-mapping-after-paging-is-active
+//! - docs/axioms/memory.md#A3:-The-boot-path-keeps-a-temporary-heap-before-switching-to-a-permanent-kernel-heap
+//! - docs/axioms/arch-x86_64.md#A2:-GDT/TSS-setup-provides-dedicated-IST-stacks-for-critical-faults
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//!
+//! INVARIANTS:
+//! - This module sequences the transition from early kernel entry into stable higher-half runtime execution.
+//! - New page tables, stack transitions, heap setup, physical allocator initialization, and platform bring-up all depend on the ordering encoded here.
+//! - After the CR3 switch and `set_phys_offset_active`, later subsystems expect physical-memory translation through the documented high mapping rather than ad-hoc early assumptions.
+//!
+//! SAFETY:
+//! - Ordering mistakes here are architectural, not local: stack switching, page-table activation, IDT/GDT/TSS refresh, and heap/allocator handoff must happen in a valid sequence.
+//! - Comments that sound stronger than the code are dangerous in this module; documentation must track the actual implemented transition path, not the nicer version we might want.
+//! - Unsafe calls here rely on mapped stacks, valid handoff data, and page tables that cover every address touched during the transition.
+//!
+//! PROGRESS:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/memory.md
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! Ordered kernel bring-up environment path.
+//!
+//! This module sequences interrupts, GDT/TSS, CPU setup, virtual memory, allocator
+//! transition, and later runtime/platform hooks.
 
 use crate::cpu::{setup_control_registers, setup_floating_point, setup_msrs};
 use crate::gdt::setup_gdt;
@@ -24,46 +53,12 @@ use x86_64::structures::paging::FrameAllocator;
 #[link_section = ".bss.stack"]
 static mut KERNEL_STACK: [u8; 64 * 1024] = [0; 64 * 1024];
 
-/// Switch to high-half kernel stack and continue execution
-///
-/// This function performs a critical transition from the low-half (identity-mapped)
-/// kernel to the high-half (virtual-mapped) kernel. It switches to a dedicated
-/// kernel stack and jumps to the high-half continuation function.
-///
-/// # Assembly Details
-/// - `mov rsp, {stack_top}`: Load the stack pointer with the top of our kernel stack
-/// - `jmp {cont}`: Jump to the high-half continuation function
-///
-/// # Safety
-///
-/// This function is unsafe because it:
-/// - Modifies the stack pointer directly
-/// - Performs a non-returning jump
-/// - Assumes the kernel stack is properly aligned and accessible
-///
-/// The caller must ensure:
-/// - The kernel stack is properly allocated and aligned
-/// - The stack memory is accessible and not corrupted
-/// - The high-half continuation function is valid and properly mapped
-/// - No other code is using the stack during the transition
-// Stack switching is centralized in `crate::stack::switch_to_kernel_stack_and_jump`
+// Stack switching is centralized in `crate::stack::switch_to_kernel_stack_and_jump`.
 
-/// High-half entry point function
+/// Entry point reached immediately after the higher-half jump.
 ///
-/// This function is called after jumping to the high-half virtual address space.
-/// It immediately switches to the high-half kernel stack and continues execution.
-///
-/// # Safety
-///
-/// This function is unsafe because it:
-/// - Calls unsafe functions that modify the stack pointer
-/// - Assumes the high-half environment is properly set up
-/// - Performs non-returning operations
-///
-/// The caller must ensure:
-/// - Virtual memory is properly configured
-/// - High-half mappings are active
-/// - The kernel stack is accessible in high-half space
+/// This validates that the runtime kernel/IST stacks are mapped and then switches
+/// to the dedicated high-half kernel stack before continuing bring-up.
 #[no_mangle]
 pub extern "C" fn after_high_half_entry() -> ! {
     // Switch stack immediately to a high-half kernel stack using the
@@ -106,24 +101,10 @@ pub extern "C" fn after_high_half_entry() -> ! {
     }
 }
 
-/// Continue kernel setup after switching to high-half stack
+/// Continue bring-up after switching to the high-half kernel stack.
 ///
-/// This function completes the kernel initialization process after transitioning
-/// to the high-half virtual address space. It sets up the IDT, configures CPU
-/// features, initializes memory management, and prepares the system for normal operation.
-///
-/// # Safety
-///
-/// This function is unsafe because it:
-/// - Modifies global system state (IDT, CR4, MSRs)
-/// - Performs memory allocation operations
-/// - Assumes the high-half environment is properly configured
-///
-/// The caller must ensure:
-/// - We are running in high-half virtual address space
-/// - Virtual memory mappings are active and correct
-/// - The kernel stack is properly set up
-/// - No other code is modifying system state concurrently
+/// This is the main post-stack-switch initialization path: refresh descriptor-table
+/// state, finish CPU setup, transition allocators/heaps, and continue platform bring-up.
 #[no_mangle]
 pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
     // Reinstall IDT and continue setup now that we're in high-half
@@ -433,50 +414,12 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
     }
 }
 
-/// Set up complete kernel environment in single-binary boot
+/// Perform the current single-binary kernel bring-up sequence.
 ///
-/// This function performs the complete kernel initialization sequence after the
-/// UEFI bootloader has exited boot services and called into the kernel library.
-///
-/// ## Initialization Sequence
-///
-/// 1. **Disable all interrupts** (including NMI) to prevent firmware interference
-/// 2. **Set up GDT and TSS** for proper segmentation and task state
-/// 3. **Configure control registers** (CR0, CR4) for long mode and paging
-/// 4. **Establish virtual memory**:
-///    - Create identity mapping for low 1 GiB
-///    - Map kernel to higher-half (0xFFFFFFFF80000000)
-///    - Map framebuffer to fixed virtual address
-///    - Map PHYS_OFFSET linear mapping (0xFFFF800000000000)
-///    - Map LAPIC MMIO region
-/// 5. **Switch to new page tables** (load CR3)
-/// 6. **Install IDT** for exception and interrupt handling
-/// 7. **Jump to higher-half** virtual addresses
-/// 8. **Initialize permanent heap** at KERNEL_HEAP_BASE
-/// 9. **Enable CPU features** (SSE, MSRs)
-/// 10. **Configure LAPIC timer** for interrupt testing and animation
-/// 11. **Set up framebuffer** and draw initial pattern
-/// 12. **Enter idle loop** or exit based on kernel configuration
-///
-/// # Arguments
-///
-/// * `_handoff` - Reference to validated handoff structure from bootloader
-/// * `kernel_physical_base` - Physical base address where kernel image is loaded
-/// * `verbose` - Enable detailed debug output during initialization
-///
-/// # Safety
-///
-/// This function is unsafe because it:
-/// - Modifies global system state (interrupts, GDT, control registers, page tables)
-/// - Performs direct memory manipulation and MMIO access
-/// - Assumes handoff structure is valid and boot services are exited
-/// - Switches stack and jumps to higher-half addresses
-///
-/// The caller must ensure:
-/// - Handoff structure is properly validated
-/// - UEFI boot services have been exited (no firmware calls after this)
-/// - Kernel physical base address is accurate
-/// - No concurrent execution (single-threaded environment)
+/// This is the low-half entry path after the bootloader exits boot services.
+/// It disables interrupts, installs the runtime descriptor tables, builds and
+/// activates the kernel page tables, installs the early IDT, and hands off to
+/// the higher-half continuation path.
 pub fn setup_kernel_environment(_handoff: &Handoff, _kernel_physical_base: u64) {
     log_info!("=== Setting up Kernel Environment ===");
 

@@ -1,12 +1,31 @@
-//! Memory operation commands
+//! Module: monitor::commands::memory
 //!
-//! This module implements commands for examining and modifying memory:
-//! - `mem`: Examine memory at an address (16 bytes, with continuation)
-//! - `dump`: Dump a larger memory region
-//! - `write`: Write a single byte to memory
-//! - `fill`: Fill a memory region with a value
-//! - `ptwalk`/`pt`: Follow the current page tables for a virtual address
-//! - `ptdump`: Inspect entries from any page-table level
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//! - docs/plans/memory.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//! - docs/axioms/memory.md#A2:-Physical-memory-is-accessed-through-a-fixed-PHYS_OFFSET-linear-mapping-after-paging-is-active
+//!
+//! INVARIANTS:
+//! - This module implements monitor commands for examining memory and page-table state.
+//! - Wozmon-style continuation and dump helpers are convenience features layered on top of privileged memory access.
+//! - Page-table inspection commands reflect the live page-table structures, not a cached model.
+//!
+//! SAFETY:
+//! - These commands can read or write arbitrary memory and therefore are among the sharpest tools exposed by the monitor.
+//! - Successful parsing or command dispatch does not imply the target address is safe or sensible to touch.
+//! - Memory-inspection helpers must avoid pretending that volatile access makes arbitrary addresses harmless.
+//!
+//! PROGRESS:
+//! - docs/plans/observability.md
+//! - docs/plans/memory.md
+//!
+//! Memory operation commands.
+//!
+//! This module implements commands for examining and modifying memory,
+//! including page-table inspection helpers.
 
 use crate::memory::{
     self, pd_index, pdpt_index, pml4_index, pt_index, PageTable, PAGE_SIZE, PAGE_SIZE_1GB,

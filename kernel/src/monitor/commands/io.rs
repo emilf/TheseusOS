@@ -1,8 +1,29 @@
-//! I/O and interrupt commands
+//! Module: monitor::commands::io
 //!
-//! This module implements low-level I/O operations:
-//! - `io`: Read/write I/O ports (8/16/32-bit)
-//! - `int`: Trigger software interrupts
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//!
+//! INVARIANTS:
+//! - This module implements low-level monitor commands for I/O-port access and software interrupt triggering.
+//! - These commands are direct debugging/admin surfaces over privileged machine state.
+//!
+//! SAFETY:
+//! - Arbitrary port I/O and software interrupts can destabilize the machine immediately; these commands are among the sharpest tools in the monitor.
+//! - Parsing and formatting here must not trick users into thinking a syntactically valid command is semantically safe.
+//!
+//! PROGRESS:
+//! - docs/plans/observability.md
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! I/O and interrupt commands.
+//!
+//! This module implements low-level I/O operations such as port read/write and
+//! software interrupt triggering.
 
 use crate::monitor::parsing::parse_number;
 use crate::monitor::Monitor;
@@ -30,10 +51,10 @@ impl Monitor {
     /// ```
     ///
     /// # Safety
-    /// - Reading/writing arbitrary I/O ports can crash the system
-    /// - Some ports have side effects (hardware state changes)
-    /// - Writing to critical ports (e.g., PIC, APIC) can disable interrupts
-    /// - Use with caution!
+    /// - Reading/writing arbitrary I/O ports can crash the system immediately.
+    /// - Some ports have side effects even on reads, not just writes.
+    /// - Touching critical ports (e.g., PIC, APIC, PCI config) can destabilize interrupt routing or device state.
+    /// - Use only when you actually intend to poke privileged hardware state.
     pub(in crate::monitor) fn cmd_io(&self, args: &[&str]) {
         if args.len() < 2 {
             self.writeln("Usage: io (r|w)[8|16|32] PORT [VALUE]");

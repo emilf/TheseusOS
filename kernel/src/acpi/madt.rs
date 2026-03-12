@@ -1,7 +1,27 @@
-//! MADT (Multiple APIC Description Table) parser
+//! Module: acpi::madt
 //!
-//! This module provides parsing capabilities for the MADT table, which contains
-//! information about APIC controllers, CPU entries, and interrupt sources.
+//! SOURCE OF TRUTH:
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//! - docs/axioms/arch-x86_64.md#A4:-SMP-discovery-exists-but-AP-startup-is-not-yet-a-documented-implemented-invariant
+//!
+//! INVARIANTS:
+//! - MADT parsing extracts CPU APIC IDs, local APIC address, IO APIC entries, and legacy-PIC presence from the firmware tables.
+//! - The output of this module is platform-discovery data used by later interrupt and driver bring-up.
+//!
+//! SAFETY:
+//! - Parsed APIC topology is firmware-provided data and must not be mistaken for proof that every discovered processor or interrupt source is already initialized by the kernel.
+//! - Interrupt-model assumptions made here must stay aligned with the main APIC bring-up path.
+//!
+//! PROGRESS:
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! MADT (Multiple APIC Description Table) parser.
+//!
+//! This module parses the MADT table to extract APIC controllers, CPU entries,
+//! and related interrupt-topology information.
 
 use crate::{log_debug, log_error, log_info};
 use acpi::AcpiTables;

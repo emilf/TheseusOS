@@ -1,14 +1,32 @@
-//! Handoff management module
+//! Module: handoff
 //!
-//! This module provides functions for validating and accessing the handoff structure
-//! passed from the bootloader to the kernel. The handoff structure contains all
-//! the system information collected by the bootloader, including memory maps,
-//! ACPI tables, hardware inventory, and other critical system data.
+//! SOURCE OF TRUTH:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/memory.md
 //!
-//! The module provides:
-//! - Handoff structure validation
-//! - Pointer management for physical and virtual access
-//! - Safe access to handoff data
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//! - docs/axioms/boot.md#A3:-Kernel-image-metadata-is-derived-from-the-live-binary-not-a-separately-parsed-on-disk-image
+//! - docs/axioms/memory.md#A3:-The-boot-path-keeps-a-temporary-heap-before-switching-to-a-permanent-kernel-heap
+//!
+//! INVARIANTS:
+//! - The handoff is the bootloader-to-kernel contract boundary for memory-map, firmware, graphics, ACPI, and boot-time platform data.
+//! - Validation here enforces only the current kernel’s required sanity checks; it is not a proof that every embedded pointer or firmware claim is globally trustworthy.
+//! - Early kernel code may still access the handoff through its physical pointer while transitional mappings are in flux.
+//!
+//! SAFETY:
+//! - Global handoff pointers are process-wide boot state and must only point at the copied persistent handoff buffer established before kernel entry.
+//! - Any raw pointer derived from handoff fields must still be validated against mapping/size/alignment expectations before dereference.
+//! - Comments that imply a permanent high-half handoff pointer would be misleading today; the current code intentionally keeps using the physical pointer to avoid stale mapping assumptions.
+//!
+//! PROGRESS:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/memory.md
+//!
+//! Bootloader-to-kernel handoff management.
+//!
+//! This module validates the copied handoff structure and exposes the current
+//! pointer-tracking helpers used during early kernel bring-up.
 
 use crate::memory;
 use crate::{log_debug, log_trace};
@@ -19,15 +37,10 @@ static mut HANDOFF_PHYS_PTR: u64 = 0;
 static mut HANDOFF_VIRT_PTR: u64 = 0;
 static mut HANDOFF_INITIALIZED: bool = false;
 
-/// Set up handoff pointer tracking for both physical and virtual access
+/// Initialize global handoff pointer tracking.
 ///
-/// This function initializes the global handoff pointers used throughout the kernel.
-/// It stores both physical and virtual pointers to the handoff structure for
-/// safe access during different phases of kernel initialization.
-///
-/// # Parameters
-///
-/// * `handoff_phys` - Physical address of the handoff structure
+/// The current implementation intentionally keeps both tracked pointers equal to
+/// the physical handoff address to avoid stale high-half assumptions during bring-up.
 pub fn set_handoff_pointers(handoff_phys: u64) {
     unsafe {
         HANDOFF_PHYS_PTR = handoff_phys;
@@ -41,18 +54,10 @@ pub fn set_handoff_pointers(handoff_phys: u64) {
     );
 }
 
-/// Get a reference to the handoff structure
+/// Get a reference to the handoff structure.
 ///
-/// Chooses between physical and virtual pointer based on current execution context.
-/// This allows the same code to work both before and after high-half jumping.
-///
-/// # Returns
-///
-/// A reference to the handoff structure
-///
-/// # Safety
-///
-/// The caller must ensure that the handoff structure is valid and properly initialized.
+/// The current code always uses the physical pointer because the bring-up path still
+/// relies on transitional mappings rather than a permanently trusted high-half alias.
 #[allow(dead_code)]
 pub fn handoff_ref() -> &'static Handoff {
     // Always use the physical pointer; identity mapping ensures accessibility
@@ -60,29 +65,15 @@ pub fn handoff_ref() -> &'static Handoff {
     unsafe { &*(ptr as *const Handoff) }
 }
 
-/// Get the physical pointer to the handoff structure
-///
-/// # Returns
-///
-/// The physical address of the handoff structure
+/// Get the physical handoff pointer currently tracked by the kernel.
 pub fn handoff_phys_ptr() -> u64 {
     unsafe { HANDOFF_PHYS_PTR }
 }
 
-/// Validate the bootloader handoff structure for basic sanity
+/// Validate the handoff structure against the current kernel's sanity checks.
 ///
-/// This function performs comprehensive validation of the handoff structure
-/// to ensure it contains valid system information. It checks structure size,
-/// version, memory map consistency, and other critical fields.
-///
-/// # Parameters
-///
-/// * `h` - Reference to the handoff structure to validate
-///
-/// # Returns
-///
-/// * `Ok(())` - If all validation checks pass
-/// * `Err(message)` - If validation fails, with a description of the issue
+/// This rejects malformed or self-contradictory handoff state, but it is not a
+/// global proof that every embedded pointer or firmware claim is trustworthy.
 pub fn validate_handoff(h: &Handoff) -> Result<(), &'static str> {
     // Expected struct size and version
     let expected_size = core::mem::size_of::<Handoff>() as u32;

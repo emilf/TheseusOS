@@ -1,52 +1,32 @@
+//! Module: drivers::pci
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//! - docs/axioms/memory.md#A2:-Physical-memory-is-accessed-through-a-fixed-PHYS_OFFSET-linear-mapping-after-paging-is-active
+//!
+//! INVARIANTS:
+//! - PCI configuration access is ECAM-based and uses ACPI-provided MCFG regions.
+//! - Bus/device/function addressing follows the ECAM stride rules encoded in this module.
+//! - Bridge-aware enumeration is allowed to discover downstream buses and functions recursively.
+//! - MSI/MSI-X capability parsing must reflect live configuration-space state rather than assumed device behavior.
+//!
+//! SAFETY:
+//! - Raw configuration-space pointers and MMIO-derived addresses must refer to valid ECAM windows described by ACPI.
+//! - Volatile configuration reads/writes preserve the access, but they do not replace interrupt ordering, synchronization, or device-specific sequencing rules.
+//! - Capability traversal must bound pointer chasing and reject malformed linked lists rather than trusting firmware/device state blindly.
+//!
+//! PROGRESS:
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/interrupts-and-platform.md
+//!
 //! PCI Express enhanced configuration access (ECAM) support.
 //!
-//! This module provides comprehensive PCI/PCIe device enumeration and configuration
-//! using the Enhanced Configuration Access Mechanism (ECAM). It reads PCIe configuration
-//! space using the MMIO windows described by the ACPI MCFG table.
-//!
-//! ## Key Features
-//!
-//! - **Device Enumeration**: Scans all PCI buses and discovers all functions
-//! - **Bridge Handling**: Automatically configures PCI bridges and discovers downstream devices
-//! - **BAR Parsing**: Reads and decodes Base Address Registers (BARs) for memory/I/O resources
-//! - **Capability Discovery**: Parses PCI capabilities like MSI/MSI-X
-//! - **MSI Support**: Configures Message Signaled Interrupts for devices
-//!
-//! ## Architecture Overview
-//!
-//! The PCI subsystem follows this flow:
-//! 1. **ACPI Discovery**: MCFG table provides ECAM regions
-//! 2. **Bus Scanning**: Recursively scan buses starting from bus 0
-//! 3. **Device Discovery**: Read configuration space for each function
-//! 4. **Bridge Configuration**: Set up secondary/subordinate buses for bridges
-//! 5. **Resource Parsing**: Decode BARs and capabilities
-//! 6. **Device Registration**: Create device descriptors for the driver framework
-//!
-//! ## ECAM Addressing
-//!
-//! PCIe uses a flat address space where each function has a 4KB configuration space:
-//! - Bus stride: 1MB (0x1_0000)
-//! - Device stride: 32KB (0x8000)  
-//! - Function stride: 4KB (0x1000)
-//!
-//! Address = ECAM_base + (bus * 1MB) + (device * 32KB) + (function * 4KB)
-//!
-//! ## Example Usage
-//!
-//! ```rust,no_run
-//! // Enumerate all PCI devices
-//! let topology = pci::enumerate(&platform_info.pci_config_regions);
-//!
-//! // Find a specific device
-//! for device in topology.functions.iter() {
-//!     if device.vendor_id == 0x8086 && device.device_id == 0x1234 {
-//!         // Found our device
-//!     }
-//! }
-//!
-//! // Enable MSI for a device
-//! pci::enable_msi(&device, &regions, apic_id, vector)?;
-//! ```
+//! This module enumerates PCI/PCIe devices through the ECAM windows described by the ACPI MCFG table,
+//! decodes BARs and capabilities, tracks bridge topology, and provides MSI/MSI-X configuration helpers.
 
 use crate::acpi::{PciBridgeInfo, PciConfigRegion};
 use crate::{log_debug, log_trace, log_warn};

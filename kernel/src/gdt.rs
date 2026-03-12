@@ -1,15 +1,28 @@
-//! Global Descriptor Table (GDT) module
+//! Module: gdt
 //!
-//! This module provides the GDT setup required for x86-64 long mode.
-//! It creates the necessary segment descriptors for kernel and user mode operation.
+//! SOURCE OF TRUTH:
+//! - docs/plans/interrupts-and-platform.md
 //!
-//! The GDT is essential for x86-64 operation and provides:
-//! - Code and data segment descriptors
-//! - Task State Segment (TSS) for interrupt handling
-//! - Interrupt Stack Table (IST) for critical exceptions
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/arch-x86_64.md#A2:-GDT/TSS-setup-provides-dedicated-IST-stacks-for-critical-faults
 //!
-//! This module uses the x86_64 crate for GDT management and provides
-//! the necessary setup functions for kernel initialization.
+//! INVARIANTS:
+//! - This module owns the runtime GDT/TSS setup used by the kernel in long mode.
+//! - Dedicated IST stacks exist for the documented critical-fault paths.
+//! - GDT/TSS state here must stay aligned with IDT handler expectations and the stack-mapping work performed during bring-up.
+//!
+//! SAFETY:
+//! - Descriptor-table and TSS changes are CPU-global state for the running core and must only be performed in the intended bring-up sequence.
+//! - IST stack pointers must reference mapped writable stack memory before fault handlers rely on them.
+//! - Comments that describe x86-64 segmentation too casually can hide the fact that the TSS/IST path is still operationally critical.
+//!
+//! PROGRESS:
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! Runtime GDT/TSS setup for long-mode kernel execution.
+//!
+//! This module owns the descriptor-table state and dedicated IST stacks used by
+//! the current bring-up path.
 
 use spin::Once as SpinOnce;
 use x86_64::{
@@ -34,37 +47,25 @@ struct GdtState {
 static GDT_STATE: SpinOnce<GdtState> = SpinOnce::new();
 
 // IST stacks (aligned in .bss)
-/// Double Fault interrupt stack (16KB)
+/// Double-fault IST stack (16 KiB).
 #[link_section = ".bss.stack"]
 static mut IST_DF_STACK: [u8; 16 * 4096] = [0; 16 * 4096];
-/// Non-Maskable Interrupt stack (16KB)
+/// NMI IST stack (16 KiB).
 #[link_section = ".bss.stack"]
 static mut IST_NMI_STACK: [u8; 16 * 4096] = [0; 16 * 4096];
-/// Machine Check interrupt stack (16KB)
+/// Machine-check IST stack (16 KiB).
 #[link_section = ".bss.stack"]
 static mut IST_MC_STACK: [u8; 16 * 4096] = [0; 16 * 4096];
-/// Page Fault interrupt stack (16KB)
+/// Page-fault IST stack (16 KiB).
 #[link_section = ".bss.stack"]
 static mut IST_PF_STACK: [u8; 16 * 4096] = [0; 16 * 4096];
 
-/// Interrupt Stack Table indices
+/// Interrupt Stack Table indices.
 pub const IST_INDEX_DF: u16 = 0; // IST1 - Double Fault
 pub const IST_INDEX_NMI: u16 = 1; // IST2 - Non-Maskable Interrupt
 pub const IST_INDEX_MC: u16 = 2; // IST3 - Machine Check
 pub const IST_INDEX_PF: u16 = 3; // IST4 - Page Fault
 
-/// Initialize the Task State Segment with IST stacks
-///
-/// This function sets up the TSS with dedicated interrupt stacks for critical
-/// exceptions. Each stack is 16KB and properly aligned.
-///
-/// # Returns
-///
-/// A reference to the initialized TSS
-///
-/// # Safety
-///
-/// This function is safe to call during kernel initialization.
 // Expose TSS storage so we can refresh IST pointers at runtime if needed
 static mut TSS_STATIC: TaskStateSegment = TaskStateSegment::new();
 
@@ -97,7 +98,7 @@ unsafe fn build_gdt_state() -> GdtState {
     }
 }
 
-/// Expose IST stack base addresses and sizes for explicit mapping
+/// Return IST stack base addresses and sizes for explicit mapping.
 pub fn ist_stack_ranges() -> [(u64, u64); 4] {
     [
         (core::ptr::addr_of!(IST_DF_STACK) as u64, (16 * 4096) as u64),
@@ -110,22 +111,10 @@ pub fn ist_stack_ranges() -> [(u64, u64); 4] {
     ]
 }
 
-/// Kernel code segment selector
-///
-/// This is the selector for the kernel code segment in the GDT.
-/// It's used for verification and debugging purposes.
+/// Kernel code-segment selector used by the runtime GDT.
 pub const KERNEL_CS: u16 = 0x08;
 
-/// Set up and load the GDT
-///
-/// This function creates and loads the Global Descriptor Table with the necessary
-/// segments for kernel operation. It sets up code segments, data segments, and
-/// the Task State Segment for interrupt handling.
-///
-/// # Safety
-///
-/// This function modifies CPU segment registers and should only be called
-/// during kernel initialization when it's safe to modify these registers.
+/// Build and load the runtime GDT/TSS state.
 pub unsafe fn setup_gdt() {
     // Build and load runtime GDT with TSS
     let state = GDT_STATE.call_once(|| unsafe { build_gdt_state() });
@@ -136,9 +125,7 @@ pub unsafe fn setup_gdt() {
     reload_data_segments(state.data_sel);
 }
 
-/// Refresh TSS IST pointers and reload TSS
-///
-/// Useful to ensure PF/DF/NMI/MC IST pointers are correct after relocation.
+/// Refresh the IST pointers stored in the TSS.
 pub unsafe fn refresh_tss_ist() {
     let df_top = (core::ptr::addr_of!(IST_DF_STACK) as u64) + (16 * 4096) as u64;
     let nmi_top = (core::ptr::addr_of!(IST_NMI_STACK) as u64) + (16 * 4096) as u64;
@@ -151,45 +138,15 @@ pub unsafe fn refresh_tss_ist() {
     let _ = GDT_STATE.get();
 }
 
-/// Read current PF IST pointer from TSS
+/// Read the current page-fault IST pointer from the TSS.
 pub fn get_pf_ist_top() -> u64 {
     unsafe { TSS_STATIC.interrupt_stack_table[IST_INDEX_PF as usize].as_u64() }
 }
 
-/// Reload segment registers with new selectors
+/// Reload the data-segment registers for the current runtime GDT state.
 ///
-/// This function reloads the data segment registers (DS, ES, FS, GS) with
-/// null selectors, which is the standard practice in x86-64 long mode.
-///
-/// # Safety
-///
-/// This function modifies CPU segment registers and should only be called
-/// during kernel initialization when it's safe to modify these registers.
-/// Reload data segment registers with null selectors
-///
-/// In x86-64 long mode, data segment registers (DS, ES, FS, GS) can be set to
-/// null selectors (0) which effectively disable segmentation for those segments.
-/// This is the standard approach in 64-bit mode where segmentation is largely
-/// unused except for FS and GS which can have custom base addresses via MSRs.
-///
-/// # Assembly Details
-/// - `xor eax, eax`: Clear EAX register (sets it to 0)
-/// - `mov ds, ax`: Load DS segment register with null selector
-/// - `mov es, ax`: Load ES segment register with null selector  
-/// - `mov fs, ax`: Load FS segment register with null selector
-/// - `mov gs, ax`: Load GS segment register with null selector
-///
-/// # Safety
-///
-/// This function is unsafe because it modifies segment registers directly.
-/// It should only be called during kernel initialization when it's safe to
-/// modify these critical registers.
-///
-/// The caller must ensure:
-/// - We are in kernel mode with sufficient privileges
-/// - No other code is using the segment registers concurrently
-/// - The system is in a stable state for segment register modification
-/// - This is called during proper kernel initialization sequence
+/// In long mode, DS/ES/SS are reloaded from the runtime selector while FS/GS are
+/// cleared here and configured elsewhere as needed.
 unsafe fn reload_data_segments(data_sel: SegmentSelector) {
     DS::set_reg(data_sel);
     ES::set_reg(data_sel);

@@ -1,3 +1,31 @@
+//! Module: drivers::usb::xhci
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/observability.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//! - docs/axioms/memory.md#A2:-Physical-memory-is-accessed-through-a-fixed-PHYS_OFFSET-linear-mapping-after-paging-is-active
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//!
+//! INVARIANTS:
+//! - The xHCI driver maps controller MMIO state into a fixed kernel window before touching capability, operational, runtime, or doorbell registers.
+//! - Command/event/transfer rings are DMA-backed and must stay aligned and controller-visible for the lifetime of active runtime use.
+//! - Interrupt-driven runtime service is APIC/MSI-based when available, with diagnostics and deferred service hooks exposing controller state.
+//! - The current bring-up path is sufficient for QEMU virtual HID keyboard enumeration, not a claim of full USB stack completeness.
+//!
+//! SAFETY:
+//! - All raw MMIO pointers, register blocks, and ring addresses must refer to mapped controller state owned by the kernel after firmware handoff.
+//! - Volatile register accesses are required for controller interaction, but they do not replace required polling, reset sequencing, cache coherency, or interrupt acknowledgment rules.
+//! - DMA buffers handed to the controller must remain allocated, correctly aligned, and not be aliased mutably through unrelated Rust references while hardware may still access them.
+//!
+//! PROGRESS:
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/observability.md
+//!
 //! xHCI host controller driver for the teaching kernel.
 //!
 //! The goal of this module is educational: it walks through the steps required

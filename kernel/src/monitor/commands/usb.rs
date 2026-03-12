@@ -1,6 +1,28 @@
-//! USB diagnostics command
+//! Module: monitor::commands::usb
 //!
-//! Provides `usb` monitor command for inspecting xHCI controller state.
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//! - docs/plans/drivers-and-io.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//!
+//! INVARIANTS:
+//! - This module implements monitor commands for inspecting xHCI/USB controller diagnostics snapshots.
+//! - USB monitor output reflects the current runtime diagnostics surface exposed by the USB subsystem, not a separate state model.
+//!
+//! SAFETY:
+//! - USB diagnostics are debugging views over a highly stateful MMIO/DMA/interrupt-driven subsystem and can become misleading if consumers forget they are snapshots.
+//! - Command ergonomics must not imply the underlying USB stack is broader or more finished than current repo reality.
+//!
+//! PROGRESS:
+//! - docs/plans/observability.md
+//! - docs/plans/drivers-and-io.md
+//!
+//! USB diagnostics command.
+//!
+//! Provides the `usb` monitor command for inspecting xHCI controller state.
 
 use crate::drivers::usb;
 use crate::monitor::parsing::parse_number;
@@ -9,15 +31,6 @@ use alloc::format;
 
 impl Monitor {
     /// Inspect xHCI controllers, ports, and discovered HID endpoints.
-    ///
-    /// # Usage
-    /// ```text
-    /// usb                 # Summary of controllers
-    /// usb summary         # Same as above
-    /// usb ports [index]   # Detailed port status (default index 0)
-    /// usb hid             # List controllers exposing HID boot keyboards
-    /// usb help            # Command usage
-    /// ```
     pub(in crate::monitor) fn cmd_usb(&self, args: &[&str]) {
         let snapshot = usb::diagnostics_snapshot();
 

@@ -1,11 +1,33 @@
-//! Boot helpers: centralize early-boot abort handling and helpers.
+//! Module: boot
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/observability.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//! - docs/axioms/debug.md#A2:-Panic-handling-reports-failure-through-kernel-logging-and-exits-QEMU-with-error-status
+//!
+//! INVARIANTS:
+//! - This module centralizes early-boot/kernel-bring-up abort handling and related diagnostics.
+//! - Boot abort paths are failure-reporting helpers, not recovery mechanisms.
+//! - Abort helpers are shared by the fragile transition code that needs contextual failure output.
+//!
+//! SAFETY:
+//! - Abort diagnostics run when the system may already be partially broken, so they must prefer reliability over ambition.
+//! - Register/backtrace dumping is best-effort debugging support and must not be mistaken for proof that every reported frame/register is trustworthy after severe corruption.
+//! - This module must stay aligned with the logging/panic/QEMU-exit behavior documented elsewhere.
+//!
+//! PROGRESS:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/observability.md
+//!
+//! Early-boot abort helpers.
 #![allow(dead_code)]
 
 use crate::log_error;
 
-/// Abort the boot process with a message and optional address context.
-/// This prints the message to the kernel console, emits a QEMU error exit, and
-/// panics to stop execution.
+/// Abort bring-up with a message and optional address context.
 pub fn abort_boot(msg: &str, addr: Option<u64>) -> ! {
     if let Some(a) = addr {
         log_error!("BOOT ABORT: {} address={:#x}", msg, a);
@@ -16,7 +38,7 @@ pub fn abort_boot(msg: &str, addr: Option<u64>) -> ! {
     panic!("BOOT ABORT: {}", msg);
 }
 
-/// Abort with file/line context and register/backtrace dump.
+/// Abort with file/line context plus best-effort register and backtrace dumping.
 pub fn abort_with_context(msg: &str, file: &str, line: u32, addr: Option<u64>) -> ! {
     if let Some(a) = addr {
         log_error!("BOOT ABORT: {} at {}:{} address={:#x}", msg, file, line, a);

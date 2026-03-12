@@ -1,32 +1,31 @@
-//! LAPIC timer management
+//! Module: interrupts::timer
 //!
-//! This module provides functions for configuring and controlling the Local APIC timer:
-//! - Timer initialization and configuration
-//! - One-shot and periodic modes
-//! - Timer masking/unmasking
-//! - Tick counting
+//! SOURCE OF TRUTH:
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/observability.md
 //!
-//! ## LAPIC Timer Overview
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
 //!
-//! The Local APIC timer is a per-CPU programmable timer that can generate
-//! periodic interrupts. It's commonly used for:
-//! - OS scheduler preemption
-//! - Profiling and performance counters
-//! - Periodic system tasks
-//! - Animation updates (like our heart animation!)
+//! INVARIANTS:
+//! - The LAPIC timer is the current kernel timer source used during bring-up for verification and later periodic work.
+//! - Timer vector programming must stay aligned with the IDT/interrupt-module ownership of `APIC_TIMER_VECTOR`.
+//! - Tick counting here is shared runtime state consumed by observability and simple timing paths.
 //!
-//! ## Timer Modes
+//! SAFETY:
+//! - Timer programming is raw LAPIC register manipulation and assumes APIC access is already valid.
+//! - One-shot/periodic examples in comments must not overstate the timing precision; the actual cadence still depends on hardware/QEMU behavior and divider choices.
+//! - Bringing up a timer before the handler/vector path is coherent risks spurious or misleading failures.
 //!
-//! - **One-shot**: Timer fires once after countdown, then stops
-//! - **Periodic**: Timer fires repeatedly at fixed intervals
-//! - **TSC-Deadline**: Timer fires when TSC reaches deadline (not used here)
+//! PROGRESS:
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/observability.md
 //!
-//! ## Register Offsets
+//! LAPIC timer configuration and control.
 //!
-//! - 0x320: LVT Timer (vector, mode, mask)
-//! - 0x380: Initial Count (reload value)
-//! - 0x390: Current Count (decrements to zero)
-//! - 0x3E0: Divide Configuration (clock divider)
+//! This module owns the current LAPIC timer bring-up helpers, including one-shot,
+//! periodic, and shared tick-counter support.
 
 use super::{get_apic_base, read_apic_register, write_apic_register};
 use crate::{log_debug, log_trace};
@@ -38,32 +37,11 @@ use super::handler_timer;
 use super::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9};
 use super::{APIC_TIMER_VECTOR, TIMER_TICKS};
 
-/// Configure LAPIC timer (does not start it)
+/// Configure the LAPIC timer without starting it.
 ///
-/// Initializes the LAPIC timer for use but leaves it masked (stopped).
-/// Must be called after paging is active so APIC MMIO is accessible.
-///
-/// # Configuration
-/// - Task Priority Register (TPR) = 0 (allow all interrupts)
-/// - Spurious Interrupt Vector = 0xFF with APIC enabled (bit 8)
-/// - Timer Divide = /16 (provides good granularity)
-/// - LVT Timer = vector 0x40, masked, one-shot mode (default)
-/// - LINT0/LINT1 = masked
-/// - Error Vector = 0xFE
-///
-/// # Safety
-/// Requires:
-/// - Paging to be active
-/// - LAPIC MMIO region mapped
-/// - Called from kernel mode
-///
-/// # Examples
-/// ```rust
-/// unsafe {
-///     lapic_timer_configure();
-///     lapic_timer_start_periodic(100_000);  // Start 100Hz timer
-/// }
-/// ```
+/// The current setup enables the APIC via SIVR, applies the `/16` divider,
+/// installs the masked timer vector, masks LINT0/LINT1, and sets the APIC error
+/// vector.
 pub unsafe fn lapic_timer_configure() {
     let apic_base = get_apic_base();
 
@@ -125,32 +103,7 @@ pub unsafe fn lapic_timer_configure() {
     );
 }
 
-/// Start LAPIC timer in one-shot mode
-///
-/// Arms the timer to fire once after counting down from the initial count.
-/// The timer will generate one interrupt and then stop.
-///
-/// # Arguments
-/// * `initial_count` - Starting count value (decrements to 0)
-///
-/// # Timing
-/// The actual time depends on:
-/// - Bus frequency (CPU-specific)
-/// - Divide configuration (currently /16)
-/// - Initial count value
-///
-/// Approximate formula: `time ≈ initial_count * 16 / bus_frequency`
-///
-/// # Safety
-/// Requires LAPIC to be configured via `lapic_timer_configure()` first.
-///
-/// # Examples
-/// ```rust
-/// unsafe {
-///     lapic_timer_configure();
-///     lapic_timer_start_oneshot(100_000);  // Fire once after ~100k cycles
-/// }
-/// ```
+/// Start the LAPIC timer in one-shot mode.
 pub unsafe fn lapic_timer_start_oneshot(initial_count: u32) {
     let apic_base = get_apic_base();
 
@@ -168,30 +121,7 @@ pub unsafe fn lapic_timer_start_oneshot(initial_count: u32) {
     log_debug!("LAPIC current count={:#x}", cur);
 }
 
-/// Start LAPIC timer in periodic mode
-///
-/// Arms the timer to fire repeatedly at fixed intervals. After each interrupt,
-/// the counter automatically reloads from the initial count and continues.
-///
-/// # Arguments
-/// * `initial_count` - Reload value (timer resets to this after each interrupt)
-///
-/// # Use Cases
-/// - OS scheduler tick (e.g., 100Hz for preemption)
-/// - Periodic animation updates
-/// - Watchdog timers
-///
-/// # Safety
-/// Requires LAPIC to be configured via `lapic_timer_configure()` first.
-///
-/// # Examples
-/// ```rust
-/// unsafe {
-///     lapic_timer_configure();
-///     lapic_timer_start_periodic(100_000);  // ~100Hz periodic interrupts
-///     x86_64::instructions::interrupts::enable();  // Enable IF to receive interrupts
-/// }
-/// ```
+/// Start the LAPIC timer in periodic mode.
 pub unsafe fn lapic_timer_start_periodic(initial_count: u32) {
     let apic_base = get_apic_base();
 
@@ -205,17 +135,7 @@ pub unsafe fn lapic_timer_start_periodic(initial_count: u32) {
     write_apic_register(apic_base, 0x380, initial_count);
 }
 
-/// Stop/mask LAPIC timer
-///
-/// Stops the timer by setting the mask bit in the LVT Timer register.
-/// The timer will stop generating interrupts.
-///
-/// # Safety
-/// Safe to call anytime after `lapic_timer_configure()`.
-///
-/// # Debug Output
-/// Prints extensive debug information during masking to help diagnose
-/// timer-related issues.
+/// Mask/stop the LAPIC timer.
 pub unsafe fn lapic_timer_mask() {
     let apic_base = get_apic_base();
 
@@ -255,43 +175,12 @@ pub unsafe fn lapic_timer_mask() {
     );
 }
 
-/// Get current timer tick count
-///
-/// Returns the number of times the LAPIC timer interrupt has fired since boot.
-///
-/// # Returns
-/// * Tick count (32-bit counter, wraps after ~4 billion ticks)
-///
-/// # Examples
-/// ```rust
-/// let before = timer_tick_count();
-/// // ... do some work ...
-/// let after = timer_tick_count();
-/// let elapsed = after - before;
-/// ```
+/// Return the LAPIC timer tick counter.
 pub fn timer_tick_count() -> u32 {
     TIMER_TICKS.load(Ordering::Relaxed)
 }
 
-/// Reinstall timer vector IDT entry at runtime
-///
-/// Patches the IDT entry for the timer vector (0x40) with the full 64-bit
-/// handler address. This is called after switching to high-half virtual addresses
-/// to ensure the handler pointer is correct.
-///
-/// # IDT Entry Structure (16 bytes)
-/// - Bytes 0-1: offset_low (bits 0-15 of handler address)
-/// - Bytes 2-3: selector (code segment)
-/// - Byte 4: ist (Interrupt Stack Table index)
-/// - Byte 5: type_attr (0x8E = present, DPL=0, 64-bit interrupt gate)
-/// - Bytes 6-7: offset_mid (bits 16-31 of handler address)
-/// - Bytes 8-11: offset_high (bits 32-63 of handler address)
-/// - Bytes 12-15: reserved (must be 0)
-///
-/// # Safety
-/// - Must be called after IDT is loaded
-/// - Handler address must be valid
-/// - Should only be called during initialization
+/// Rewrite the timer-vector IDT entry after the high-half transition.
 pub unsafe fn install_timer_vector_runtime() {
     use x86_64::instructions::tables::sidt;
 

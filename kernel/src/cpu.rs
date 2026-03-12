@@ -1,14 +1,31 @@
-//! CPU setup and control module
+//! Module: cpu
 //!
-//! This module provides functions to configure CPU features, control registers,
-//! and set up the CPU for kernel operation. It handles detection and enabling
-//! of various CPU features like SSE, AVX, and other extensions.
+//! SOURCE OF TRUTH:
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/boot-flow.md
 //!
-//! The module provides:
-//! - Control register manipulation (CR0, CR4)
-//! - CPU feature detection using CPUID
-//! - Floating point unit setup (SSE/AVX)
-//! - Model Specific Register (MSR) configuration
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/arch-x86_64.md#A1:-The-kernel-is-x86_64-no_std-code-using-the-x86-interrupt-ABI
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//!
+//! INVARIANTS:
+//! - This module owns CPU feature detection and the low-level control-register / MSR setup used during kernel bring-up.
+//! - Feature detection results cached here are shared boot-time/runtime assumptions for later subsystem initialization.
+//! - Control-register setup is sequenced by the environment/bring-up path; this module does not decide global boot order on its own.
+//!
+//! SAFETY:
+//! - CR0/CR4/MSR mutations are architectural state changes and must only occur in the intended bring-up sequence.
+//! - CPUID-derived capability detection is input to policy, not proof that every advertised feature is safe to use immediately in every context.
+//! - Comments must not imply features are enabled when the current code only detects or partially configures them.
+//!
+//! PROGRESS:
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/boot-flow.md
+//!
+//! CPU feature detection and low-level control-register/MSR setup.
+//!
+//! This module gathers CPU capability information and applies the small set of
+//! control-register/MSR changes used during bring-up.
 
 use crate::log_debug;
 use raw_cpuid::CpuId;
@@ -48,7 +65,7 @@ pub const CR4_OSXSAVE: u64 = 1 << 18; // XSAVE and Processor Extended States Ena
 pub const CR4_SMEP: u64 = 1 << 20; // Supervisor Mode Execution Prevention
 pub const CR4_SMAP: u64 = 1 << 21; // Supervisor Mode Access Prevention
 
-/// CPU feature flags structure
+/// Cached CPU feature flags used by bring-up code.
 #[derive(Debug, Clone, Copy)]
 pub struct CpuFeatures {
     pub sse: bool,
@@ -65,11 +82,7 @@ pub struct CpuFeatures {
 }
 
 impl CpuFeatures {
-    /// Create a new CpuFeatures structure with all features disabled
-    ///
-    /// # Returns
-    ///
-    /// A new CpuFeatures instance with all feature flags set to false
+    /// Create a `CpuFeatures` value with every feature disabled.
     pub const fn new() -> Self {
         Self {
             sse: false,
@@ -89,37 +102,22 @@ impl CpuFeatures {
 
 static CPU_FEATURES_ONCE: Once<CpuFeatures> = Once::new();
 
-/// Detect CPU features once during low-half initialization
+/// Detect CPU features once during early initialization.
 ///
-/// This function performs one-time CPU feature detection and caches the results.
-/// It should be called early in kernel initialization before switching to high-half.
-///
-/// # Safety
-///
-/// This function is safe to call during early kernel initialization.
+/// This caches CPUID-derived feature information for later bring-up steps.
 pub unsafe fn detect_cpu_features_once_lowhalf() {
     let _ = CPU_FEATURES_ONCE.call_once(|| detect_cpu_features());
 }
 
-/// Get the cached CPU features
-///
-/// # Returns
-///
-/// * `Some(CpuFeatures)` - If features have been detected
-/// * `None` - If features haven't been detected yet
+/// Get the cached CPU feature snapshot, if it has been populated.
 pub fn get_cpu_features_once() -> Option<CpuFeatures> {
     CPU_FEATURES_ONCE.get().copied()
 }
 
-/// Set up control registers for kernel mode
+/// Apply the current CR0/CR4 setup used by kernel bring-up.
 ///
-/// This function configures CR0 and CR4 control registers for proper kernel operation.
-/// It enables protected mode, paging, write protection, and other essential features.
-///
-/// # Safety
-///
-/// This function modifies CPU control registers and should only be called during
-/// kernel initialization when it's safe to modify these critical registers.
+/// This performs the limited control-register changes the current environment path
+/// expects before higher-half paging and later CPU setup steps.
 pub unsafe fn setup_control_registers() {
     // Configure CR0
     {
@@ -148,19 +146,7 @@ pub unsafe fn setup_control_registers() {
     }
 }
 
-/// Detect CPU features using CPUID
-///
-/// This function queries the CPU using the CPUID instruction to determine which
-/// features are available. It checks for various instruction set extensions
-/// including SSE, AVX, and other modern CPU features.
-///
-/// # Returns
-///
-/// A CpuFeatures structure with detected features enabled
-///
-/// # Safety
-///
-/// This function is safe to call as it only reads CPU feature flags.
+/// Detect CPU features with CPUID.
 pub unsafe fn detect_cpu_features() -> CpuFeatures {
     let mut f = CpuFeatures::new();
     let cpuid = CpuId::new();
@@ -183,20 +169,7 @@ pub unsafe fn detect_cpu_features() -> CpuFeatures {
     f
 }
 
-/// Enable SSE/AVX if available
-///
-/// This function enables the floating point unit and SIMD extensions based on
-/// the detected CPU features. It configures the necessary control registers
-/// to enable SSE and AVX instruction sets.
-///
-/// # Parameters
-///
-/// * `features` - The detected CPU features to enable
-///
-/// # Safety
-///
-/// This function modifies CPU control registers and should only be called
-/// when it's safe to enable floating point operations.
+/// Enable the floating-point/SIMD state the current feature set supports.
 pub unsafe fn setup_floating_point(features: &CpuFeatures) {
     // Enable SSE
     if features.sse {
@@ -209,15 +182,7 @@ pub unsafe fn setup_floating_point(features: &CpuFeatures) {
     }
 }
 
-/// Enable SSE (Streaming SIMD Extensions)
-///
-/// This function enables SSE by configuring the necessary control registers.
-/// It sets CR0.EM=0, CR0.MP=1, CR4.OSFXSR=1, and CR4.OSXMMEXCPT=1.
-///
-/// # Safety
-///
-/// This function modifies CPU control registers and should only be called
-/// when it's safe to enable SSE operations.
+/// Enable SSE state through the required CR0/CR4 bits.
 unsafe fn enable_sse() {
     // Set CR0.EM = 0 and CR0.MP = 1
     {
@@ -238,15 +203,7 @@ unsafe fn enable_sse() {
     }
 }
 
-/// Enable AVX (Advanced Vector Extensions)
-///
-/// This function enables AVX by configuring CR4.OSXSAVE and XCR0 registers.
-/// It enables x87, SSE, and AVX state saving/restoring.
-///
-/// # Safety
-///
-/// This function modifies CPU control registers and should only be called
-/// when it's safe to enable AVX operations.
+/// Enable AVX state by updating `CR4.OSXSAVE` and `XCR0`.
 unsafe fn enable_avx() {
     // Set CR4.OSXSAVE = 1
     {
@@ -264,19 +221,7 @@ unsafe fn enable_avx() {
     }
 }
 
-/// Check if FSGSBASE is available
-///
-/// This function checks if the CPU supports the FSGSBASE instruction set,
-/// which allows direct access to FS and GS base registers.
-///
-/// # Returns
-///
-/// * `true` - If FSGSBASE is supported
-/// * `false` - If FSGSBASE is not supported
-///
-/// # Safety
-///
-/// This function is safe to call as it only reads CPU feature flags.
+/// Return whether the CPU reports FSGSBASE support.
 pub unsafe fn has_fsgsbase() -> bool {
     if let Some(efi) = CpuId::new().get_extended_feature_info() {
         return efi.has_fsgsbase();
@@ -284,15 +229,9 @@ pub unsafe fn has_fsgsbase() -> bool {
     false
 }
 
-/// Set up Model Specific Registers (MSRs)
+/// Apply the current boot-time MSR configuration.
 ///
-/// This function configures various Model Specific Registers for kernel operation.
-/// Currently it enables system call extensions in the EFER register.
-///
-/// # Safety
-///
-/// This function modifies CPU MSRs and should only be called during
-/// kernel initialization when it's safe to modify these registers.
+/// Today this enables `EFER.SYSTEM_CALL_EXTENSIONS`.
 pub unsafe fn setup_msrs() {
     // Set up EFER (Extended Feature Enable Register)
     {

@@ -1,53 +1,34 @@
-//! Memory management module
+//! Module: memory
 //!
-//! This module contains the early-boot memory-management primitives used during
-//! kernel bring-up. It is intentionally self-contained and provides a small
-//! custom page-table representation (for early identity mapping and boot-time
-//! page-table setup) as well as helpers that integrate with the `x86_64` crate
-//! once paging is active.
+//! SOURCE OF TRUTH:
+//! - docs/plans/memory.md
+//! - docs/plans/boot-flow.md
 //!
-//! Major responsibilities:
-//! - Building a PML4 and mapping an identity region used during early boot
-//! - Mapping the kernel into a higher-half and establishing `PHYS_OFFSET`
-//! - Providing a `BootFrameAllocator` built from the UEFI handoff memory map
-//!   with reserved frame pool for critical kernel structures
-//! - Utilities for mapping single pages and 2MiB huge pages using frame-backed
-//!   page-table allocation helpers
-//! - A small `TemporaryWindow` API to perform single-frame temporary mappings
-//!   without relying on identity access once the PHYS_OFFSET mapping is active
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/memory.md#A1:-The-kernel-executes-from-a-higher-half-virtual-base
+//! - docs/axioms/memory.md#A2:-Physical-memory-is-accessed-through-a-fixed-PHYS_OFFSET-linear-mapping-after-paging-is-active
+//! - docs/axioms/memory.md#A3:-The-boot-path-keeps-a-temporary-heap-before-switching-to-a-permanent-kernel-heap
+//! - docs/axioms/memory.md#A4:-The-persistent-physical-allocator-is-initialized-from-the-UEFI-memory-map-after-the-permanent-heap-exists
 //!
-//! # Recent Improvements (Latest Session)
+//! INVARIANTS:
+//! - This module owns the early-boot memory-management primitives used to build the kernel’s page tables and execute the higher-half transition.
+//! - `BootFrameAllocator` remains the staging allocator for early bring-up; later runtime allocation responsibility transfers to `physical_memory`.
+//! - `PHYS_OFFSET`, the higher-half kernel mapping, boot resources, and temporary mapping helpers are all part of the documented transition path.
 //!
-//! ## Reserved Frame Pool
-//! - Added `BootFrameAllocator` with reserved frame pool (16 frames) to prevent
-//!   critical kernel structures (page tables, IST stacks) from being starved by
-//!   ephemeral allocations.
-//! - `reserve_frames()` method reserves frames from the general pool.
-//! - `allocate_reserved_frame()` provides LIFO allocation from reserved pool.
-//! - Page table allocation prefers reserved frames, falling back to general pool.
+//! SAFETY:
+//! - Raw page-table mutation, CR3 activation, and physical-memory translation are architectural operations whose correctness depends on ordering with `environment` and `handoff` state.
+//! - Old “latest session” style commentary drifts quickly in a file like this; the durable contract belongs in the header and the plans/axioms, not ephemeral narrative.
+//! - Volatile physical-memory zeroing helpers preserve the access but do not themselves prove the surrounding mapping/caching assumptions are correct.
 //!
-//! ## Temporary Mapping Window
-//! - `TemporaryWindow` struct provides safe temporary mapping of arbitrary physical
-//!   frames to a fixed virtual address without relying on identity mapping.
-//! - Used for zeroing newly allocated page tables safely after PHYS_OFFSET is active.
-//! - Methods: `new()`, `map_phys_frame()`, `map_and_zero_frame()`, `unmap()`.
+//! PROGRESS:
+//! - docs/plans/memory.md
+//! - docs/plans/boot-flow.md
 //!
-//! ## PHYS_OFFSET Integration
-//! - Enhanced `zero_frame_safely()` to use PHYS_OFFSET mapping when active,
-//!   with identity fallback for early boot.
-//! - `phys_offset_is_active()` tracks when PHYS_OFFSET mapping is available.
-//! - `zero_phys_range()` performs volatile writes through PHYS_OFFSET mapping.
+//! Early-boot memory-management primitives.
 //!
-//! ## Memory Map Diagnostics
-//! - Added diagnostics showing total pages and conventional pages from UEFI memory map.
-//! - Confirms allocator sees full system RAM (typically 1GB+ in QEMU).
-//! - Helps debug memory allocation issues.
-//!
-//! Safety notes:
-//! - Many functions in this module are `unsafe` because they manipulate raw
-//!   page tables, write to control registers (CR3) or access physical memory
-//!   via virtual translations. Callers must ensure the required invariants for
-//!   these operations hold (correct PML4, appropriate mapping state, etc.).
+//! This module owns page-table construction, higher-half mapping, PHYS_OFFSET
+//! support, boot-time frame allocation, and temporary mapping helpers used during
+//! kernel bring-up.
 #![allow(dead_code)]
 #![allow(static_mut_refs)]
 
@@ -59,7 +40,7 @@ extern "C" {
     fn continue_after_stack_switch() -> !;
 }
 
-/// Page table entry flags
+/// Page-table entry flags.
 pub const PTE_PRESENT: u64 = 1 << 0; // Present
 pub const PTE_WRITABLE: u64 = 1 << 1; // Writable
 pub const PTE_USER: u64 = 1 << 2; // User accessible
@@ -71,13 +52,13 @@ pub const PTE_PS: u64 = 1 << 7; // Page Size (for PDE)
 pub const PTE_GLOBAL: u64 = 1 << 8; // Global
 pub const PTE_NO_EXEC: u64 = 1 << 63; // No Execute
 
-/// Page table levels
+/// Page-table levels.
 pub const PML4_LEVEL: usize = 0;
 pub const PDPT_LEVEL: usize = 1;
 pub const PD_LEVEL: usize = 2;
 pub const PT_LEVEL: usize = 3;
 
-/// Page size constants
+/// Page-size constants.
 pub const PAGE_SIZE: usize = 4096;
 pub const PAGE_MASK: u64 = 0xFFF;
 /// Size of a 2 MiB huge page (used by PD entries with `PTE_PS` set).
@@ -85,7 +66,7 @@ pub const PAGE_SIZE_2MB: u64 = 2 * 1024 * 1024;
 /// Size of a 1 GiB huge page (used by PDPT entries with `PTE_PS` set).
 pub const PAGE_SIZE_1GB: u64 = 1024 * 1024 * 1024;
 
-/// Virtual memory layout
+/// Current virtual-memory layout constants.
 pub const KERNEL_VIRTUAL_BASE: u64 = 0xFFFFFFFF80000000;
 pub const KERNEL_HEAP_BASE: u64 = 0xFFFFFFFFB0000000; // 768MB offset from kernel base to avoid framebuffer overlap
 pub const KERNEL_HEAP_SIZE: usize = 0x100000; // 1MB
@@ -121,24 +102,15 @@ pub const fn pt_index(va: u64) -> usize {
 
 /// Convert a physical address into the kernel's high-half virtual address using
 /// the fixed `PHYS_OFFSET` mapping.
-///
-/// Arguments:
-/// - `pa`: physical address to convert
-///
-/// Returns:
-/// - virtual address corresponding to `pa` in the kernel's PHYS_OFFSET window
 
-/// Page table entry
-///
-/// Represents a single entry in a page table, containing a physical address
-/// and various flags that control memory access and caching behavior.
+/// Page-table entry and page-table types live in `page_tables`.
 mod page_tables;
 pub use page_tables::{get_or_create_page_table_alloc, PageTable, PageTableEntry};
 
 pub mod dma;
 pub mod dma_pool;
 
-/// Memory manager
+/// Early-boot memory manager state.
 pub struct MemoryManager {
     pub pml4: &'static mut PageTable,
     pml4_phys: u64,
@@ -248,7 +220,7 @@ pub fn runtime_kernel_lower_guard() -> u64 {
     ACTUAL_KERNEL_LOWER_GUARD.load(Ordering::Relaxed)
 }
 
-// Early virt/phys helpers no longer used in HH path; keep for legacy/debug if needed
+// Early virt/phys helpers are retained only for legacy/debug use.
 #[allow(dead_code)]
 fn virt_to_phys(va: u64) -> u64 {
     unsafe { va.wrapping_add(VIRT_PHYS_OFFSET) }
@@ -266,39 +238,26 @@ pub fn phys_to_virt_pa(pa: u64) -> u64 {
     PHYS_OFFSET.wrapping_add(pa)
 }
 
-/// Convert a physical address into the kernel's PHYS_OFFSET-mapped virtual address.
-///
-/// # Examples
-///
-/// Basic translation math (pure computation):
-///
-/// ```
-/// let pa: u64 = 0x1234;
-/// let va = 0xFFFF800000000000u64.wrapping_add(pa);
-/// assert_eq!(crate::memory::phys_to_virt_pa(pa), va);
-/// ```
+/// Convert a physical address into the kernel's `PHYS_OFFSET`-mapped virtual address.
 
-/// Mark the PHYS_OFFSET linear mapping as active. Call this after CR3 is loaded
-/// and the kernel's PHYS_OFFSET mapping is established.
+/// Mark the `PHYS_OFFSET` linear mapping as active.
 pub fn set_phys_offset_active() {
     unsafe {
         PHYS_OFFSET_ACTIVE = true;
     }
 }
 
-/// Query whether the PHYS_OFFSET mapping is active
+/// Query whether the `PHYS_OFFSET` mapping is active.
 pub fn phys_offset_is_active() -> bool {
     unsafe { PHYS_OFFSET_ACTIVE }
 }
 
-/// Zero a range of physical memory by writing through the kernel's PHYS_OFFSET
-/// mapping. This is used for zeroing page-table frames after the PHYS_OFFSET
-/// mapping is established.
+/// Zero a physical-memory range through the kernel's `PHYS_OFFSET` mapping.
 ///
 /// # Safety
 ///
-/// The caller must ensure that the PHYS_OFFSET mapping is valid and maps the
-/// physical frame range `[pa, pa + size)` into the kernel virtual address space.
+/// The caller must ensure the mapped physical range is valid and writable in the
+/// current virtual-address setup.
 
 #[allow(dead_code)]
 fn set_virt_phys_offset(offset: u64) {
@@ -325,9 +284,7 @@ pub unsafe fn zero_phys_range(pa: u64, size: usize) {
     }
 }
 
-/// Zero a single page/frame safely. If paging is already enabled and the
-/// PHYS_OFFSET mapping is available we use that; otherwise fall back to
-/// identity physical writes which are valid early in boot.
+/// Zero a single page/frame using the currently valid boot-stage path.
 #[allow(dead_code)]
 pub unsafe fn zero_frame_safely(pa: u64) {
     // Zero a single frame safely. When the PHYS_OFFSET mapping is active we
@@ -343,36 +300,22 @@ pub unsafe fn zero_frame_safely(pa: u64) {
     }
 }
 
-/// Expose current virt->phys offset (phys - virt)
+/// Expose the current legacy virt→phys offset value.
 #[allow(dead_code)]
 pub fn virt_phys_offset() -> u64 {
     unsafe { VIRT_PHYS_OFFSET }
 }
 
 impl MemoryManager {
-    /// Create a new memory manager
+    /// Construct the early-boot memory manager and initial PML4.
     ///
-    /// Construct a new MemoryManager and build an initial PML4 with the
-    /// following mappings established:
-    /// - identity mapping covering all discovered physical RAM (2MiB pages)
-    /// - kernel image mapped into the high-half (4KiB pages)
-    /// - a PHYS_OFFSET linear mapping for the discovered RAM (minimum 1 GiB)
-    /// - framebuffer and temporary heap mappings if provided by the handoff
-    ///
-    /// # Arguments
-    /// - `handoff`: pointer to the bootloader handoff structure containing the
-    ///   UEFI memory map, kernel physical base/size, framebuffer info and temp
-    ///   heap location.
-    ///
-    /// # Returns
-    /// - `MemoryManager` containing a pointer to the PML4 (virtual), the
-    ///   physical PML4 frame, and an initialized early `BootFrameAllocator`.
+    /// The current path builds the bootstrap page tables, boot-time mappings, and
+    /// allocator staging needed before the higher-half transition.
     ///
     /// # Safety
     ///
-    /// This function is unsafe because it writes raw page tables and performs
-    /// identity physical memory writes while paging is not yet active. The
-    /// caller must ensure the provided `handoff` is valid.
+    /// This writes raw page tables and performs early physical-memory access before
+    /// the full runtime mapping model is in place. The provided `handoff` must be valid.
     pub unsafe fn new(handoff: &theseus_shared::handoff::Handoff) -> Self {
         log_debug!("MemoryManager::new() start");
         let runtime_kernel_base = runtime_kernel_phys_base(handoff);
@@ -461,16 +404,17 @@ impl MemoryManager {
         }
     }
 
-    /// Get the page table root (CR3 value)
+    /// Get the page-table root physical address (CR3 value).
     pub fn page_table_root(&self) -> u64 {
         self.pml4_phys
     }
 
-    /// Compute and perform the high-half jump to `entry`.
+    /// Compute and perform the higher-half jump to `entry`.
     ///
-    /// Safety: caller must ensure that paging is active and the high-half
-    /// mappings for the kernel image are present. This function performs a
-    /// non-returning jump into the high-half virtual address of `entry`.
+    /// # Safety
+    ///
+    /// Paging must already be active and the required high-half mappings must be
+    /// present. This performs a non-returning transfer into the higher-half entry.
     pub unsafe fn jump_to_high_half(&self, phys_base: u64, entry: extern "C" fn() -> !) -> ! {
         use x86_64::{
             registers::control::Cr3,
@@ -833,31 +777,10 @@ pub use temporary_window::TEMP_WINDOW_VA;
 mod page_table_builder;
 pub use page_table_builder::PageTableBuilder;
 
-/// Activate virtual memory by loading the page table root into CR3
+/// Load the supplied page-table root into `CR3`.
 ///
-/// This function performs the critical step of enabling virtual memory by loading
-/// the physical address of the PML4 (Page Map Level 4) table into the CR3 register.
-/// This makes the CPU use our page tables for address translation.
-///
-/// # Assembly Details
-/// - `mov cr3, {page_table_root}`: Load the PML4 physical address into CR3 register
-///
-/// # Parameters
-///
-/// * `page_table_root` - Physical address of the PML4 page table
-///
-/// # Safety
-///
-/// This function is unsafe because it:
-/// - Modifies the CR3 control register
-/// - Assumes the page table is properly set up
-/// - Must be called when identity mapping is active (before high-half transition)
-///
-/// The caller must ensure:
-/// - The page table is properly initialized and valid
-/// - Identity mapping is active for the current code
-/// - The page table root address is valid and accessible
-/// - No other code is modifying CR3 concurrently
+/// Callers must ensure the new paging structures are valid and that execution
+/// can continue safely after the switch.
 pub unsafe fn activate_virtual_memory(page_table_root: u64) {
     {
         use x86_64::registers::control::Cr3;

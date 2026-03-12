@@ -1,8 +1,29 @@
-//! Boot sequence orchestration for single-binary boot
+//! Module: bootloader::boot_sequence
 //!
-//! This module contains the main boot sequence logic for the unified UEFI+kernel binary.
-//! It orchestrates system information collection, handoff preparation, and the transition
-//! from UEFI boot services to kernel control via direct function call.
+//! SOURCE OF TRUTH:
+//! - docs/plans/boot-flow.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/boot.md#A1:-The-kernel-boots-as-a-single-UEFI-executable
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//! - docs/axioms/boot.md#A3:-Kernel-image-metadata-is-derived-from-the-live-binary-not-a-separately-parsed-on-disk-image
+//!
+//! INVARIANTS:
+//! - This module orchestrates the current boot sequence from firmware-side discovery through handoff copy and kernel jump.
+//! - The current mainline path directly calls `exit_boot_services(None)` before transferring control to the kernel.
+//! - Kernel image metadata is derived from the live loaded binary with a conservative fixed image span.
+//!
+//! SAFETY:
+//! - Ordering errors here are architectural: handoff copy, boot-services exit, and entry transfer must stay coherent with kernel expectations.
+//! - Docs/comments must not over-promise richer retry/key-refresh logic than the code actually implements.
+//!
+//! PROGRESS:
+//! - docs/plans/boot-flow.md
+//!
+//! Boot-sequence orchestration for the current single-binary path.
+//!
+//! This module gathers boot-time state, prepares the handoff, and performs the
+//! final boot-services exit and direct kernel transfer.
 
 use uefi::boot::{MemoryType, SearchType};
 use uefi::mem::memory_map::MemoryMap;
@@ -21,21 +42,11 @@ use crate::system_info::*;
 use alloc::format;
 use theseus_shared::handoff::{Handoff, HANDOFF};
 
-/// Compute kernel image base, size, and virtual entry for single-binary boot
+/// Derive kernel image metadata from the live single-binary image.
 ///
-/// Since the kernel is part of the same binary, we derive its physical base and size
-/// from the `kernel_entry` function symbol. The image base is aligned to 2 MiB and
-/// a conservative 16 MiB span is used to cover all code and data sections.
-///
-/// The virtual entry point is computed by taking the offset of `kernel_entry` within
-/// the physical image and adding it to the kernel's virtual base address.
-///
-/// # Handoff Fields Set
-///
-/// - `kernel_physical_base`: 2 MiB-aligned address containing `kernel_entry`
-/// - `kernel_image_size`: 16 MiB (conservative estimate)
-/// - `kernel_virtual_base`: `0xFFFFFFFF80000000` (higher-half)
-/// - `kernel_virtual_entry`: Virtual address where kernel will start execution
+/// The current path computes the base from the in-process `kernel_entry` symbol,
+/// rounds it down to a 2 MiB boundary, and records a conservative fixed 16 MiB
+/// image span in the handoff.
 pub fn set_kernel_image_from_loaded_image() {
     theseus_shared::qemu_println!("Setting kernel image fields (single binary, no UEFI)");
     let entry_low = theseus_kernel::kernel_entry as *const () as usize as u64;
@@ -59,15 +70,10 @@ pub fn set_kernel_image_from_loaded_image() {
     theseus_shared::qemu_println!("✓ Kernel image fields set (single binary)");
 }
 
-/// Initialize the UEFI environment and prepare handoff structure
+/// Initialize the UEFI environment and seed basic handoff metadata.
 ///
-/// Initializes the UEFI logger and sets up the handoff structure size.
-/// This must be called early in the boot sequence.
-///
-/// # Returns
-///
-/// * `Ok(())` - UEFI environment initialized successfully
-/// * `Err(Status)` - UEFI initialization failed
+/// This sets up the UEFI helper/logger state and records the handoff struct size.
+/// It is an early boot-path setup step, not a full boot-sequence driver.
 pub fn initialize_uefi_environment() -> Result<(), Status> {
     // Initialize UEFI logger
     uefi::helpers::init().unwrap();
@@ -80,7 +86,7 @@ pub fn initialize_uefi_environment() -> Result<(), Status> {
     Ok(())
 }
 
-/// Collect graphics output protocol information
+/// Collect GOP/framebuffer information into the handoff.
 pub fn collect_graphics_info(verbose: bool) -> bool {
     write_line("Collecting graphics information...");
 
@@ -145,12 +151,12 @@ pub fn collect_graphics_info(verbose: bool) -> bool {
         true
     } else {
         write_line("✗ Graphics Output Protocol (GOP) not available");
-        write_line("  No framebuffer information will be available to kernel");
+        write_line("  Framebuffer handoff data will remain unavailable to the kernel");
         false
     }
 }
 
-/// Collect memory map information
+/// Collect the UEFI memory map and record its metadata in the handoff.
 pub fn collect_memory_map(verbose: bool) -> Option<uefi::mem::memory_map::MemoryMapOwned> {
     write_line("Collecting memory map information...");
 
@@ -199,16 +205,10 @@ pub fn collect_memory_map(verbose: bool) -> Option<uefi::mem::memory_map::Memory
     }
 }
 
-/// Collect ACPI information
+/// Collect ACPI root information into the handoff.
 pub fn collect_acpi_info(verbose: bool) -> bool {
     write_line("Locating ACPI RSDP table...");
-    if verbose {
-        write_line("  Debug: About to call find_acpi_rsdp");
-    }
     let rsdp_address = find_acpi_rsdp(verbose).unwrap_or(0);
-    if verbose {
-        write_line("  Debug: find_acpi_rsdp returned");
-    }
     unsafe {
         HANDOFF.acpi_rsdp = rsdp_address;
     }
@@ -225,14 +225,14 @@ pub fn collect_acpi_info(verbose: bool) -> bool {
         if verbose {
             display_acpi_info(rsdp_address);
         }
-        write_line("  No ACPI support will be available to kernel");
+        write_line("  ACPI handoff data will remain unavailable to the kernel");
         false
     }
 }
 
-/// Collect system information (firmware, boot time, etc.)
+/// Collect firmware, boot-time, CPU, and boot-device context.
 pub fn collect_system_info(verbose: bool) {
-    // UEFI System Table and Image Handle
+    // UEFI system-table and image-handle pointers
     write_line("Collecting UEFI system table and image handle...");
     match uefi::table::system_table_raw() {
         Some(system_table) => {
@@ -252,7 +252,7 @@ pub fn collect_system_info(verbose: bool) {
         }
     }
 
-    // Firmware Information
+    // Firmware identity context
     write_line("Collecting firmware information...");
     match collect_firmware_info() {
         Some((vendor_ptr, vendor_len, revision)) => {
@@ -274,7 +274,7 @@ pub fn collect_system_info(verbose: bool) {
         }
     }
 
-    // Boot Time Information
+    // Boot-time snapshot
     write_line("Collecting boot time information...");
     match collect_boot_time_info() {
         Some((seconds, nanoseconds)) => {
@@ -295,7 +295,7 @@ pub fn collect_system_info(verbose: bool) {
         }
     }
 
-    // Boot Device Path Information
+    // Boot-device path metadata
     write_line("Collecting boot device path information...");
     match collect_boot_device_path() {
         Some((device_path_ptr, device_path_size)) => {
@@ -316,7 +316,7 @@ pub fn collect_system_info(verbose: bool) {
         }
     }
 
-    // CPU Information
+    // Conservative CPU context
     write_line("Collecting CPU information...");
     match collect_cpu_info() {
         Some((cpu_count, cpu_features, microcode_revision)) => {
@@ -339,7 +339,7 @@ pub fn collect_system_info(verbose: bool) {
     }
 }
 
-/// Collect hardware inventory
+/// Collect boot-time hardware inventory into the handoff.
 pub fn collect_hardware_inventory_info(verbose: bool) -> bool {
     write_line("Collecting hardware inventory...");
     match collect_hardware_inventory(verbose) {
@@ -362,9 +362,9 @@ pub fn collect_hardware_inventory_info(verbose: bool) -> bool {
     }
 }
 
-/// Get loaded image device path
+/// Collect the currently loaded image's device-path metadata.
 pub fn collect_loaded_image_path(verbose: bool) -> bool {
-    write_line("Getting loaded image device path...");
+    write_line("Collecting loaded image device path...");
     match get_loaded_image_device_path() {
         Some((path_ptr, path_size)) => {
             unsafe {
@@ -384,9 +384,9 @@ pub fn collect_loaded_image_path(verbose: bool) -> bool {
     }
 }
 
-/// Finalize the handoff structure
+/// Finalize basic handoff metadata before the kernel jump.
 pub fn finalize_handoff_structure() {
-    write_line("Finalizing handoff structure...");
+    write_line("Finalizing handoff metadata...");
     unsafe {
         // No fallback defaults here; kernel relies on accurate values
         HANDOFF.size = core::mem::size_of::<Handoff>() as u32;
@@ -398,34 +398,25 @@ pub fn finalize_handoff_structure() {
     write_line("✓ All system information collected and stored");
 }
 
-/// Perform final handoff to kernel in single-binary boot
+/// Perform the final handoff-to-kernel transition.
 ///
-/// This function executes the critical transition from UEFI bootloader to kernel:
-/// 1. Allocates persistent LOADER_DATA buffer for handoff structure
-/// 2. Copies handoff data to the persistent buffer
-/// 3. Calls `ExitBootServices` to leave UEFI control
-/// 4. Marks `boot_services_exited` flag in handoff
-/// 5. Calls `kernel_entry` directly (same binary, different function)
+/// The current single-binary path copies the handoff into persistent `LOADER_DATA`,
+/// exits boot services, marks the copied handoff accordingly, and then calls
+/// `kernel_entry` directly.
 ///
 /// # Arguments
 ///
-/// * `_physical_entry_point` - Unused (kept for API compatibility)
-/// * `handoff_ptr` - Pointer to temporary handoff structure to copy
+/// * `_physical_entry_point` - Unused compatibility parameter retained by the current signature
+/// * `handoff_ptr` - Pointer to the temporary handoff structure to copy
 ///
 /// # Safety
 ///
-/// This function is unsafe because it:
-/// - Calls `ExitBootServices`, making UEFI boot services unavailable
-/// - Transfers control to kernel code (does not return)
-/// - Accesses and modifies memory after `ExitBootServices`
-///
-/// # Panics
-///
-/// Returns (does not panic) if handoff buffer allocation fails, but this
-/// should never happen as it only requests one 4K page.
+/// This crosses the architectural boundary into post-boot-services execution. After
+/// `ExitBootServices`, firmware boot services are gone and control does not return
+/// to the bootloader on success.
 pub unsafe fn jump_to_kernel_with_handoff(_physical_entry_point: u64, handoff_ptr: *const Handoff) {
-    write_line("Entering jump_to_kernel_with_handoff");
-    // Copy handoff into a persistent LOADER_DATA buffer and pass its physical address
+    write_line("Preparing final kernel handoff...");
+    // Copy the handoff into persistent `LOADER_DATA` and pass that physical address onward.
     let handoff_size = core::mem::size_of::<Handoff>() as u64;
     write_line(&format!(
         "Allocating persistent handoff buffer, size {} (0x{:x})",
@@ -455,7 +446,7 @@ pub unsafe fn jump_to_kernel_with_handoff(_physical_entry_point: u64, handoff_pt
         handoff_size as usize,
     );
 
-    // Debug: read back size field from the freshly copied structure
+    // Read back the copied size field as a cheap integrity sanity check.
     let copied_size = unsafe { *(handoff_phys as *const u32) };
     write_line(&format!(
         "Copied HANDOFF.size readback: {} (0x{:08x})",
@@ -471,9 +462,7 @@ pub unsafe fn jump_to_kernel_with_handoff(_physical_entry_point: u64, handoff_pt
         (*(handoff_phys as *mut Handoff)).boot_services_exited = 1;
     }
 
-    // Call kernel directly from the same binary
+    // Transfer control directly into the kernel entrypoint in the same binary.
     let entry: extern "C" fn(u64) -> ! = theseus_kernel::kernel_entry;
-    let arg = handoff_phys as u64;
-    let _ = arg; // keep name for clarity
     entry(handoff_phys as u64)
 }

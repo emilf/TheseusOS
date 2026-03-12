@@ -1,8 +1,32 @@
+//! Module: memory::dma
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/memory.md
+//! - docs/plans/drivers-and-io.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/memory.md#A2:-Physical-memory-is-accessed-through-a-fixed-PHYS_OFFSET-linear-mapping-after-paging-is-active
+//! - docs/axioms/memory.md#A4:-The-persistent-physical-allocator-is-initialized-from-the-UEFI-memory-map-after-the-permanent-heap-exists
+//!
+//! INVARIANTS:
+//! - DMA buffers are physically contiguous allocations backed by the persistent physical allocator.
+//! - The kernel must maintain both the device-visible physical address and the kernel-visible virtual mapping for the lifetime of each live DMA buffer.
+//! - Cache policy is part of the buffer contract and must match the device/protocol expectations of the caller.
+//!
+//! SAFETY:
+//! - DMA buffers handed to hardware must remain allocated, aligned, and not be mutably aliased through unrelated references while the device may still access them.
+//! - Mapping helpers must only install page-table entries for physical frames owned by the DMA allocation being wrapped.
+//! - Zeroing and slice creation rely on the mapped virtual address covering the full live allocation.
+//!
+//! PROGRESS:
+//! - docs/plans/memory.md
+//! - docs/plans/drivers-and-io.md
+//!
 //! DMA-friendly contiguous buffer helpers.
 //!
 //! This module builds on the persistent physical allocator to hand out
-//! physically contiguous, cache-coherent buffers and ensure they are mapped in
-//! the kernel address space.  Device drivers can use `DmaBuffer` to obtain
+//! physically contiguous, cache-policy-aware buffers and ensure they are mapped in
+//! the kernel address space. Device drivers can use `DmaBuffer` to obtain
 //! aligned memory suitable for descriptor rings or bounce buffers.
 
 use crate::memory::{

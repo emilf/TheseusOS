@@ -1,21 +1,45 @@
-//! Framebuffer drawing utilities
+//! Module: framebuffer
 //!
-//! This module provides functions for drawing to the framebuffer, including
-//! pixel manipulation and simple graphics primitives.
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//! - docs/plans/boot-flow.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//!
+//! INVARIANTS:
+//! - This module owns simple framebuffer-side drawing helpers used by current visual bring-up/debug behavior.
+//! - Framebuffer access depends on the handoff-provided graphics information remaining valid and mapped by the documented boot path.
+//! - The current animation/debug drawing behavior is observability/UI garnish, not core kernel correctness.
+//!
+//! SAFETY:
+//! - Raw framebuffer writes assume the mapped framebuffer region and stride/pixel-format interpretation are correct enough for the current environment.
+//! - Visual debug helpers must not silently become required for the rest of kernel bring-up to function.
+//!
+//! PROGRESS:
+//! - docs/plans/observability.md
+//! - docs/plans/boot-flow.md
+//!
+//! Framebuffer drawing helpers for visual bring-up/debug output.
+//!
+//! This module contains simple framebuffer-side drawing and animation helpers,
+//! not a full graphics subsystem.
 
 use crate::{log_debug, log_info, log_trace};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use theseus_shared::handoff::Handoff;
 
-/// Virtual address where the framebuffer is mapped
+/// Virtual base address where the framebuffer is expected to be mapped.
 const FRAMEBUFFER_VIRTUAL_BASE: u64 = 0xFFFFFFFF90000000;
 
-/// Global state for the heart animation
+/// Global state for the simple heart animation.
 static HEART_VISIBLE: AtomicBool = AtomicBool::new(true);
 static ANIMATION_TICKS: AtomicU32 = AtomicU32::new(0);
 
-/// Heart pattern data (16x16 pixels) - 4x larger than before
-/// Each row is 16 bits, where 1 = pixel on, 0 = pixel off
+/// Heart pattern data (16×16 pixels).
+///
+/// Each row uses 16 bits where `1` means pixel-on.
 const HEART_PATTERN: [u16; 16] = [
     0b0000110000110000,
     0b0011111001111100,
@@ -35,32 +59,32 @@ const HEART_PATTERN: [u16; 16] = [
     0b0000000000000000,
 ];
 
-/// Heart size in pixels
+/// Heart size in pixels.
 const PIXEL_SIZE: usize = 16;
 
-/// Animation timing constants
+/// Animation timing constants.
 const ANIMATION_TICK_INTERVAL: u32 = 1000; // Toggle every 1000 ticks for ~1 second intervals
 
-/// Heart positioning constants
+/// Heart positioning constants.
 const HEART_MARGIN_RIGHT: usize = 5; // Pixels from right edge
 const HEART_MARGIN_TOP: usize = 5; // Pixels from top edge
 
-/// Color constants for simple color mapping
+/// Color constants for the simple drawing helpers.
 const COLOR_RED: u8 = 0x00;
 const COLOR_BLACK: u8 = 0xFF;
 const COLOR_GRAY: u8 = 0x80;
 
-/// Get the framebuffer virtual address
+/// Return the mapped framebuffer base pointer.
 fn get_framebuffer_ptr() -> *mut u8 {
     FRAMEBUFFER_VIRTUAL_BASE as *mut u8
 }
 
-/// Create a BGRA color value (Blue-Green-Red-Alpha)
+/// Pack a BGRA color value.
 fn create_bgra_color(b: u8, g: u8, r: u8, a: u8) -> u32 {
     (a as u32) << 24 | (r as u32) << 16 | (g as u32) << 8 | (b as u32)
 }
 
-/// Calculate pixel offset in framebuffer
+/// Calculate the framebuffer byte offset for one pixel.
 fn get_pixel_offset(x: usize, y: usize, _width: usize, stride: usize) -> usize {
     // If stride equals width, it's pixels per scanline, not bytes
     // If stride > width, it's bytes per scanline
@@ -72,7 +96,7 @@ fn get_pixel_offset(x: usize, y: usize, _width: usize, stride: usize) -> usize {
     }
 }
 
-/// Draw a pixel at the specified coordinates with BGRA color
+/// Draw one pixel using a packed BGRA color.
 unsafe fn draw_pixel_bgra(
     x: usize,
     y: usize,
@@ -109,7 +133,7 @@ unsafe fn draw_pixel_bgra(
     core::ptr::write_unaligned(fb_ptr.add(offset) as *mut u32, bgra_color);
 }
 
-/// Draw a pixel at the specified coordinates with simple color
+/// Draw one pixel using the module's simple color constants.
 unsafe fn draw_pixel(x: usize, y: usize, width: usize, height: usize, stride: usize, color: u8) {
     // Convert simple color to BGRA (Blue-Green-Red-Alpha)
     let bgra_color = match color {
@@ -121,7 +145,7 @@ unsafe fn draw_pixel(x: usize, y: usize, width: usize, height: usize, stride: us
     draw_pixel_bgra(x, y, width, height, stride, bgra_color);
 }
 
-/// Clear a rectangular area
+/// Fill a rectangular framebuffer area.
 unsafe fn clear_area(
     x: usize,
     y: usize,
@@ -148,7 +172,7 @@ unsafe fn clear_area(
     }
 }
 
-/// Draw the heart pattern at the specified position
+/// Draw the heart pattern at the requested position.
 unsafe fn draw_heart(x: usize, y: usize, width: usize, height: usize, stride: usize, color: u8) {
     log_trace!("Drawing heart at ({},{}) size 16x16", x, y);
 
@@ -162,8 +186,9 @@ unsafe fn draw_heart(x: usize, y: usize, width: usize, height: usize, stride: us
     }
 }
 
-/// Update the heart animation
-/// This function should be called from the timer interrupt handler
+/// Update the heart animation state.
+///
+/// The current visual-debug path expects this to be ticked from the timer path.
 pub unsafe fn update_heart_animation(handoff: &Handoff) {
     if handoff.gop_fb_base == 0 || handoff.gop_width == 0 || handoff.gop_height == 0 {
         return;
@@ -204,13 +229,13 @@ pub unsafe fn update_heart_animation(handoff: &Handoff) {
     }
 }
 
-/// Initialize the framebuffer drawing system
+/// Initialize framebuffer animation state.
 pub fn init_framebuffer_drawing() {
     ANIMATION_TICKS.store(0, Ordering::Relaxed);
     HEART_VISIBLE.store(true, Ordering::Relaxed);
 }
 
-/// Draw an initial heart pattern (call this once during kernel init)
+/// Draw the initial framebuffer heart pattern.
 pub unsafe fn draw_initial_screen(handoff: &Handoff) {
     if handoff.gop_fb_base == 0 || handoff.gop_width == 0 || handoff.gop_height == 0 {
         log_debug!("No framebuffer available");

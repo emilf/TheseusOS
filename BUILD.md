@@ -1,20 +1,24 @@
 # TheseusOS Build System
 
+This file is a workflow/build guide, not a binding architecture document. For architectural truth, prefer `docs/index.md`, `docs/axioms/`, and `docs/plans/`.
+
 ## Getting Started (For Beginners)
 
 TheseusOS is designed to be easy to build and run, even if you're new to operating system development.
 
 ### The Simplest Way to Run TheseusOS
 
-```bash
-# Build and run TheseusOS (no graphics window - just text output)
-make run
+Preferred current path:
 
-# Build and run with a graphics window (shows QEMU window)
-make run-headed
+```bash
+# Build and run headless via the Rust QEMU runner
+cargo run -p theseus-qemu -- --headless
+
+# Print the resolved QEMU command without running it
+cargo run -p theseus-qemu -- print --headless
 ```
 
-**That's it!** TheseusOS will build itself and start running. You'll see output in your terminal showing what's happening during boot.
+The older `make run` / `make run-headed` targets and `startQemu.sh` still exist, but they should be treated as compatibility/convenience paths rather than the only current workflow.
 
 ### Other Useful Commands
 
@@ -25,16 +29,18 @@ make build
 # Clean up all build files (if something goes wrong)
 make clean
 
-# Run with a timeout (useful for testing)
+# Legacy run/test helpers that still work
+make run
+make run-headed
 make run-test
 
 # Debug mode (pauses and waits for GDB debugger)
 make debug
 ```
 
-## Manual QEMU Control
+## Alternate / Legacy QEMU Control
 
-You can also use the `startQemu.sh` script directly:
+If you specifically want the older shell-script path, you can still use `startQemu.sh` directly:
 
 ```bash
 # Headless mode (exits automatically when complete)
@@ -62,7 +68,7 @@ The build system handles all the complex parts automatically:
 - **Shows Output**: Displays all the boot messages and system information
 - **Handles Errors**: Gives you clear error messages if something goes wrong
 
-**You don't need to worry about any of this** - just run `make run` and everything happens automatically!
+**You don't need to worry about most of this** — the current low-friction path is usually the Rust runner, and the legacy `make`/shell-script paths remain available when you specifically want them.
 
 ## What You'll See When Running TheseusOS
 

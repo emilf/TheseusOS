@@ -1,95 +1,28 @@
-//! # Core Driver Traits and Device Descriptions
+//! Module: drivers::traits
 //!
-//! This module defines the fundamental abstractions for the kernel's driver framework.
-//! The design philosophy emphasizes simplicity and flexibility:
+//! SOURCE OF TRUTH:
+//! - docs/plans/drivers-and-io.md
 //!
-//! - **Lightweight**: Minimal overhead for device representation
-//! - **Generic**: Works for diverse hardware types (serial, storage, network, etc.)
-//! - **Composable**: Drivers can layer on top of each other
-//! - **Type-Safe**: Uses Rust's type system to ensure correctness
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
 //!
-//! ## Architecture Overview
+//! INVARIANTS:
+//! - `Device`, `DeviceId`, `DeviceClass`, and `Driver` define the stable kernel-side vocabulary used by the driver manager and monitor surfaces.
+//! - Device descriptors may carry MMIO, IRQ, and opaque driver-owned state, but the framework itself does not reinterpret driver-private payloads.
+//! - Driver binding remains trait-driven and class-filtered rather than hard-coded per subsystem.
 //!
-//! ```text
-//! ┌─────────────────────────────────────────────┐
-//! │         Driver Manager (registry)            │
-//! │  - Maintains list of drivers and devices     │
-//! │  - Runs probe logic on device registration   │
-//! │  - Dispatches IRQs to appropriate drivers    │
-//! └─────────────────────────────────────────────┘
-//!                        │
-//!         ┌──────────────┼──────────────┐
-//!         ▼              ▼              ▼
-//!    ┌────────┐    ┌────────┐    ┌────────┐
-//!    │Driver 1│    │Driver 2│    │Driver N│
-//!    │(Serial)│    │(Block) │    │ (...) │
-//!    └────────┘    └────────┘    └────────┘
-//!         │              │              │
-//!         ▼              ▼              ▼
-//!    ┌────────┐    ┌────────┐    ┌────────┐
-//!    │Device 1│    │Device 2│    │Device N│
-//!    │COM1    │    │ SATA  │    │ (...) │
-//!    └────────┘    └────────┘    └────────┘
-//! ```
+//! SAFETY:
+//! - `driver_data` is an opaque raw payload; drivers are responsible for ensuring type, lifetime, aliasing, and cleanup expectations remain valid.
+//! - Storing a pointer-like value in `driver_data` does not make the pointee safe to access concurrently from IRQ and non-IRQ contexts without the driver's own synchronization.
+//! - Resource metadata in `Device` describes discovered hardware state; drivers must still validate that the resource layout matches their controller before programming it.
 //!
-//! ## Device Lifecycle
+//! PROGRESS:
+//! - docs/plans/drivers-and-io.md
 //!
-//! 1. **Discovery**: Hardware is discovered (via ACPI, PCI scan, etc.)
-//! 2. **Registration**: A `Device` descriptor is created and registered
-//! 3. **Probing**: Driver manager asks each driver if it supports the device
-//! 4. **Initialization**: First matching driver's `init()` is called
-//! 5. **Operation**: Driver handles I/O and IRQs for the device
-//! 6. **Removal**: Driver's `remove()` is called when device is removed
+//! Core driver traits and device descriptions.
 //!
-//! ## Device Classes
-//!
-//! Devices are categorized into broad classes (Serial, Block, Network, etc.).
-//! This allows:
-//! - Generic code to work with "any serial port" without knowing specifics
-//! - Multiple drivers to implement the same class (e.g., 16550 UART, USB CDC-ACM)
-//! - Fallback behavior when specific device isn't available
-//!
-//! ## Driver-Specific State
-//!
-//! Drivers can store arbitrary state in the device descriptor via `driver_data`.
-//! This is an opaque `usize` that drivers typically use as a pointer to their
-//! own state structure. The framework doesn't interpret this data; it just
-//! preserves it.
-//!
-//! ## Example Usage
-//!
-//! ```rust,no_run
-//! // Define a driver
-//! struct MyDriver;
-//!
-//! impl Driver for MyDriver {
-//!     fn supported_classes(&self) -> &'static [DeviceClass] {
-//!         &[DeviceClass::Serial]
-//!     }
-//!
-//!     fn probe(&'static self, dev: &mut Device) -> Result<(), &'static str> {
-//!         // Check if this is a device we support
-//!         match dev.id {
-//!             DeviceId::Acpi("PNP0501") => Ok(()),  // 16550-compatible UART
-//!             _ => Err("not supported"),
-//!         }
-//!     }
-//!
-//!     fn init(&'static self, dev: &mut Device) -> Result<(), &'static str> {
-//!         // Initialize hardware
-//!         // ...
-//!         Ok(())
-//!     }
-//!
-//!     fn irq_handler(&'static self, dev: &mut Device, irq: u32) -> bool {
-//!         // Handle interrupt
-//!         true  // Indicate we handled it
-//!     }
-//! }
-//!
-//! // Register with driver manager
-//! driver_manager().lock().register_driver(&MyDriver);
-//! ```
+//! This module defines the stable vocabulary used by the kernel driver framework.
 
 use alloc::vec::Vec;
 use core::fmt;

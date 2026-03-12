@@ -1,8 +1,30 @@
-//! CPU inspection commands
+//! Module: monitor::commands::cpu
 //!
-//! This module implements commands for inspecting CPU features and state:
-//! - `cpuid`: Display CPUID information (vendor, brand, features)
-//! - `msr`: Read/write Model-Specific Registers
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//! - docs/axioms/arch-x86_64.md#A1:-The-kernel-is-x86_64-no_std-code-using-the-x86-interrupt-ABI
+//! - docs/axioms/arch-x86_64.md#A4:-SMP-discovery-exists-but-AP-startup-is-not-yet-a-documented-implemented-invariant
+//!
+//! INVARIANTS:
+//! - This module implements monitor commands for inspecting CPU features and MSR-visible state.
+//! - CPU-inspection commands surface the live CPU/reporting view available to the current kernel, not a stronger platform guarantee than the rest of the bring-up path provides.
+//!
+//! SAFETY:
+//! - CPUID is observational, but MSR access can still be privileged and dangerous if pointed at the wrong register.
+//! - CPU feature reporting here should not be mistaken for proof that the kernel fully enables or uses every advertised feature.
+//!
+//! PROGRESS:
+//! - docs/plans/observability.md
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! CPU inspection commands.
+//!
+//! This module implements commands for inspecting CPU features and state,
+//! including CPUID information and MSR access.
 
 use crate::monitor::parsing::parse_number;
 use crate::monitor::Monitor;
@@ -28,7 +50,8 @@ impl Monitor {
     /// ```
     ///
     /// # Note
-    /// Uses the `raw_cpuid` crate to safely query CPUID leaves.
+    /// Uses the `raw_cpuid` crate to query CPUID leaves. Reported features are an observational CPU snapshot,
+    /// not proof that the kernel fully enables or relies on every advertised capability.
     pub(in crate::monitor) fn cmd_cpuid(&self) {
         self.writeln("CPUID Information:");
 

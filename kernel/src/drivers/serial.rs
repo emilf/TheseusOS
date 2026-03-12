@@ -1,123 +1,33 @@
-//! # Serial Driver - 16550 UART Driver for COM1
+//! Module: drivers::serial
 //!
-//! This module implements a hardware driver for the 16550 UART (Universal Asynchronous
-//! Receiver/Transmitter) commonly found on x86 systems as the COM1 serial port. The driver
-//! integrates with the kernel's generic driver framework and provides both interrupt-driven
-//! reception and polled transmission.
+//! SOURCE OF TRUTH:
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/observability.md
 //!
-//! ## Hardware Overview
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
 //!
-//! ### 16550 UART
+//! INVARIANTS:
+//! - This module owns the 16550/COM1 serial driver used by current logging, monitor, and bring-up workflows.
+//! - Receive handling is interrupt-driven while transmit paths are kept simple/polled.
+//! - The serial driver participates in both the driver framework and the kernel’s observability path.
 //!
-//! The 16550 is a classic serial communication chip that dates back to the 1990s but is
-//! still widely supported via emulation in modern systems and hypervisors. It provides:
+//! SAFETY:
+//! - Raw UART I/O-port access and IOAPIC routing assumptions must match the actual platform/QEMU setup.
+//! - Shared RX-buffer state spans IRQ and non-IRQ contexts, so synchronization and ordering must stay simple and correct.
+//! - Serial convenience in development does not make the underlying hardware path non-fragile; if routing or register programming is wrong, logs and monitor behavior become misleading quickly.
 //!
-//! - Asynchronous serial communication (RS-232)
-//! - Configurable baud rate (we use 115200 bps)
-//! - 16-byte transmit and receive FIFOs
-//! - Interrupt generation on data received/transmitted
-//! - Support for various data formats (we use 8N1: 8 data bits, No parity, 1 stop bit)
+//! PROGRESS:
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/observability.md
 //!
-//! ### I/O Port Map
+//! Serial driver - 16550 UART driver for COM1.
 //!
-//! The COM1 port uses I/O base address 0x3F8 with the following register layout:
-//!
-//! | Offset | DLAB=0      | DLAB=1           | Access |
-//! |--------|-------------|------------------|--------|
-//! | +0     | RBR/THR     | Divisor Latch Lo | R/W    |
-//! | +1     | IER         | Divisor Latch Hi | R/W    |
-//! | +2     | IIR/FCR     | IIR/FCR          | R/W    |
-//! | +3     | LCR         | LCR              | R/W    |
-//! | +4     | MCR         | MCR              | R/W    |
-//! | +5     | LSR         | LSR              | R      |
-//! | +6     | MSR         | MSR              | R      |
-//! | +7     | SCR         | SCR              | R/W    |
-//!
-//! Legend:
-//! - **DLAB**: Divisor Latch Access Bit (bit 7 of LCR)
-//! - **RBR**: Receiver Buffer Register (read)
-//! - **THR**: Transmitter Holding Register (write)
-//! - **IER**: Interrupt Enable Register
-//! - **IIR**: Interrupt Identification Register (read)
-//! - **FCR**: FIFO Control Register (write)
-//! - **LCR**: Line Control Register
-//! - **MCR**: Modem Control Register
-//! - **LSR**: Line Status Register
-//! - **MSR**: Modem Status Register
-//! - **SCR**: Scratch Register
-//!
-//! ## Operation Modes
-//!
-//! ### Transmission (Polled)
-//!
-//! The driver uses polled mode for transmission:
-//! 1. Check LSR bit 5 (Transmitter Holding Register Empty)
-//! 2. If set, write byte to THR (offset +0)
-//! 3. Repeat for each byte
-//!
-//! This is simple and works well for the low-volume output typical of a debug console.
-//!
-//! ### Reception (Interrupt-Driven)
-//!
-//! The driver uses interrupt mode for reception:
-//! 1. Enable "Received Data Available" interrupt in IER
-//! 2. Configure IOAPIC to route IRQ 4 to a kernel interrupt vector
-//! 3. When data arrives, hardware asserts IRQ 4
-//! 4. Interrupt handler reads all available bytes from RBR
-//! 5. Bytes are stored in a circular buffer for application consumption
-//!
-//! This approach ensures no data is lost even during CPU-intensive operations.
-//!
-//! ## Circular Buffer
-//!
-//! Received data is stored in a 1024-byte circular buffer:
-//!
-//! ```text
-//!     Tail (read position)              Head (write position)
-//!          ↓                                  ↓
-//!     [....##################....................]
-//!          ^--- Data ready to read ---^
-//! ```
-//!
-//! - **Head**: Write position (modified by IRQ handler)
-//! - **Tail**: Read position (modified by read() calls)
-//! - **Empty**: head == tail
-//! - **Full**: (head + 1) % size == tail
-//! - **Overflow**: Oldest data is overwritten when buffer fills
-//!
-//! The head and tail indices are atomic so both contexts observe consistent positions,
-//! while a `spin::Mutex` guards the backing array to prevent concurrent writes.
-//!
-//! ## Driver Framework Integration
-//!
-//! This driver implements the `Driver` trait and registers with the kernel's driver
-//! manager. It provides:
-//!
-//! - **Probe**: Checks if device is a Serial class device
-//! - **Init**: Configures UART hardware and enables interrupts
-//! - **IRQ Handler**: Reads received data and enqueues it
-//! - **Read**: Dequeues data from circular buffer
-//! - **Write**: Transmits data via polled THR writes
-//!
-//! ## Configuration
-//!
-//! Key constants (see `theseus_shared::constants`):
-//! - Baud rate: 115200 (divisor = 1 for typical UART clock)
-//! - Data format: 8N1 (8 data bits, no parity, 1 stop bit)
-//! - FIFO trigger: 14 bytes
-//! - IRQ: 4 (legacy ISA IRQ for COM1)
-//! - I/O base: 0x3F8
-//!
-//! ## Thread Safety
-//!
-//! - `SERIAL_STATE`: Protected by `Mutex` for hardware access
-//! - Circular buffer: `spin::Mutex` guards data; atomic head/tail indices coordinate positions
-//! - IRQ handler: Short critical sections keep responsiveness even with shared locking
-//!
-//! ## References
-//!
-//! - [16550 UART Datasheet](http://caro.su/msx/ocm_de1/16550.pdf)
-//! - [OSDev Wiki - Serial Ports](https://wiki.osdev.org/Serial_Ports)
+//! This module implements the 16550 UART driver used for current serial logging,
+//! monitor input, and basic debug I/O.
 
 use alloc::vec::Vec;
 use core::ptr;

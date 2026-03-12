@@ -1,11 +1,11 @@
 # Logging policy (TheseusOS)
 
 This project relies heavily on logs during bring-up, but **default boot output must stay high-signal**.
-Excessive logs waste developer time and (when using AI tools) consume precious context.
+Excessive logs waste developer time and, when using AI tools, consume precious context.
 
 ## Goals
 
-- **Default config is quiet**: only high-signal INFO, plus WARN/ERROR.
+- **Default config is quiet**: high-signal WARN/ERROR always stand out, while INFO/DEBUG/TRACE default toward the QEMU debug path instead of noisy serial.
 - **Debugging is opt-in**: turn on DEBUG/TRACE intentionally, ideally scoped to a module.
 - **Critical boot failures are unmissable**: emit to **serial** and **ISA debugcon (0xE9)**.
 

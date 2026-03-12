@@ -1,11 +1,33 @@
+//! Module: input::keyboard
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/observability.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//!
+//! INVARIANTS:
+//! - This module provides the shared keyboard-event hub used by current input consumers.
+//! - Transport-specific drivers publish decoded key transitions here instead of exposing driver-local queues directly.
+//! - The hub retains a bounded recent-event queue and a bounded listener set.
+//!
+//! SAFETY:
+//! - Event publication may happen from interrupt-driven or driver-adjacent contexts, so listener dispatch must stay simple and bounded.
+//! - Queue/listener bookkeeping must preserve event ordering and state consistency without assuming a richer input stack already exists.
+//! - ASCII translation here is convenience behavior layered on top of HID usage state, not a full keyboard-layout abstraction.
+//!
+//! PROGRESS:
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/observability.md
+//!
 //! Shared keyboard event distribution.
 //!
 //! The USB keyboard driver originally buffered key transition events in a
-//! driver-local queue that the kernel monitor could poll.  That was useful for
-//! early bring-up, but it forced consumers to depend on `drivers::usb`.  This
-//! module lifts the queue into a tiny input hub so future subsystems (shells,
-//! GUIs, scripting environments) can subscribe without caring about the
-//! underlying transport.
+//! driver-local queue that the kernel monitor could poll. That was useful for
+//! early bring-up, but it forced consumers to depend on `drivers::usb`. This
+//! module lifts the queue into a tiny input hub so future subsystems can
+//! subscribe without caring about the underlying transport.
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;

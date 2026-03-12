@@ -2,6 +2,8 @@
 
 This guide walks through the tooling around TheseusOS so you can build, run, and inspect the system quickly. Everything below assumes you are working from the project root.
 
+This is a workflow guide, not a binding architecture document; when it conflicts with `docs/axioms/` or `docs/plans/`, the axioms/plans win.
+
 ## Toolchain & Workspace
 - Rust nightly is pinned via `rust-toolchain.toml`.
 - Cargo workspaces: `bootloader`, `kernel`, and shared crates under `shared/`.
@@ -17,24 +19,20 @@ make clean
 ```
 
 ## Running Under QEMU
-Use the convenience script `startQemu.sh`:
+Preferred current path: use the Rust runner `tools/theseus-qemu` for reproducible argv generation and explicit relay/QMP/serial toggles.
 
 ```bash
-# Headless run with serial/monitor exposed via named pipes
-./startQemu.sh true
+# Headless run
+cargo run -p theseus-qemu -- --headless
 
-# Headed run with QEMU window and debug.log capturing port 0xE9 output
-./startQemu.sh false
+# Print the resolved QEMU command without running it
+cargo run -p theseus-qemu -- print --headless
 
-# Add extra QEMU flags (example: wait for GDB)
-QEMU_OPTS="-S -s" ./startQemu.sh true
+# Use the standard relay endpoints
+cargo run -p theseus-qemu -- --relays --headless
 ```
 
-Script highlights:
-- Removes stale `debug.log`/`qemu.log`.
-- Builds automatically (`make all`) before launching QEMU.
-- Configures the ISA debug exit device so the kernel can terminate QEMU with success/failure codes (`theseus_shared::qemu_exit_{ok,error}!`).
-- Routes COM1 over a named pipe (`/tmp/qemu-serial`) in headless mode. Attach with `screen /tmp/qemu-serial` or `socat - UNIX-CONNECT:/tmp/qemu-serial`.
+The older `startQemu.sh` script still exists as historical/convenience glue, but the Rust runner is the preferred current run path.
 
 ## Debugging with GDB
 - Launch QEMU with `QEMU_OPTS="-S -s"` to pause CPU 0 and listen on TCP 1234.
@@ -48,8 +46,8 @@ Script highlights:
 ## Logging
 - Macros (`log_error!`, `log_warn!`, `log_info!`, `log_debug!`, `log_trace!`) live in `kernel/src/logging`.
 - Default routing (configurable in `kernel/src/config.rs`):
-  - ERROR/WARN/INFO → QEMU port 0xE9 and serial.
-  - DEBUG/TRACE → QEMU port 0xE9 only (to reduce serial noise).
+  - ERROR/WARN → both QEMU debug and serial by default.
+  - INFO/DEBUG/TRACE → QEMU debug by default unless config/runtime routing is changed.
 - Adjust at runtime:
   ```
   > loglevel kernel::memory DEBUG
@@ -68,10 +66,10 @@ Script highlights:
 
 ## Automated Tests
 - `run_tests.sh` executes host-side Rust tests and any available guest smoke tests. The script ensures the right targets are built first.
-- Integration tests inside `kernel/tests` call directly into kernel functions; the `custom_test_frameworks` feature is stubbed out because the bare-metal harness cannot rely on trait-object-based runners.
+- The crate still carries the `custom_test_frameworks` hook for compatibility, but the current bare-metal test workflow does not rely on trait-object-based runners.
 
 ## Troubleshooting Tips
-- Kernel exits immediately? Check `config::KERNEL_SHOULD_IDLE` (default `false`). Set to `true` when you want to linger in the monitor.
+- Kernel exits immediately? Check `config::KERNEL_SHOULD_IDLE` (default `true`). Set it to `false` when you want the kernel to exit QEMU instead of lingering in the monitor/idle path.
 - Heart animation not updating? Confirm the LAPIC timer IRQ counter is increasing (`timer` command in the monitor) and that `interrupts::lapic_timer_configure` succeeded.
 - UEFI runtime service failures? See logs around `SetVirtualAddressMap` in `environment::continue_after_stack_switch`; the kernel aborts with context if the call fails.
 

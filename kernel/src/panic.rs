@@ -1,23 +1,31 @@
-//! Panic handling module
+//! Module: panic
 //!
-//! This module provides the kernel's panic handler and related panic utilities.
-//! When a panic occurs in the kernel, this handler is responsible for safely
-//! shutting down the system and providing debug information.
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A2:-Panic-handling-reports-failure-through-kernel-logging-and-exits-QEMU-with-error-status
+//! - docs/axioms/debug.md#A1:-Kernel-logging-is-initialized-at-kernel-entry-and-is-designed-to-work-without-heap-allocation
+//!
+//! INVARIANTS:
+//! - Kernel panic reporting goes through the logging path and then terminates QEMU with an error status.
+//! - Panic handling is a last-resort reporting path and does not attempt graceful recovery.
+//!
+//! SAFETY:
+//! - Panic code must avoid allocator dependence and any behavior likely to recurse into a second panic.
+//! - Diagnostic richness is secondary to reliability; a short reliable panic report beats a clever fragile one.
+//!
+//! PROGRESS:
+//! - docs/plans/observability.md
+//!
+//! Kernel panic handling.
+//!
+//! This module provides the last-resort panic path that reports failure and then
+//! terminates the QEMU run.
 
-/// Panic handler for kernel
+/// Kernel panic handler.
 ///
-/// This function is called when a panic occurs in the kernel. It attempts to
-/// output panic information to the QEMU debug port and then exits QEMU with
-/// an error code.
-///
-/// # Parameters
-///
-/// * `_panic_info` - Information about the panic (currently unused)
-///
-/// # Safety
-///
-/// This function is marked as `#[panic_handler]` and will be called by the
-/// Rust runtime when a panic occurs. It must not return.
+/// Emit a short panic report and then exit QEMU.
 #[cfg(not(test))]
 #[panic_handler]
 pub fn panic_handler(panic_info: &core::panic::PanicInfo) -> ! {

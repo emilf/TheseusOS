@@ -1,10 +1,29 @@
-//! System control commands
+//! Module: monitor::commands::control
 //!
-//! This module implements system control commands:
-//! - `reset`: Reboot the system
-//! - `halt`: Halt the CPU
-//! - `clear`: Clear the terminal screen
-//! - `call`: Call a function at an address (dangerous!)
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//! - docs/plans/boot-flow.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//!
+//! INVARIANTS:
+//! - This module implements the monitor commands that directly control or terminate system execution paths.
+//! - Commands here are intentionally privileged administrative/debug tools.
+//!
+//! SAFETY:
+//! - `reset`, `halt`, and especially `call` are dangerous by design and must remain explicit about their blast radius.
+//! - Friendly command UX must not blur the fact that these operations can immediately terminate or corrupt the running system.
+//!
+//! PROGRESS:
+//! - docs/plans/observability.md
+//! - docs/plans/boot-flow.md
+//!
+//! System control commands.
+//!
+//! This module implements system control commands such as reset, halt, clear,
+//! and arbitrary function call.
 
 use crate::monitor::parsing::parse_number;
 use crate::monitor::Monitor;
@@ -28,8 +47,8 @@ impl Monitor {
     /// ```
     ///
     /// # Note
-    /// This command will terminate the current session and reboot the machine.
-    /// All unsaved data will be lost.
+    /// This command intentionally terminates the current runtime session and reboots the machine.
+    /// Treat it as a privileged administrative action, not a harmless convenience command.
     #[allow(unreachable_code)] // UEFI reset never returns, but we keep fallbacks for robustness
     pub(in crate::monitor) fn cmd_reset(&self) {
         self.writeln("Resetting system via UEFI runtime services...");

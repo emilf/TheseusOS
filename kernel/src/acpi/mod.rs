@@ -1,7 +1,34 @@
-//! ACPI (Advanced Configuration and Power Interface) support module
+//! Module: acpi
 //!
-//! This module provides ACPI table parsing capabilities for the kernel using the acpi crate.
-//! It implements the AcpiHandler trait to map physical memory regions using PHYS_OFFSET.
+//! SOURCE OF TRUTH:
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/memory.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//! - docs/axioms/arch-x86_64.md#A4:-SMP-discovery-exists-but-AP-startup-is-not-yet-a-documented-implemented-invariant
+//! - docs/axioms/memory.md#A2:-Physical-memory-is-accessed-through-a-fixed-PHYS_OFFSET-linear-mapping-after-paging-is-active
+//!
+//! INVARIANTS:
+//! - ACPI parsing is the kernel’s platform-discovery path for APIC, CPU, PCI MCFG, and related firmware tables.
+//! - Table access may use PHYS_OFFSET directly when active, but this module also maintains explicit fallback mappings during transitional states.
+//! - The resulting platform data feeds interrupt, PCI, and driver-system initialization; it is not merely diagnostic decoration.
+//!
+//! SAFETY:
+//! - ACPI tables are firmware-provided input and must be treated as structured but untrusted data.
+//! - Physical table mappings must use the correct cache/mapping policy for the region being exposed.
+//! - Comments that pretend ACPI access is always just a permanent PHYS_OFFSET dereference are misleading in the current mixed mapping path.
+//!
+//! PROGRESS:
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/memory.md
+//!
+//! ACPI (Advanced Configuration and Power Interface) support module.
+//!
+//! This module provides ACPI table parsing for the kernel using the `acpi` crate
+//! and the kernel’s current physical-to-virtual mapping strategy.
 
 use crate::handoff::handoff_phys_ptr;
 use crate::memory::{
@@ -56,14 +83,13 @@ impl AcpiHandler for KernelAcpiHandler {
         PhysicalMapping::new(physical_address, non_null_virtual_address, size, size, Self)
     }
 
-    /// Unmap a physical memory region
+    /// Unmap a physical memory region.
     ///
-    /// In the kernel, we don't need to unmap physical regions since the PHYS_OFFSET
-    /// mapping is persistent and covers all physical memory.
-    /// TODO: PHYS_OFFSET mapping is not persistent in the kernel environment, so we
-    /// need to unmap the physical region when the mapping is no longer needed.
+    /// The current kernel path keeps these mappings around rather than tearing them
+    /// down eagerly. That is a pragmatic implementation choice, not proof that all
+    /// ACPI access is backed by one permanent universal mapping model.
     fn unmap_physical_region<T>(_region: &PhysicalMapping<Self, T>) {
-        // No-op in kernel environment - PHYS_OFFSET mapping is persistent
+        // No-op for the current implementation.
     }
 }
 

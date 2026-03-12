@@ -1,46 +1,29 @@
-//! # Serial Debug Utilities
+//! Module: serial_debug
 //!
-//! This module provides simple serial debugging tools for testing and validating
-//! the serial driver functionality. These are particularly useful during early
-//! kernel development when more sophisticated debugging infrastructure isn't
-//! yet available.
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//! - docs/plans/drivers-and-io.md
 //!
-//! ## Reverse Echo Session
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
 //!
-//! The main feature is a "reverse echo" test that reads lines from the serial
-//! port and echoes them back in reverse order. This validates:
+//! INVARIANTS:
+//! - This module provides intentionally simple post-boot serial-debug workflows separate from the full monitor.
+//! - The reverse-echo session is a testing aid for validating end-to-end serial receive/transmit behavior.
+//! - When enabled, this path intentionally takes over execution flow and does not attempt to coexist with richer interactive tooling.
 //!
-//! - Serial reception (IRQ-based input)
-//! - Serial transmission (polled output)
-//! - Bidirectional communication
-//! - Line buffering and termination
+//! SAFETY:
+//! - This module is for controlled debugging sessions; enabling it changes runtime behavior and can block normal kernel progress indefinitely.
+//! - Serial-driver and driver-manager assumptions used here must remain simple enough to be useful during bring-up, not just after the whole system is healthy.
 //!
-//! ### Example Session
+//! PROGRESS:
+//! - docs/plans/observability.md
+//! - docs/plans/drivers-and-io.md
 //!
-//! ```text
-//! User types: hello world
-//! System echoes: dlrow olleh
+//! Simple post-boot serial-debug helpers.
 //!
-//! User types: testing 123
-//! System echoes: 321 gnitset
-//! ```
-//!
-//! ## Usage
-//!
-//! Enable the reverse echo session by setting `config::RUN_POST_BOOT_SERIAL_REVERSE_ECHO`
-//! to `true`. This will block kernel execution indefinitely, so it should only be
-//! used for testing.
-//!
-//! ## Implementation Notes
-//!
-//! The reverse echo session is intentionally simple:
-//! - No command processing (unlike the full monitor)
-//! - Blocks on serial I/O (uses `hlt` instruction when no data available)
-//! - Fixed line buffer size (256 bytes)
-//! - Reverses entire line before sending
-//!
-//! This simplicity makes it ideal for verifying basic serial functionality before
-//! bringing up more complex subsystems.
+//! This module contains intentionally narrow serial-debug workflows used during
+//! bring-up and driver validation.
 
 use alloc::vec::Vec;
 
@@ -50,36 +33,9 @@ use crate::log_info;
 
 const MAX_LINE: usize = 256;
 
-/// Run the reverse echo session
+/// Run the reverse-echo serial-debug session.
 ///
-/// This function enters an infinite loop that:
-/// 1. Reads one byte at a time from the serial port
-/// 2. Accumulates bytes into a line buffer
-/// 3. When Enter is pressed, reverses the line and echoes it back
-/// 4. Repeats forever
-///
-/// The function uses the driver manager's class-based I/O interface to read
-/// from any registered Serial class device. When no data is available, it
-/// halts the CPU to save power (the next interrupt will wake it).
-///
-/// # Control Characters
-///
-/// - **Enter (CR/LF)**: Complete the line, reverse it, and send it back
-/// - **Other printable characters**: Added to buffer and echoed
-/// - **Non-printable**: Ignored (no special handling)
-///
-/// # Panics
-///
-/// This function never returns, so calling code should be aware that nothing
-/// after this call will execute. It's designed for testing only.
-///
-/// # Example
-///
-/// ```no_run
-/// if config::RUN_POST_BOOT_SERIAL_REVERSE_ECHO {
-///     run_reverse_echo_session();  // Never returns
-/// }
-/// ```
+/// This takes over execution with a tiny serial loop and never returns.
 pub fn run_reverse_echo_session() -> ! {
     log_info!("Serial reverse echo session active");
 

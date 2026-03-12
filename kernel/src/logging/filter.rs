@@ -1,23 +1,32 @@
-//! Per-module log level filtering
+//! Module: logging::filter
 //!
-//! This module provides runtime-configurable filtering of log messages by module.
-//! Each module can have its own log level, allowing fine-grained control over
-//! debug output.
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//! - docs/logging.md
 //!
-//! ## Design
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A1:-Kernel-logging-is-initialized-at-kernel-entry-and-is-designed-to-work-without-heap-allocation
 //!
-//! - **Fast Lookup**: O(1) using hash-indexed static array
-//! - **No Allocation**: Uses only static arrays and atomics
-//! - **Runtime Updates**: Can change levels via monitor commands
-//! - **Default Levels**: Loaded from config.rs on init
+//! INVARIANTS:
+//! - This module owns module-level log filtering decisions for the current logging subsystem.
+//! - Default levels plus runtime overrides determine whether a log call is emitted before formatting/output work happens.
+//!
+//! SAFETY:
+//! - Filtering bugs change observability, not core safety, but they can still hide failures or flood bring-up logs badly enough to mislead debugging.
+//! - Runtime reconfiguration must keep its internal tables coherent without assuming heap-heavy policy machinery.
+//!
+//! PROGRESS:
+//! - docs/plans/observability.md
+//!
+//! Module-level log filtering support.
 
 use super::LogLevel;
 use core::sync::atomic::{AtomicU8, Ordering};
 
-/// Number of module filter slots (power of 2 for fast modulo)
+/// Number of module-filter slots.
 const FILTER_SLOTS: usize = 64;
 
-/// Module filter entry
+/// One module-filter table entry.
 struct FilterEntry {
     /// Module name hash (0 = empty slot)
     hash: AtomicU32,
@@ -27,10 +36,10 @@ struct FilterEntry {
 
 use core::sync::atomic::AtomicU32;
 
-/// Global module filter table
+/// Global module-filter table.
 ///
-/// Uses open addressing with linear probing for collision resolution.
-/// Each entry stores a module name hash and its corresponding log level.
+/// The table uses open addressing with linear probing and stores only module-name
+/// hashes plus their configured levels.
 static MODULE_FILTERS: [FilterEntry; FILTER_SLOTS] = {
     const EMPTY: FilterEntry = FilterEntry {
         hash: AtomicU32::new(0),
@@ -39,19 +48,19 @@ static MODULE_FILTERS: [FilterEntry; FILTER_SLOTS] = {
     [EMPTY; FILTER_SLOTS]
 };
 
-/// Default log level for modules without specific configuration
+/// Default log level for modules without explicit overrides.
 static DEFAULT_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::Info as u8);
 
-/// Module filter manager
+/// Manager for module-level log filtering.
 pub struct ModuleFilter;
 
 impl ModuleFilter {
-    /// Get log level for a module
+    /// Get the effective log level for a module.
     pub fn get(module: &str) -> LogLevel {
         let hash = hash_module_name(module);
         let idx = (hash as usize) % FILTER_SLOTS;
 
-        // Linear probe to find entry
+        // Linear probe to find a matching entry.
         for i in 0..FILTER_SLOTS {
             let probe_idx = (idx + i) % FILTER_SLOTS;
             let entry_hash = MODULE_FILTERS[probe_idx].hash.load(Ordering::Relaxed);
@@ -72,12 +81,12 @@ impl ModuleFilter {
         u8_to_level(DEFAULT_LEVEL.load(Ordering::Relaxed))
     }
 
-    /// Set log level for a module
+    /// Set the log level override for a module.
     pub fn set(module: &str, level: LogLevel) {
         let hash = hash_module_name(module);
         let idx = (hash as usize) % FILTER_SLOTS;
 
-        // Linear probe to find empty slot or existing entry
+        // Linear probe to find an empty slot or existing entry.
         for i in 0..FILTER_SLOTS {
             let probe_idx = (idx + i) % FILTER_SLOTS;
             let entry_hash = MODULE_FILTERS[probe_idx].hash.load(Ordering::Relaxed);
@@ -106,64 +115,36 @@ impl ModuleFilter {
         // just silently ignore (better than crashing)
     }
 
-    /// Set default log level for all modules without specific config
+    /// Set the default log level for modules without explicit overrides.
     pub fn set_default(level: LogLevel) {
         DEFAULT_LEVEL.store(level as u8, Ordering::Relaxed);
     }
 
-    /// Get default log level
+    /// Get the current default log level.
     pub fn get_default() -> LogLevel {
         u8_to_level(DEFAULT_LEVEL.load(Ordering::Relaxed))
     }
 }
 
-/// Check if a log message should be output
-///
-/// # Arguments
-/// * `module` - Module path (e.g., "kernel::memory")
-/// * `level` - Log level of the message
-///
-/// # Returns
-/// * `true` - Message should be logged
-/// * `false` - Message should be filtered out
+/// Decide whether a log call should be emitted.
 pub fn should_log(module: &str, level: LogLevel) -> bool {
     let module_level = ModuleFilter::get(module);
     level <= module_level
 }
 
-/// Set log level for a specific module
-///
-/// # Arguments
-/// * `module` - Module path (e.g., "kernel::memory")
-/// * `level` - Log level to set
-///
-/// # Examples
-/// ```rust
-/// set_module_level("kernel::memory", LogLevel::Debug);
-/// set_module_level("kernel::interrupts", LogLevel::Warn);
-/// ```
+/// Set the log level for a specific module.
 pub fn set_module_level(module: &str, level: LogLevel) {
     ModuleFilter::set(module, level);
 }
 
-/// Get log level for a specific module
-///
-/// # Arguments
-/// * `module` - Module path
-///
-/// # Returns
-/// Current log level for the module (or default if not configured)
+/// Get the current log level for a specific module.
 pub fn get_module_level(module: &str) -> LogLevel {
     ModuleFilter::get(module)
 }
 
-/// List all configured module log levels
+/// List the configured module-level overrides.
 ///
-/// Returns a list of (module_hash, level) pairs for modules with
-/// non-default levels. Note: module names are not stored, only hashes.
-///
-/// # Returns
-/// Array of (hash, level) tuples
+/// Only module hashes are stored here, not the original names.
 pub fn list_module_levels() -> [(u32, LogLevel); FILTER_SLOTS] {
     let mut result = [(0u32, LogLevel::Info); FILTER_SLOTS];
 
@@ -178,11 +159,11 @@ pub fn list_module_levels() -> [(u32, LogLevel); FILTER_SLOTS] {
     result
 }
 
-/// Initialize default log levels from config
+/// Initialize default and per-module levels from config.
 pub(super) fn init_default_filters() {
     use crate::config;
 
-    // Set default level for all modules
+    // Set the default level for modules without explicit overrides.
     DEFAULT_LEVEL.store(config::DEFAULT_LOG_LEVEL as u8, Ordering::Relaxed);
 
     // Set per-module overrides from config
@@ -191,15 +172,9 @@ pub(super) fn init_default_filters() {
     }
 }
 
-/// Simple hash function for module names
+/// Hash a module name for the fixed filter table.
 ///
-/// Uses FNV-1a hash algorithm (simple, fast, no allocation)
-///
-/// # Arguments
-/// * `s` - String to hash
-///
-/// # Returns
-/// 32-bit hash value (never returns 0, which is reserved for empty slots)
+/// Uses FNV-1a and reserves `0` for empty slots.
 fn hash_module_name(s: &str) -> u32 {
     const FNV_PRIME: u32 = 16777619;
     const FNV_OFFSET: u32 = 2166136261;
@@ -218,7 +193,7 @@ fn hash_module_name(s: &str) -> u32 {
     hash
 }
 
-/// Convert u8 to LogLevel (with bounds checking)
+/// Convert a stored `u8` back into a `LogLevel`.
 fn u8_to_level(val: u8) -> LogLevel {
     match val {
         0 => LogLevel::Error,

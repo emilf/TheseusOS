@@ -1,85 +1,32 @@
-//! # Driver Manager Implementation
+//! Module: drivers::manager
 //!
-//! The driver manager is the central coordinator for all device drivers in the kernel.
-//! It maintains registries of available drivers and discovered devices, and handles
-//! the binding process between them.
+//! SOURCE OF TRUTH:
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/observability.md
 //!
-//! ## Responsibilities
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
 //!
-//! ### Driver Registry
-//! - Maintains a list of all registered drivers
-//! - Allows drivers to register at any time (typically during kernel init)
-//! - Supports deferred probing (drivers can register before devices exist)
+//! INVARIANTS:
+//! - The driver manager is the central registry for kernel drivers and discovered devices.
+//! - Binding is first-success wins for currently unbound devices.
+//! - IRQ dispatch and class-based I/O operate on the live registered-device set.
 //!
-//! ### Device Registry
-//! - Maintains a list of all discovered devices
-//! - Each device has metadata (class, IRQ, MMIO address, etc.)
-//! - Devices can be added dynamically (hot-plug, ACPI enumeration, etc.)
+//! SAFETY:
+//! - The global spin-mutex protects registry mutation, so callers must keep lock hold times short, especially around probe/init and IRQ paths.
+//! - Driver-managed opaque state stored in device descriptors must remain valid for as long as the manager may hand that device back to the driver.
+//! - Manager-level dispatch does not validate device-specific MMIO or DMA contracts; those remain the responsibility of the bound driver.
 //!
-//! ### Binding/Probing
-//! - When a device is registered, runs probe logic
-//! - Asks each driver "do you support this device?"
-//! - First driver that accepts binds to the device
-//! - Device retains reference to its bound driver
+//! PROGRESS:
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/observability.md
 //!
-//! ### IRQ Dispatch
-//! - Routes hardware interrupts to appropriate device drivers
-//! - Searches devices by IRQ number
-//! - Calls driver's `irq_handler()` method
-//! - Returns whether the IRQ was handled
+//! Driver manager implementation.
 //!
-//! ### Class-Based I/O
-//! - Provides high-level read/write operations by device class
-//! - Example: "write to any Serial device" without knowing which one
-//! - Useful for system logging, debug output, etc.
-//!
-//! ## Probe Algorithm
-//!
-//! ```text
-//! When device is registered:
-//!   For each driver:
-//!     If driver.supports_class(device.class):
-//!       If driver.probe(device) succeeds:
-//!         Call driver.init(device)
-//!         Mark device as bound
-//!         STOP (don't try other drivers)
-//! ```
-//!
-//! ## Thread Safety
-//!
-//! The driver manager is protected by a global spin mutex (`DRIVER_MANAGER`).
-//! All operations acquire this lock, so:
-//! - Only one thread can modify registries at a time
-//! - IRQ handlers can safely call into the manager
-//! - No race conditions between driver registration and device enumeration
-//!
-//! ## Example Usage
-//!
-//! ```rust,no_run
-//! // Register a driver
-//! driver_manager().lock().register_driver(&MY_DRIVER);
-//!
-//! // Register a device
-//! let device = Device::new(DeviceId::Class(DeviceClass::Serial));
-//! driver_manager().lock().add_device(device);
-//!
-//! // Write to any serial device
-//! driver_manager().lock().write_class(DeviceClass::Serial, b"Hello\n");
-//!
-//! // Handle an IRQ
-//! let handled = driver_manager().lock().handle_irq(4);  // IRQ 4 = COM1
-//! ```
-//!
-//! ## Design Rationale
-//!
-//! This design is deliberately simple for the MVP:
-//! - No hot removal support (could be added later)
-//! - No driver dependencies (drivers must self-order)
-//! - No priority system (first-match wins)
-//! - No async operations (all I/O is synchronous)
-//!
-//! These simplifications make the code easier to understand and debug, while
-//! still providing enough functionality for a working kernel.
+//! The driver manager maintains registries of available drivers and discovered devices,
+//! runs the probe/bind flow, dispatches IRQs, and exposes class-based I/O helpers used
+//! by logging, monitor, and bring-up code.
 
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -113,20 +60,7 @@ impl DriverManager {
 
     /// Register a driver with the system.
     ///
-    /// This method adds a driver to the driver registry and optionally
-    /// triggers immediate probing against existing devices. The driver's
-    /// `on_register()` method is called to determine the registration behavior.
-    ///
-    /// # Arguments
-    /// * `drv` - Driver to register (must have static lifetime)
-    ///
-    /// # Behavior
-    /// - If `on_register()` returns `Ok(true)`: Driver is added and probed immediately
-    /// - If `on_register()` returns `Ok(false)`: Driver is added but not probed yet
-    /// - If `on_register()` returns `Err()`: Driver registration fails
-    ///
-    /// # Thread Safety
-    /// This method must be called while holding the driver manager lock.
+    /// `on_register()` decides whether probing happens immediately or is deferred.
     pub fn register_driver(&mut self, drv: &'static dyn Driver) {
         match drv.on_register() {
             Ok(true) => {

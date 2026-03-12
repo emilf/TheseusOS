@@ -1,3 +1,22 @@
+//! Module: drivers::usb::xhci::trb
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/drivers-and-io.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//!
+//! INVARIANTS:
+//! - This module centralizes the TRB constants and raw helper structs shared by the xHCI command/event paths.
+//! - Raw TRB views here are intentionally close to hardware layout and are not high-level protocol abstractions.
+//!
+//! SAFETY:
+//! - Bitfield decoding/encoding mistakes here propagate silently into controller behavior and are notoriously painful to debug.
+//! - Raw helper structs do not validate semantic correctness of the TRB contents they carry.
+//!
+//! PROGRESS:
+//! - docs/plans/drivers-and-io.md
+//!
 //! TRB encodings and helpers for the xHCI driver.
 //!
 //! This module centralizes the TRB type constants and the small helper structs

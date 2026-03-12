@@ -1,7 +1,27 @@
+//! Module: input
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/drivers-and-io.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//!
+//! INVARIANTS:
+//! - The input subsystem provides shared event-distribution primitives for human-interface devices.
+//! - Concrete device drivers publish decoded input events into this layer rather than exposing transport-specific details to higher consumers.
+//! - Keyboard support is currently the active implemented path.
+//!
+//! SAFETY:
+//! - Input publication and listener registration must preserve queue/listener validity across interrupt-driven producer paths and higher-level consumers.
+//! - Device-specific decoding correctness remains the responsibility of the publishing driver; this layer does not validate raw HID/transport semantics.
+//!
+//! PROGRESS:
+//! - docs/plans/drivers-and-io.md
+//!
 //! Input subsystem entry points.
 //!
 //! The input module exposes shared services for keyboard, mouse, and other
-//! human-interface devices as they come online.  Each submodule owns its own
+//! human-interface devices as they come online. Each submodule owns its own
 //! buffering policy and fan-out strategy so teaching examples can focus on the
 //! device driver while still providing ergonomic hooks for higher layers.
 

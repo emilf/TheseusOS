@@ -1,41 +1,46 @@
-//! Display and output module
+//! Module: display
 //!
-//! This module provides functions for displaying kernel information and debug output.
-//! It handles formatted output to the QEMU debug port and provides utilities for
-//! displaying handoff structure contents in a readable format.
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//! - docs/plans/boot-flow.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A1:-Kernel-logging-is-initialized-at-kernel-entry-and-is-designed-to-work-without-heap-allocation
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//!
+//! INVARIANTS:
+//! - This module contains human-oriented formatting helpers for boot/kernel state dumps, especially the handoff structure.
+//! - These helpers are diagnostic surfaces layered on top of the current logging/output path; they are not separate sources of architectural truth.
+//!
+//! SAFETY:
+//! - Raw-byte dumps and pointer-based formatting helpers assume the referenced structure is valid and readable in the current mapping state.
+//! - Pretty-printing debug state is best-effort observability and must not become a hidden dependency for correct kernel behavior.
+//!
+//! PROGRESS:
+//! - docs/plans/observability.md
+//! - docs/plans/boot-flow.md
+//!
+//! Display-side debug formatting helpers.
+//!
+//! This module contains human-oriented dump helpers for handoff/kernel state.
 
 use crate::log_trace;
 use theseus_shared::handoff::Handoff;
 
-/// Print key/value pair with hex value
-///
-/// # Parameters
-///
-/// * `name` - The field name to display
-/// * `value` - The 64-bit value to display in hex
+/// Print one `name = hex value` pair for a 64-bit field.
 fn print_kv_u64(name: &str, value: u64) {
     log_trace!("  {}: {:#x}", name, value);
 }
 
-/// Print key/value pair with hex value (32-bit version)
-///
-/// # Parameters
-///
-/// * `name` - The field name to display
-/// * `value` - The 32-bit value to display in hex
+/// Print one `name = hex value` pair for a 32-bit field.
 fn print_kv_u32(name: &str, value: u32) {
     print_kv_u64(name, value as u64);
 }
 
-/// Pretty print the Handoff structure with optional raw byte dump
+/// Pretty-print the handoff structure, optionally with a raw byte dump.
 ///
-/// This function displays the contents of the handoff structure in a formatted
-/// table, showing all the system information passed from the bootloader to the kernel.
-///
-/// # Parameters
-///
-/// * `h` - Reference to the handoff structure to display
-/// * `dump_bytes` - If true, also dump the raw bytes of the structure
+/// This is a diagnostic helper for inspecting what the bootloader handed to the
+/// kernel; it is not part of the handoff contract itself.
 pub fn dump_handoff(h: &Handoff, dump_bytes: bool) {
     log_trace!("┌─────────────────────────────────────────────────────────┐");
     log_trace!("│                     Handoff Contents                    │");
@@ -111,20 +116,7 @@ pub fn dump_handoff(h: &Handoff, dump_bytes: bool) {
     }
 }
 
-/// Dump raw bytes of the handoff in a hex table (16 bytes per row)
-///
-/// This function displays the raw memory contents of the handoff structure
-/// in a hexadecimal format, useful for debugging memory layout issues.
-///
-/// # Parameters
-///
-/// * `ptr` - Pointer to the start of the memory to dump
-/// * `size` - Number of bytes to dump
-///
-/// # Safety
-///
-/// The caller must ensure that the memory pointed to by `ptr` is valid
-/// and readable for `size` bytes.
+/// Dump raw handoff bytes in a 16-byte-per-row hex table.
 pub fn dump_handoff_bytes(ptr: *const u8, size: usize) {
     log_trace!("Handoff raw bytes (hex):");
     let mut offset: usize = 0;
@@ -145,6 +137,7 @@ pub fn dump_handoff_bytes(ptr: *const u8, size: usize) {
     }
 }
 
+/// Write a string through the kernel serial device class.
 pub fn kernel_write_serial(msg: &str) {
     use crate::drivers::manager::driver_manager;
     use crate::drivers::traits::DeviceClass;

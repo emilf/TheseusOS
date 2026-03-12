@@ -1,40 +1,29 @@
-//! APIC (Advanced Programmable Interrupt Controller) management
+//! Module: interrupts::apic
 //!
-//! This module provides functions for configuring and controlling the Local APIC:
-//! - APIC base address detection
-//! - MMIO register access (read/write)
-//! - APIC initialization and configuration
-//! - Interrupt disabling (APIC, NMI, PIC)
+//! SOURCE OF TRUTH:
+//! - docs/plans/interrupts-and-platform.md
 //!
-//! ## Local APIC Overview
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//! - docs/axioms/memory.md#A2:-Physical-memory-is-accessed-through-a-fixed-PHYS_OFFSET-linear-mapping-after-paging-is-active
 //!
-//! The Local APIC is a per-CPU interrupt controller in modern x86-64 systems.
-//! It handles:
-//! - Timer interrupts
-//! - Inter-processor interrupts (IPI)
-//! - Local interrupt sources (LINT0, LINT1)
-//! - Error interrupts
-//! - Spurious interrupts
+//! INVARIANTS:
+//! - This module provides LAPIC register access and the early interrupt-masking path used during kernel bring-up.
+//! - APIC MMIO access assumes the LAPIC region is mapped according to the kernel’s documented memory setup.
+//! - Legacy PIC masking is part of the transition to APIC-based delivery, not a claim that every architectural interrupt source disappears forever.
 //!
-//! ## MMIO Access
+//! SAFETY:
+//! - APIC register reads/writes are raw MMIO and must only target the mapped LAPIC window.
+//! - Early “disable interrupts” helpers are ordering-sensitive bring-up tools, not magical absolute guarantees about all NMI-class behavior.
+//! - Any future switch away from the fixed LAPIC base assumption must update both code and docs together.
 //!
-//! The APIC registers are accessed via Memory-Mapped I/O (MMIO) at a physical
-//! address specified by the IA32_APIC_BASE MSR (typically 0xFEE00000).
+//! PROGRESS:
+//! - docs/plans/interrupts-and-platform.md
 //!
-//! Common APIC registers (offset from base):
-//! - 0x020: Local APIC ID
-//! - 0x030: Local APIC Version
-//! - 0x080: Task Priority Register (TPR)
-//! - 0x0B0: End of Interrupt (EOI)
-//! - 0x0F0: Spurious Interrupt Vector Register (SIVR)
-//! - 0x280: Error Status Register (ESR)
-//! - 0x320: LVT Timer
-//! - 0x350: LVT LINT0
-//! - 0x360: LVT LINT1
-//! - 0x370: LVT Error
-//! - 0x380: Timer Initial Count
-//! - 0x390: Timer Current Count
-//! - 0x3E0: Timer Divide Configuration
+//! APIC MMIO access and early bring-up helpers.
+//!
+//! This module contains the LAPIC accessors plus the early interrupt-masking path
+//! used during kernel bring-up.
 
 use crate::log_trace;
 use x86_64::instructions::port::Port;
@@ -42,24 +31,11 @@ use x86_64::instructions::port::Port;
 /// APIC error interrupt vector
 pub(super) const APIC_ERROR_VECTOR: u8 = 0xFE;
 
-/// Disable all interrupts including NMI
+/// Disable the current early-boot interrupt sources.
 ///
-/// Comprehensively disables all interrupt sources for a clean kernel environment:
-/// 1. Regular interrupts (IF flag) via CLI
-/// 2. Non-Maskable Interrupts (NMI) via CMOS port
-/// 3. Local APIC interrupts
-/// 4. Legacy PIC (8259) interrupts
-///
-/// # Safety
-/// Should only be called during early kernel initialization before interrupt
-/// handlers are set up.
-///
-/// # Examples
-/// Called during kernel boot sequence:
-/// ```rust
-/// unsafe { disable_all_interrupts(); }
-/// // Now safe to set up GDT, IDT, etc.
-/// ```
+/// This clears IF, masks the legacy PIC, and disables NMI through the CMOS port.
+/// It is an early bring-up helper, not a claim that every architectural interrupt
+/// source has vanished forever.
 pub unsafe fn disable_all_interrupts() {
     // Disable regular interrupts (clear IF flag in RFLAGS)
     x86_64::instructions::interrupts::disable();
@@ -71,30 +47,14 @@ pub unsafe fn disable_all_interrupts() {
     mask_pic_interrupts();
 }
 
-/// Disable Non-Maskable Interrupts (NMI)
-///
-/// NMI is disabled by setting bit 7 of the CMOS index port (0x70).
-/// This prevents NMI from firing during critical kernel operations.
-///
-/// # Note
-/// NMI is used for critical hardware events (memory errors, watchdog),
-/// so it should be re-enabled after kernel initialization if needed.
+/// Disable NMI through the CMOS index port.
 unsafe fn disable_nmi() {
     // Write to CMOS index port with NMI disable bit (bit 7 = 0x80)
     let mut port: Port<u8> = Port::new(0x70);
     port.write(0x80u8);
 }
 
-/// Mask all legacy PIC (8259) interrupts
-///
-/// The 8259 PIC was used in older systems before APIC. In modern systems
-/// with APIC, we mask all PIC interrupts to prevent conflicts.
-///
-/// PIC ports:
-/// - 0x21: Master PIC data port (IRQ 0-7)
-/// - 0xA1: Slave PIC data port (IRQ 8-15)
-///
-/// Writing 0xFF masks all 8 interrupt lines on each controller.
+/// Mask all legacy 8259 PIC interrupts.
 unsafe fn mask_pic_interrupts() {
     let mut master: Port<u8> = Port::new(0x21);
     let mut slave: Port<u8> = Port::new(0xA1);
@@ -102,13 +62,7 @@ unsafe fn mask_pic_interrupts() {
     slave.write(0xFFu8); // Mask all slave PIC interrupts
 }
 
-/// Check if CPU supports APIC
-///
-/// Uses CPUID to detect APIC support.
-///
-/// # Returns
-/// * `true` - APIC is available
-/// * `false` - APIC not supported (ancient CPU)
+/// Return whether CPUID reports APIC support.
 #[allow(dead_code)]
 unsafe fn has_apic() -> bool {
     if let Some(fi) = raw_cpuid::CpuId::new().get_feature_info() {
@@ -117,23 +71,10 @@ unsafe fn has_apic() -> bool {
     false
 }
 
-/// Get Local APIC base address
+/// Return the LAPIC physical base address assumed by the current bring-up path.
 ///
-/// Returns the physical base address of the Local APIC MMIO region.
-///
-/// # Implementation Note
-/// Currently returns the standard APIC base address (0xFEE00000) to avoid
-/// potential issues with RDMSR during early boot. In the future, this could
-/// read the IA32_APIC_BASE MSR (0x1B) to support relocated APICs.
-///
-/// # Returns
-/// * Physical address of LAPIC (typically 0xFEE00000)
-///
-/// # Safety
-/// The returned address must be mapped in virtual memory before accessing
-/// APIC registers.
-///
-/// # TODO: Make it actually return the base address of the LAPIC MMIO region
+/// Today this is the fixed legacy base `0xFEE0_0000`; the function does not yet
+/// query `IA32_APIC_BASE`.
 pub unsafe fn get_apic_base() -> u64 {
     // Use standard LAPIC base address
     // Could be read from IA32_APIC_BASE MSR (0x1B) if needed:
@@ -143,31 +84,7 @@ pub unsafe fn get_apic_base() -> u64 {
     0xFEE0_0000u64
 }
 
-/// Read a Local APIC register via MMIO
-///
-/// Accesses an APIC register by reading from the mapped MMIO address.
-///
-/// # Arguments
-/// * `apic_base` - Physical base address of LAPIC (from `get_apic_base()`)
-/// * `offset` - Register offset in bytes (e.g., 0x20 for APIC ID)
-///
-/// # Returns
-/// * 32-bit register value
-///
-/// # Safety
-/// Requires:
-/// - APIC MMIO region to be mapped via PHYS_OFFSET
-/// - Valid register offset (must be 16-byte aligned for most registers)
-/// - Paging to be active
-///
-/// # Common Offsets
-/// - 0x020: APIC ID
-/// - 0x030: APIC Version  
-/// - 0x080: Task Priority (TPR)
-/// - 0x0F0: Spurious Interrupt Vector
-/// - 0x320: LVT Timer
-/// - 0x380: Timer Initial Count
-/// - 0x390: Timer Current Count
+/// Read a LAPIC register through the `PHYS_OFFSET` mapping.
 pub unsafe fn read_apic_register(apic_base: u64, offset: u32) -> u32 {
     // The LAPIC MMIO is mapped at PHYS_OFFSET + physical address
     let vbase = crate::memory::phys_to_virt_pa(apic_base & 0xFFFFF000);
@@ -185,27 +102,7 @@ pub unsafe fn read_apic_register(apic_base: u64, offset: u32) -> u32 {
     val
 }
 
-/// Write to a Local APIC register via MMIO
-///
-/// Accesses an APIC register by writing to the mapped MMIO address.
-///
-/// # Arguments
-/// * `apic_base` - Physical base address of LAPIC (from `get_apic_base()`)
-/// * `offset` - Register offset in bytes
-/// * `value` - 32-bit value to write
-///
-/// # Safety
-/// Requires:
-/// - APIC MMIO region to be mapped via PHYS_OFFSET
-/// - Valid register offset
-/// - Paging to be active
-/// - Appropriate value for the register (incorrect values can cause system instability)
-///
-/// # Warning
-/// Writing to APIC registers can have immediate hardware effects:
-/// - EOI (0xB0): Acknowledges interrupt
-/// - SIVR (0xF0): Enable/disable APIC
-/// - Timer registers: Start/stop timer
+/// Write a LAPIC register through the `PHYS_OFFSET` mapping.
 pub(super) unsafe fn write_apic_register(apic_base: u64, offset: u32, value: u32) {
     let vbase = crate::memory::phys_to_virt_pa(apic_base & 0xFFFFF000);
     let addr = vbase + (offset as u64);
@@ -220,16 +117,7 @@ pub(super) unsafe fn write_apic_register(apic_base: u64, offset: u32, value: u32
     }
 }
 
-/// Enable CPU interrupts
-///
-/// Sets the IF (Interrupt Flag) in RFLAGS, allowing maskable interrupts
-/// to be delivered to the CPU.
-///
-/// # Safety
-/// Should only be called when:
-/// - IDT is properly set up with handlers
-/// - Stack is valid and has sufficient space
-/// - System is ready to handle interrupts
+/// Set the CPU interrupt flag once the runtime is ready for maskable IRQs.
 pub unsafe fn enable_interrupts() {
     x86_64::instructions::interrupts::enable();
 }

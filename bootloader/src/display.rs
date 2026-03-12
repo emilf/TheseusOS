@@ -1,3 +1,30 @@
+//! Module: bootloader::display
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/observability.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//! - docs/axioms/debug.md#A1:-Kernel-logging-is-initialized-at-kernel-entry-and-is-designed-to-work-without-heap-allocation
+//!
+//! INVARIANTS:
+//! - This module provides firmware-side display/pretty-print helpers for boot-time information.
+//! - Output here is diagnostic/presentation glue around the bootloader’s collected state.
+//!
+//! SAFETY:
+//! - Pretty-printing boot-time state should remain observability sugar, not become a hidden dependency of correctness.
+//! - Large formatted output during boot should stay bounded enough not to drown useful signals.
+//!
+//! PROGRESS:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/observability.md
+//!
+//! Firmware-side display helpers.
+//!
+//! These helpers format boot-time state for humans; they are not part of the
+//! boot contract by themselves.
+
 extern crate alloc;
 
 use crate::acpi::parse_acpi_tables;
@@ -6,7 +33,7 @@ use alloc::format;
 use uefi::mem::memory_map::MemoryMap;
 use uefi::proto::console::gop::PixelFormat as UefiPixelFormat;
 
-/// Helper function to display prettily formatted GOP information
+/// Pretty-print collected GOP information for boot-time diagnostics.
 pub fn display_gop_info(
     width: u32,
     height: u32,
@@ -40,7 +67,7 @@ pub fn display_gop_info(
     write_line("");
 }
 
-/// Helper function to display memory map information
+/// Pretty-print high-level memory-map metadata for boot-time diagnostics.
 pub fn display_memory_map_info(
     descriptor_size: u32,
     descriptor_version: u32,
@@ -60,12 +87,12 @@ pub fn display_memory_map_info(
     write_line("");
 }
 
-/// Helper function to display memory map entry
+/// Pretty-print one memory-map entry row.
 pub fn display_memory_map_entry(
     entry_num: usize,
     descriptor: &uefi::mem::memory_map::MemoryDescriptor,
 ) {
-    let size_bytes = descriptor.page_count * 4096; // UEFI pages are 4KB
+    let size_bytes = descriptor.page_count * 4096; // UEFI pages are 4 KiB
     let attributes = descriptor.att;
 
     write_line(&format!(
@@ -79,7 +106,7 @@ pub fn display_memory_map_entry(
     ));
 }
 
-/// Helper function to display memory map entries in a table format
+/// Pretty-print a bounded table of memory-map entries.
 pub fn display_memory_map_entries(memory_map: &uefi::mem::memory_map::MemoryMapOwned) {
     write_line("");
     write_line("┌─────────────────────────────────────────────────────────────────────────────────────────┐");
@@ -108,7 +135,7 @@ pub fn display_memory_map_entries(memory_map: &uefi::mem::memory_map::MemoryMapO
     write_line("");
 }
 
-/// Helper function to display prettily formatted ACPI information
+/// Pretty-print ACPI/RSDP information for boot-time diagnostics.
 pub fn display_acpi_info(rsdp_address: u64) {
     write_line("");
     write_line("┌─────────────────────────────────────────────────────────┐");
@@ -134,7 +161,7 @@ pub fn display_acpi_info(rsdp_address: u64) {
 
 // Device tree display removed (x86-only)
 
-/// Helper function to display firmware information
+/// Pretty-print collected firmware identity information.
 pub fn display_firmware_info(vendor_ptr: u64, vendor_len: u32, revision: u32) {
     write_line("");
     write_line("┌─────────────────────────────────────────────────────────┐");
@@ -166,7 +193,7 @@ pub fn display_firmware_info(vendor_ptr: u64, vendor_len: u32, revision: u32) {
     write_line("");
 }
 
-/// Helper function to display boot time information
+/// Pretty-print the boot-time snapshot gathered from firmware.
 pub fn display_boot_time_info(seconds: u64, nanoseconds: u32) {
     write_line("");
     write_line("┌─────────────────────────────────────────────────────────┐");
@@ -193,7 +220,7 @@ pub fn display_boot_time_info(seconds: u64, nanoseconds: u32) {
     write_line("");
 }
 
-/// Helper function to display boot device path information
+/// Pretty-print the collected boot-device path pointer metadata.
 pub fn display_boot_device_path_info(device_path_ptr: u64, device_path_size: u32) {
     write_line("");
     write_line("┌─────────────────────────────────────────────────────────┐");
@@ -220,7 +247,7 @@ pub fn display_boot_device_path_info(device_path_ptr: u64, device_path_size: u32
     write_line("");
 }
 
-/// Helper function to display CPU information
+/// Pretty-print the conservative CPU information captured for the handoff.
 pub fn display_cpu_info(cpu_count: u32, cpu_features: u64, microcode_revision: u32) {
     write_line("");
     write_line("┌─────────────────────────────────────────────────────────┐");

@@ -1,8 +1,34 @@
-//! TheseusOS Kernel Library (Single-Binary Architecture)
+//! Module: kernel crate root
 //!
-//! This library provides the kernel functionality for the unified UEFI+kernel binary.
-//! It exports `kernel_entry` which is called directly by the UEFI bootloader after
-//! exiting boot services. Integration tests also import functions from this library.
+//! SOURCE OF TRUTH:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/observability.md
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/boot.md#A1:-The-kernel-boots-as-a-single-UEFI-executable
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//! - docs/axioms/debug.md#A1:-Kernel-logging-is-initialized-at-kernel-entry-and-is-designed-to-work-without-heap-allocation
+//!
+//! INVARIANTS:
+//! - `kernel_entry` is the unified kernel entry point reached directly from the bootloader after firmware boot services are gone.
+//! - Logging is initialized before the rest of kernel bring-up emits diagnostics.
+//! - The crate root exposes the major kernel subsystems that participate in the documented bring-up path.
+//!
+//! SAFETY:
+//! - `kernel_entry` assumes the bootloader already established the handoff copy and exited boot services successfully.
+//! - The crate root is not where low-level MMIO/DMA safety is enforced; subsystem modules still own those contracts.
+//! - Test-framework commentary here must not be mistaken for a current architecture guarantee unless the implementation path actually depends on it.
+//!
+//! PROGRESS:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/observability.md
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! TheseusOS kernel crate for the current single-binary boot path.
+//!
+//! This crate exports `kernel_entry`, which the bootloader calls directly after
+//! boot services are gone.
 
 #![no_std]
 #![feature(custom_test_frameworks)]
@@ -38,38 +64,10 @@ pub mod config;
 pub use environment::setup_kernel_environment;
 pub use handoff::{set_handoff_pointers, validate_handoff};
 
-/// Unified kernel entry point for single-binary boot
+/// Unified kernel entry point for the single-binary boot path.
 ///
-/// This is the main kernel entry function called directly by the UEFI bootloader
-/// after it exits boot services. It receives a physical address pointing to the
-/// handoff structure containing all system information collected by the bootloader.
-///
-/// ## Boot Flow
-///
-/// 1. Bootloader collects system information using UEFI Boot Services
-/// 2. Bootloader calls `ExitBootServices`
-/// 3. Bootloader calls this function with handoff structure address
-/// 4. Kernel validates handoff and sets up environment
-/// 5. Kernel establishes higher-half virtual memory mapping
-/// 6. Kernel initializes heap, interrupts, and other subsystems
-/// 7. Kernel enters idle loop or exits based on configuration
-///
-/// # Arguments
-///
-/// * `handoff_addr` - Physical address of the handoff structure
-///
-/// # Panics
-///
-/// Panics if:
-/// - Handoff structure is invalid or malformed
-/// - Critical initialization steps fail
-///
-/// # Safety
-///
-/// This function assumes:
-/// - UEFI boot services have been exited
-/// - Handoff structure is valid and accessible
-/// - System is in a stable state for kernel initialization
+/// The bootloader calls this directly after `ExitBootServices`, passing the
+/// physical address of the copied handoff structure.
 #[no_mangle]
 pub extern "C" fn kernel_entry(handoff_addr: u64) -> ! {
     // Initialize logging subsystem first (before any log calls)
@@ -108,8 +106,7 @@ pub extern "C" fn kernel_entry(handoff_addr: u64) -> ! {
                     }
                 }
 
-                // Set up handoff for timer interrupt access
-                // TODO: Does this in a more fancy way in the future.
+                // Transitional timer/debug plumbing still reaches through handoff data.
                 crate::interrupts::set_handoff_for_timer(handoff);
 
                 // Set up complete kernel environment (boot services have been exited)
@@ -122,47 +119,18 @@ pub extern "C" fn kernel_entry(handoff_addr: u64) -> ! {
         }
     }
 
-    // If we reach here, it means setup_kernel_environment returned (which shouldn't happen)
+    // Reaching this point means the expected non-returning environment setup path returned.
     log_error!("ERROR: setup_kernel_environment returned unexpectedly");
     loop {}
 }
 
-/// Custom test runner for integration tests
-///
-/// This function is called by Rust's custom test framework to run all test cases.
-/// However, we discovered that this mechanism has issues in bare-metal environments
-/// where calling functions through the `&dyn Fn()` trait objects causes hangs.
-///
-/// **Current Status**: This function is kept for compatibility but is not used
-/// in our current test implementation. Instead, we call test functions directly
-/// from the `kernel_main` entry point to avoid the hanging issue.
-///
-/// **Why it doesn't work**: The issue appears to be related to how Rust's
-/// custom test framework collects and calls test functions through trait objects
-/// in a bare-metal environment. The `test()` call hangs indefinitely.
-///
-/// **Solution**: Direct function calls from `kernel_main` work reliably and
-/// provide the same functionality without the framework overhead.
-///
-/// **Usage**: This function would be called by `test_main()` if we used the
-/// standard custom test framework approach.
-///
-/// # Parameters
-///
-/// * `tests` - Slice of function pointers to test functions
-///
-/// # Example
-///
-/// ```rust
-/// // This is what the framework would do (but doesn't work):
-/// test_runner(&[&test_function_1, &test_function_2]);
-/// ```
+/// Legacy custom test-runner hook kept for framework compatibility.
 pub fn test_runner(tests: &[&dyn Fn()]) {
     // Print the number of tests we're about to run
     log_info!("Running {} tests", tests.len());
 
-    // Attempt to run each test function
-    // NOTE: This is where the hanging occurs in bare-metal environments
+    // Attempt to run each test function; this path is retained mainly as a
+    // compatibility hook rather than the preferred bare-metal workflow.
     for test in tests {
         test(); // This call hangs in bare-metal
     }

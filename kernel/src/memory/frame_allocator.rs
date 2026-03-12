@@ -1,22 +1,30 @@
-//! Frame allocator built from UEFI memory map with reserved pool for critical structures
+//! Module: memory::frame_allocator
 //!
-//! This allocator iterates through the UEFI memory map descriptors and
-//! allocates frames from `UEFI_CONVENTIONAL_MEMORY` regions. It maintains
-//! state to track the current region and position within that region.
+//! SOURCE OF TRUTH:
+//! - docs/plans/memory.md
+//! - docs/plans/boot-flow.md
 //!
-//! The allocator skips physical frame 0 to avoid potential issues with
-//! null pointer dereferences.
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/memory.md#A3:-The-boot-path-keeps-a-temporary-heap-before-switching-to-a-permanent-kernel-heap
+//! - docs/axioms/memory.md#A4:-The-persistent-physical-allocator-is-initialized-from-the-UEFI-memory-map-after-the-permanent-heap-exists
 //!
-//! # Reserved Frame Pool
+//! INVARIANTS:
+//! - `BootFrameAllocator` is the early frame source derived directly from the handoff memory map.
+//! - A reserved-frame pool exists to keep critical boot-time structures from being starved by opportunistic allocations.
+//! - This allocator is transitional boot infrastructure; long-lived runtime frame management moves to `physical_memory`.
 //!
-//! The allocator includes a small reserved pool (16 frames) to prevent critical
-//! kernel structures from being starved by ephemeral allocations. This ensures
-//! that page tables, IST stacks, and other essential structures always have
-//! frames available even if the general pool is temporarily exhausted.
+//! SAFETY:
+//! - Raw descriptor walking depends on the handoff memory-map buffer being valid, aligned, and accessible in the current mapping state.
+//! - Reserving or consuming the wrong frame range here corrupts later page-table, stack, or allocator bookkeeping in ways that are hard to debug.
+//! - The skip-frame-zero policy is a defensive convention, not a full proof against bad pointer use elsewhere.
 //!
-//! - `ReservedPool`: fixed-capacity stack storing physical addresses of reserved frames
-//! - LIFO allocation: Last frame reserved is first frame allocated
-//! - Fallback behavior: If reserved pool empty, falls back to general pool
+//! PROGRESS:
+//! - docs/plans/memory.md
+//! - docs/plans/boot-flow.md
+//!
+//! Frame allocator built from the UEFI memory map with a reserved pool for critical structures.
+//!
+//! It exists to bridge firmware memory discovery into early kernel paging work.
 
 use crate::physical_memory::{self, ConsumedRegion};
 use crate::{log_debug, log_trace};

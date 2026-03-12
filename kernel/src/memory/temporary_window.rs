@@ -1,3 +1,24 @@
+//! Module: memory::temporary_window
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/memory.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/memory.md#A2:-Physical-memory-is-accessed-through-a-fixed-PHYS_OFFSET-linear-mapping-after-paging-is-active
+//!
+//! INVARIANTS:
+//! - `TemporaryWindow` provides a scoped single-frame mapping window for transitional or utility access patterns.
+//! - The window is intentionally narrow and reused rather than becoming an ad-hoc general mapping facility.
+//! - Temporary mappings are expected to be torn down promptly after use.
+//!
+//! SAFETY:
+//! - The helper assumes the supplied/current PML4 really is the active page-table root for the accesses being performed.
+//! - Mapping the wrong physical frame into the shared window can corrupt unrelated boot structures just as effectively as a bad direct pointer.
+//! - Scoped helpers reduce leakiness, but they do not make temporary mappings automatically race-free or context-safe in arbitrary concurrent use.
+//!
+//! PROGRESS:
+//! - docs/plans/memory.md
+//!
 //! TemporaryWindow scoped helper moved out of `memory.rs` to clarify
 //! responsibilities. This module provides a small temporary mapper that maps a
 //! single physical frame into a fixed virtual window for safe access (e.g., to

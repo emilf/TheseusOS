@@ -1,40 +1,49 @@
-//! QEMU Exit Utilities
+//! Module: bootloader::qemu_exit
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//! - docs/plans/boot-flow.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A2:-Panic-handling-reports-failure-through-kernel-logging-and-exits-QEMU-with-error-status
+//!
+//! INVARIANTS:
+//! - This module provides bootloader-side QEMU exit helpers for success/failure reporting.
+//! - QEMU-exit handling here is part of test/debug workflow support, not portable platform logic.
+//!
+//! SAFETY:
+//! - These helpers assume a QEMU environment with the expected exit device semantics.
+//! - Immediate guest termination is the point, so callers must not expect recovery after invoking them.
+//!
+//! PROGRESS:
+//! - docs/plans/observability.md
+//! - docs/plans/boot-flow.md
+//!
+//! QEMU exit utilities.
 //!
 //! Provides functions for exiting QEMU with proper debug output.
-//! This is separate from the driver system to ensure it works even during panics.
 
 use theseus_shared::constants::exit_codes;
 
-/// Exit QEMU with a message and exit code
-///
-/// This function writes a message directly to the QEMU debug port (0xe9)
-/// and then exits QEMU with the specified exit code. This is useful for
-/// both normal completion and panic handling.
-///
-/// # Parameters
-///
-/// * `message` - Message to write to QEMU debug output before exiting
-/// * `exit_code` - Exit code to send to QEMU (typically QEMU_SUCCESS or QEMU_ERROR)
-///
-/// # Safety
-///
-/// This function performs direct I/O port operations and should only be called
-/// when we're running under QEMU. It will cause the guest to exit immediately.
+/// Exit QEMU after emitting a final debug message.
 pub unsafe fn exit_qemu_with_message(message: &str, exit_code: u8) {
     theseus_shared::qemu_println!(message);
     theseus_shared::qemu_exit!(exit_code);
 }
 
-/// Exit QEMU with error and a message
+/// Exit QEMU with an error code and message.
+///
+/// This keeps bootloader-side failure reporting aligned with the repo's QEMU-first
+/// test workflow.
 #[allow(dead_code)] // Intended for future use
 pub unsafe fn exit_qemu_error(message: &str) {
     exit_qemu_with_message(message, exit_codes::QEMU_ERROR);
 }
 
-/// Exit QEMU due to a panic with panic information
+/// Exit QEMU due to a panic with panic information.
 ///
-/// This can be called from a custom panic handler to provide useful
-/// debugging information when the application panics.
+/// This is a workflow/testing helper for panic-time diagnostics under QEMU,
+/// not a general recovery path or portable panic-reporting mechanism.
 #[allow(dead_code)] // Intended for future use
 pub unsafe fn exit_qemu_on_panic(panic_info: &core::panic::PanicInfo) {
     // Create a simple panic message

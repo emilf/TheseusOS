@@ -1,8 +1,30 @@
+//! Module: drivers::usb::xhci::hid
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/observability.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//!
+//! INVARIANTS:
+//! - This module isolates the current HID boot-keyboard support from the rest of xHCI bring-up.
+//! - The current path targets simple boot-protocol keyboard reports, not a full HID stack.
+//! - Decoded events are forwarded into the shared keyboard input hub rather than kept as xHCI-local state only.
+//!
+//! SAFETY:
+//! - HID report decoding here is intentionally minimal and should not pretend to cover arbitrary layouts or transport edge cases.
+//! - Publishing input events does not prove the underlying USB transport is healthy; it only reflects what the current decoder observed.
+//!
+//! PROGRESS:
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/observability.md
+//!
 //! HID boot keyboard helpers for the xHCI driver.
 //!
-//! This module keeps the "boot protocol keyboard" support (8-byte interrupt IN
-//! reports) isolated from the rest of the controller bring-up so the xHCI core
-//! can remain focused on rings, events, and enumeration.
+//! This module keeps the boot-protocol keyboard support isolated from the rest
+//! of the controller bring-up so the xHCI core can remain focused on rings,
+//! events, and enumeration.
 
 use crate::input::keyboard::{KeyEvent, KeyTransition};
 use crate::input::keyboard::{self};

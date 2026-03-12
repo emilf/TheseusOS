@@ -1,36 +1,29 @@
-//! Unified logging subsystem
+//! Module: logging
 //!
-//! This module provides a comprehensive logging framework with:
-//! - **Log Levels**: ERROR, WARN, INFO, DEBUG, TRACE
-//! - **Per-Module Filtering**: Different log levels for different modules
-//! - **Runtime Configuration**: Change log levels via monitor commands
-//! - **Multiple Output Targets**: QEMU debug port, serial, both, or none
-//! - **Allocation-Free**: Safe to use in error handlers and critical code
-//! - **Rich Formatting**: Shows module, file, line, function for DEBUG/TRACE
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
 //!
-//! ## Usage
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A1:-Kernel-logging-is-initialized-at-kernel-entry-and-is-designed-to-work-without-heap-allocation
+//! - docs/axioms/debug.md#A2:-Panic-handling-reports-failure-through-kernel-logging-and-exits-QEMU-with-error-status
 //!
-//! ```rust
-//! use crate::{log_error, log_warn, log_info, log_debug, log_trace};
+//! INVARIANTS:
+//! - Kernel logging initializes at `kernel_entry` and provides the common diagnostic surface for bring-up and failure reporting.
+//! - Filtering and output-target routing are runtime-configurable, but the formatting path remains allocation-free.
+//! - DEBUG/TRACE richness is a diagnostics feature, not an excuse to make default boot output noisy.
 //!
-//! log_info!("Kernel initialization starting");
-//! log_debug!("Mapping {} bytes at {:#x}", size, addr);
-//! log_error!("Failed to allocate frame: {}", reason);
-//! ```
+//! SAFETY:
+//! - Logging must remain usable in panic and interrupt-adjacent contexts, so formatting paths cannot assume heap allocation or heavyweight synchronization.
+//! - Log routing policy is observability behavior, not a correctness boundary; subsystems must not rely on logs being visible to remain safe.
+//! - Changes here should be checked against `docs/logging.md` and current runtime defaults so documentation and behavior do not drift apart.
 //!
-//! ## Output Format
+//! PROGRESS:
+//! - docs/plans/observability.md
 //!
-//! - **INFO/WARN/ERROR**: `[LEVEL module] message`
-//! - **DEBUG/TRACE**: `[LEVEL module::function@file:line] message`
+//! Unified kernel logging subsystem.
 //!
-//! ## Configuration
-//!
-//! Default levels are set in `config.rs`. Runtime changes via monitor:
-//! ```text
-//! loglevel kernel::memory DEBUG    # Set memory module to DEBUG
-//! loglevel                         # Show all module levels
-//! logoutput ERROR serial           # Send errors to serial port
-//! ```
+//! This module owns log levels, per-module filtering, runtime output routing, and
+//! allocation-free formatting/output for kernel diagnostics.
 
 mod filter;
 mod output;
@@ -46,7 +39,7 @@ use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
 extern crate alloc;
 
-/// Log levels (ordered from most to least severe)
+/// Log levels ordered from most to least severe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum LogLevel {
@@ -63,7 +56,7 @@ pub enum LogLevel {
 }
 
 impl LogLevel {
-    /// Convert log level to string prefix
+    /// Return the fixed-width string prefix for this level.
     pub const fn as_str(&self) -> &'static str {
         match self {
             LogLevel::Error => "ERROR",
@@ -74,7 +67,7 @@ impl LogLevel {
         }
     }
 
-    /// Convert string to log level
+    /// Parse a string into a log level.
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_uppercase().as_str() {
             "ERROR" | "ERR" | "E" => Some(LogLevel::Error),
@@ -93,13 +86,10 @@ impl fmt::Display for LogLevel {
     }
 }
 
-/// Logging system initialization state
+/// Tracks whether kernel logging has already been initialized.
 static LOGGING_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-/// Initialize the logging subsystem
-///
-/// Sets up default log levels from config and prepares output targets.
-/// Safe to call multiple times (idempotent).
+/// Initialise kernel logging once.
 pub fn init() {
     if LOGGING_INITIALIZED.swap(true, Ordering::SeqCst) {
         return; // Already initialized
@@ -112,22 +102,7 @@ pub fn init() {
     output::init_default_targets();
 }
 
-/// Log a message (internal function used by macros)
-///
-/// This function is called by the logging macros with pre-captured context.
-/// It performs filtering, formatting, and output.
-///
-/// # Arguments
-/// * `level` - Log level
-/// * `module` - Module path (from module_path!())
-/// * `file` - Source file (from file!())
-/// * `line` - Line number (from line!())
-/// * `function` - Function name (optional, for DEBUG/TRACE)
-/// * `message` - Pre-formatted message string
-///
-/// # Allocation-Free Guarantee
-/// This function uses only stack-allocated buffers. It's safe to call from
-/// panic handlers, interrupt handlers, and other critical code.
+/// Core logging implementation used by the macros.
 #[doc(hidden)]
 pub fn log_impl(
     level: LogLevel,
@@ -156,14 +131,10 @@ pub fn log_impl(
     output::write_bytes(target, &buf[..len]);
 }
 
-/// Format a log entry into a stack buffer
+/// Format one log entry into the provided stack buffer.
 ///
-/// Format depends on log level:
-/// - INFO/WARN/ERROR: `[LEVEL module] message\n`
-/// - DEBUG/TRACE: `[LEVEL module::function@file:line] message\n`
-///
-/// # Returns
-/// Number of bytes written to buffer
+/// INFO/WARN/ERROR lines use the short module form; DEBUG/TRACE also include the
+/// function name and source location when available.
 fn format_log_entry(
     buf: &mut [u8],
     level: LogLevel,
@@ -272,10 +243,7 @@ fn format_log_entry(
     pos
 }
 
-/// Write a u32 as decimal ASCII into buffer
-///
-/// # Returns
-/// Number of bytes written
+/// Write a `u32` as decimal ASCII into the buffer.
 fn write_u32_decimal(buf: &mut [u8], mut value: u32) -> usize {
     if value == 0 {
         buf[0] = b'0';

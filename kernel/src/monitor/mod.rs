@@ -1,51 +1,31 @@
-//! # Kernel Monitor - Interactive Debugging Console
+//! Module: monitor
 //!
-//! This module implements an interactive serial monitor inspired by the legendary **Wozmon**
-//! (the Apple I monitor program written by Steve Wozniak in 1976). While maintaining the
-//! spirit of Wozmon's simplicity and direct hardware access, this implementation extends
-//! the concept for modern x86-64 systems.
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//! - docs/plans/drivers-and-io.md
 //!
-//! ## Features
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
 //!
-//! ### Memory Operations
-//! - **Examination**: View memory contents in hex and ASCII
-//! - **Modification**: Write individual bytes or fill regions
-//! - **Dumping**: Large memory region dumps with formatting
-//! - **Continuation**: Press Enter without arguments to continue from last address
+//! INVARIANTS:
+//! - The monitor is the interactive runtime inspection surface layered on top of serial input and kernel command handlers.
+//! - Serial IRQ paths enqueue input cheaply; heavier command processing runs later in thread/context-safe monitor code.
+//! - The monitor may inspect devices, memory, tables, ACPI, PCI, and USB state, but those views are observational helpers rather than separate sources of architectural truth.
 //!
-//! ### System Inspection
-//! - **Registers**: View general-purpose, control, and segment registers
-//! - **Stack Traces**: Walk frame pointers to display call chain
-//! - **ACPI**: Display platform configuration information
-//! - **CPU Info**: Show processor features via CPUID
-//! - **Device List**: Enumerate all registered hardware devices
+//! SAFETY:
+//! - Monitor commands that inspect or mutate low-level state must treat user input as privileged debugging input, not as validated protocol traffic.
+//! - IRQ-fed serial input paths must keep synchronization simple and bounded so they do not turn observability into a source of reentrancy bugs.
+//! - Commands that expose raw memory, MMIO, MSRs, or arbitrary function calls remain dangerous by design and must not be mistaken for safe production interfaces.
 //!
-//! ### Low-Level Access
-//! - **I/O Ports**: Read/write to x86 I/O space
-//! - **MSRs**: Read Model-Specific Registers
-//! - **Interrupts**: Trigger software interrupts (carefully!)
-//! - **Function Calls**: Execute arbitrary code (dangerous!)
+//! PROGRESS:
+//! - docs/plans/observability.md
+//! - docs/plans/drivers-and-io.md
 //!
-//! ### System Control
-//! - **Reset**: Reboot the system
-//! - **Halt**: Stop CPU execution
-//! - **Clear**: Clear terminal screen
+//! Interactive kernel monitor and serial-debug console.
 //!
-//! ## Usage
-//!
-//! The monitor provides an interactive command-line interface over the COM1 serial port.
-//! Connect using:
-//!
-//! - QEMU: `-serial stdio` or `-serial unix:/tmp/qemu.sock,server,nowait`
-//! - Physical hardware: `minicom -D /dev/ttyS0 -b 115200` or `screen /dev/ttyS0 115200`
-//!
-//! Type 'help' at the prompt to see all available commands.
-//!
-//! ## Module Organization
-//!
-//! The monitor is organized into focused submodules:
-//! - `commands/`: All interactive commands, organized by category
-//! - `parsing`: Number parsing utilities
+//! This module provides the current runtime inspection shell layered on top of
+//! serial input, command parsing, and monitor command handlers.
 
 mod commands;
 mod parsing;
@@ -77,14 +57,7 @@ static MONITOR: Mutex<Option<Monitor>> = Mutex::new(None);
 static SERIAL_INPUT_QUEUE: Mutex<VecDeque<u8>> = Mutex::new(VecDeque::new());
 static SERIAL_PENDING: AtomicBool = AtomicBool::new(false);
 
-/// Prepare the monitor subsystem
-///
-/// Initializes the kernel monitor if ENABLE_KERNEL_MONITOR config is true.
-/// Safe to call multiple times - will reactivate existing monitor.
-///
-/// # Note
-/// This function checks the config flag and returns early if the monitor
-/// is disabled, making it safe to call unconditionally during boot.
+/// Initialise or reactivate the shared monitor instance when enabled.
 pub fn init() {
     if !config::ENABLE_KERNEL_MONITOR {
         return;
@@ -101,28 +74,12 @@ pub fn init() {
     }
 }
 
-/// Process a byte received from the serial device
-///
-/// Entry point for serial interrupt handler to feed data to the monitor.
-/// This function is called from IRQ context when a byte arrives on COM1.
-///
-/// # Arguments
-/// * `byte` - Received byte from serial port
+/// IRQ-facing entry point for serial input.
 pub fn notify_serial_byte(byte: u8) {
     push_serial_byte(byte);
 }
 
-/// Push a byte to the monitor for processing
-///
-/// Internal function that handles monitor initialization and byte processing.
-/// Creates monitor on first byte if needed, then feeds the byte to the
-/// input handler.
-///
-/// # Arguments
-/// * `byte` - Byte to process (from serial port)
-///
-/// # Note
-/// Safe to call from IRQ context - uses spin mutex for synchronization.
+/// Queue one byte for deferred monitor processing.
 pub fn push_serial_byte(byte: u8) {
     if !config::ENABLE_KERNEL_MONITOR {
         return;
@@ -206,15 +163,7 @@ impl Drop for InterruptGuard {
     }
 }
 
-/// Start the monitor loop
-///
-/// Parks the CPU in an infinite loop waiting for serial input.
-/// Used when you want the system to drop into interactive monitor mode
-/// instead of continuing normal execution.
-///
-/// # Note
-/// This function never returns. The CPU will hlt waiting for interrupts
-/// (serial IRQ will wake it up to process commands).
+/// Enter the dedicated monitor loop and never return.
 pub fn start_monitor() -> ! {
     init();
     loop {
@@ -223,22 +172,20 @@ pub fn start_monitor() -> ! {
     }
 }
 
-/// Kernel monitor state
-///
-/// This structure maintains the state for a single monitor session.
+/// State for the shared monitor instance.
 pub(crate) struct Monitor {
-    /// Current input line buffer
+    /// Current input line buffer.
     line_buffer: String,
-    /// Last memory address examined (for continuation)
+    /// Last memory address examined for continuation-style commands.
     pub(crate) last_addr: u64,
-    /// Serial device class for communication
+    /// Serial device class used for monitor output.
     serial_class: DeviceClass,
-    /// Tracks whether the banner/prompt has been shown
+    /// Tracks whether the banner/prompt has already been shown.
     active: bool,
 }
 
 impl Monitor {
-    /// Create a new monitor instance
+    /// Construct a fresh monitor state object.
     pub fn new() -> Self {
         Self {
             line_buffer: String::with_capacity(MAX_LINE),
@@ -271,25 +218,20 @@ impl Monitor {
         }
     }
 
-    /// Write a string to the serial port
+    /// Write a string to the monitor output path.
     pub(crate) fn write(&self, s: &str) {
         self.write_bytes(s.as_bytes());
     }
 
-    /// Write a string followed by newline
+    /// Write a string followed by CRLF.
     pub(crate) fn writeln(&self, s: &str) {
         self.write(s);
         self.write("\r\n");
     }
 
-    /// Handle incoming character from serial port
+    /// Handle one incoming monitor character.
     ///
-    /// Implements a simple line editor with basic terminal control:
-    /// - Printable chars: Added to buffer and echoed
-    /// - Enter: Process command and clear buffer
-    /// - Backspace/DEL: Remove last character
-    /// - Ctrl+C: Cancel current line
-    /// - Ctrl+L: Clear screen
+    /// This is a small line editor with basic terminal control for monitor input.
     fn handle_char(&mut self, ch: u8) {
         self.activate();
 

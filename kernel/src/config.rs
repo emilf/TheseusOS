@@ -1,8 +1,31 @@
-//! Kernel configuration constants
+//! Module: config
 //!
-//! Centralized configuration for kernel behavior and debug toggles. Other
-//! modules should import these values from `theseus_kernel::config` to keep
-//! configuration in a single place.
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A1:-Kernel-logging-is-initialized-at-kernel-entry-and-is-designed-to-work-without-heap-allocation
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//!
+//! INVARIANTS:
+//! - This module is the centralized home for current kernel behavior/debug toggles.
+//! - Config values here shape runtime behavior, but they do not override architectural truth documented in axioms/plans.
+//! - Defaults should bias toward high-signal bring-up rather than maximum logspam or speculative feature enablement.
+//!
+//! SAFETY:
+//! - A configuration flag can make behavior louder, slower, or more invasive; it does not make an unsafe subsystem magically safe.
+//! - Comments here must stay aligned with actual consumers or config toggles become lying documentation.
+//!
+//! PROGRESS:
+//! - docs/plans/observability.md
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! Centralized kernel configuration constants.
+//!
+//! This module gathers the current behavior/debug toggles in one place.
 
 /// When `true` enable verbose kernel debug output (many debug traces).
 ///
@@ -10,8 +33,8 @@
 /// iterating with AI tooling.
 pub const VERBOSE_KERNEL_OUTPUT: bool = false;
 
-/// When `true` the kernel will idle (keep running) after initialization.
-/// When `false` the kernel will exit QEMU immediately (useful for CI).
+/// When `true`, keep the kernel idling after initialization.
+/// When `false`, exit QEMU instead (useful for CI-style runs).
 pub const KERNEL_SHOULD_IDLE: bool = true;
 
 /// When `true`, dump the UEFI hardware inventory entries during driver init.
@@ -76,10 +99,9 @@ use crate::logging::{LogLevel, OutputTarget};
 /// monitor (`loglevel ...`) or by changing this constant when doing deep bring-up.
 pub const DEFAULT_LOG_LEVEL: LogLevel = LogLevel::Info;
 
-/// Per-module log level overrides
+/// Per-module log level overrides.
 ///
-/// Add entries here to set specific log levels for different modules.
-/// Format: ("module::path", LogLevel::Level)
+/// Each entry is `(module_path, LogLevel)`.
 pub const MODULE_LOG_LEVELS: &[(&str, LogLevel)] = &[
     // Example overrides:
     // ("kernel::memory", LogLevel::Debug),
@@ -87,17 +109,17 @@ pub const MODULE_LOG_LEVELS: &[(&str, LogLevel)] = &[
     // ("kernel::environment", LogLevel::Info),
 ];
 
-/// Output target for ERROR level logs
+/// Output target for ERROR logs.
 pub const LOG_OUTPUT_ERROR: OutputTarget = OutputTarget::Both;
 
-/// Output target for WARN level logs
+/// Output target for WARN logs.
 pub const LOG_OUTPUT_WARN: OutputTarget = OutputTarget::Both;
 
-/// Output target for INFO level logs
+/// Output target for INFO logs.
 pub const LOG_OUTPUT_INFO: OutputTarget = OutputTarget::QemuDebug;
 
-/// Output target for DEBUG level logs
+/// Output target for DEBUG logs.
 pub const LOG_OUTPUT_DEBUG: OutputTarget = OutputTarget::QemuDebug;
 
-/// Output target for TRACE level logs
+/// Output target for TRACE logs.
 pub const LOG_OUTPUT_TRACE: OutputTarget = OutputTarget::QemuDebug;

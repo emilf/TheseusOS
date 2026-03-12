@@ -1,3 +1,27 @@
+//! Module: bootloader::hardware
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/drivers-and-io.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//!
+//! INVARIANTS:
+//! - This module builds the boot-time hardware inventory recorded in the handoff.
+//! - The inventory is one discovery input for later kernel driver/platform logic, not a full replacement for runtime enumeration.
+//! - Inventory storage is intentionally kept alive across the boot-services transition.
+//!
+//! SAFETY:
+//! - Firmware-discovered device-path data and generated summaries are advisory boot-time data and must not be mistaken for validated runtime ownership.
+//! - Static inventory storage here exists to survive the handoff boundary; that convenience should not be confused with general safe shared mutability.
+//!
+//! PROGRESS:
+//! - docs/plans/boot-flow.md
+//! - docs/plans/drivers-and-io.md
+//!
+//! Boot-time hardware inventory collection.
+
 extern crate alloc;
 
 use crate::drivers::manager::write_line;
@@ -29,27 +53,26 @@ struct ClassifiedDevice {
     summary: String,
 }
 
-/// Static storage for hardware device inventory data.
+/// Static storage for boot-time hardware inventory data.
 ///
-/// This storage keeps the device array alive across UEFI boot services exit,
-/// allowing the kernel to safely access the hardware inventory data after
-/// the bootloader has completed execution.
+/// This keeps the boxed device array alive across the boot-services transition so
+/// the handoff can point at stable inventory data.
 ///
 /// # Safety
-/// This is safe to use in the UEFI bootloader context because:
-/// - It is only written to during single-threaded UEFI boot process
-/// - No concurrent access occurs during bootloader execution
-/// - The kernel receives a copy via the handoff structure and doesn't modify this original
+///
+/// This relies on the bootloader's intended single-threaded execution model and on
+/// the repo's current handoff design, which treats this inventory as boot-time input
+/// rather than shared mutable runtime state.
 static mut INVENTORY_STORAGE: Option<Box<[HardwareDevice]>> = None;
 
-/// Hardware inventory structure containing metadata about discovered devices.
+/// Metadata describing the bootloader's discovered hardware inventory.
 ///
-/// This structure is used internally by the bootloader to track the hardware
-/// inventory before it's passed to the kernel via the handoff structure.
+/// This is the compact handoff-facing summary of the boxed device array prepared by
+/// the bootloader.
 ///
 /// # Layout
-/// The structure is marked `#[repr(C)]` to ensure stable layout for
-/// handoff to the kernel.
+///
+/// `#[repr(C)]` keeps the layout stable for the handoff boundary.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HardwareInventory {
@@ -61,50 +84,11 @@ pub struct HardwareInventory {
     pub total_size: u64,
 }
 
-/// Collect hardware inventory using UEFI device paths.
+/// Collect boot-time hardware inventory using UEFI device paths.
 ///
-/// This function discovers all UEFI handles that support the DevicePath protocol,
-/// analyzes their device paths to classify device types, and creates a persistent
-/// inventory that survives boot services exit.
-///
-/// # Arguments
-/// * `verbose` - Whether to print detailed device information during discovery
-///
-/// # Returns
-/// * `Some(HardwareInventory)` - Successfully collected inventory with metadata
-/// * `None` - Failed to discover devices or create inventory
-///
-/// # Process
-/// 1. Locate all UEFI handles supporting DevicePath protocol
-/// 2. For each handle, open the DevicePath protocol and analyze the path
-/// 3. Classify the device based on device path node types
-/// 4. Generate human-readable device descriptions when possible
-/// 5. Store devices in a boxed slice and leak it to static storage
-/// 6. Return inventory metadata for handoff to kernel
-///
-/// # Device Classification
-/// Devices are classified by walking their UEFI device paths and mapping
-/// node types to standardized device categories:
-/// - PCI devices: `DeviceType::HARDWARE + DeviceSubType::HARDWARE_PCI`
-/// - USB devices: `DeviceType::MESSAGING + DeviceSubType::MESSAGING_USB`
-/// - SATA devices: `DeviceType::MESSAGING + DeviceSubType::MESSAGING_SATA`
-/// - ACPI devices: `DeviceType::ACPI + any subtype`
-/// - And many more mappings defined in `classify_device()`
-///
-/// # Memory Management
-/// The function uses a memory leak strategy to keep device data alive:
-/// ```rust
-/// let boxed_devices = devices.into_boxed_slice();
-/// unsafe {
-///     INVENTORY_STORAGE = Some(boxed_devices);
-/// }
-/// ```
-/// This ensures the device array remains valid even after boot services exit.
-///
-/// # Limitations
-/// - Limited to `hardware::MAX_HARDWARE_DEVICES` (1000) devices to prevent hangs
-/// - Depends on UEFI `DevicePathToText` protocol for human-readable descriptions
-/// - Some device types may remain unclassified if their paths aren't recognized
+/// This is intentionally an inventory snapshot, not a claim that bootloader-side
+/// firmware discovery has replaced the kernel's own later runtime enumeration.
+/// Device classification remains heuristic and path-shape-driven.
 pub fn collect_hardware_inventory(verbose: bool) -> Option<HardwareInventory> {
     write_line("Collecting hardware inventory using device paths...");
 
@@ -226,59 +210,15 @@ pub fn collect_hardware_inventory(verbose: bool) -> Option<HardwareInventory> {
     Some(inventory)
 }
 
-/// Classify a UEFI device handle based on its device path.
+/// Classify one UEFI handle from its device path.
 ///
-/// This function analyzes the device path of a UEFI handle to determine its
-/// device type and generate a human-readable description. It walks through
-/// all nodes in the device path and maps them to standardized device categories.
+/// This walks the path, derives a coarse `HardwareDevice` category, and tries to
+/// attach the best human-readable summary available. If the UEFI `DevicePathToText`
+/// protocol is present, it wins; otherwise the summary falls back to node-shaped
+/// descriptions assembled locally.
 ///
-/// # Arguments
-/// * `handle` - The UEFI handle to classify
-/// * `device_path_to_text` - Optional DevicePathToText protocol for human-readable descriptions
-///
-/// # Returns
-/// A tuple containing:
-/// * `u32` - The device type constant (e.g., `DEVICE_TYPE_PCI`, `DEVICE_TYPE_USB`)
-/// * `String` - Human-readable description of the device
-///
-/// # Device Path Analysis
-/// The function iterates through each node in the device path and maps
-/// (DeviceType, DeviceSubType) combinations to device categories:
-///
-/// ```rust
-/// match (node.device_type(), node.sub_type()) {
-///     (DeviceType::HARDWARE, DeviceSubType::HARDWARE_PCI) => DEVICE_TYPE_PCI,
-///     (DeviceType::MESSAGING, DeviceSubType::MESSAGING_USB) => DEVICE_TYPE_USB,
-///     (DeviceType::MESSAGING, DeviceSubType::MESSAGING_SATA) => DEVICE_TYPE_SATA,
-///     (DeviceType::ACPI, _) => DEVICE_TYPE_ACPI,
-///     // ... many more mappings
-/// }
-/// ```
-///
-/// # Description Generation
-/// The function attempts to generate human-readable descriptions in two ways:
-/// 1. **UEFI Text Protocol**: If `DevicePathToText` is available, use UEFI's
-///    built-in device path to text conversion for the most accurate descriptions
-/// 2. **Node-based Fallback**: If the protocol isn't available, build descriptions
-///    from individual node types (e.g., "hardware/pci -> messaging/usb")
-///
-/// # Classification Priority
-/// When multiple device types are found in a single path, the function uses
-/// the last non-unknown type encountered, giving priority to more specific
-/// device types over generic ones.
-///
-/// # Supported Device Types
-/// The function recognizes and classifies many UEFI device path node types:
-/// - **Hardware**: PCI, controllers, vendor-specific hardware
-/// - **Messaging**: USB, SATA, NVMe, network interfaces, serial ports
-/// - **Media**: Hard drives, CD-ROMs, file paths, RAM disks
-/// - **ACPI**: ACPI device nodes and expanded ACPI nodes
-/// - **End nodes**: Instance and entire path terminators
-///
-/// # Limitations
-/// - Some exotic or vendor-specific device types may remain unclassified
-/// - Device paths with unrecognized node types are marked as `DEVICE_TYPE_UNKNOWN`
-/// - The function doesn't extract detailed device information (IDs, capabilities, etc.)
+/// The result is intentionally heuristic. It is good enough for boot-time inventory
+/// and debugging, not a replacement for richer runtime driver enumeration.
 fn classify_device(
     handle: &uefi::Handle,
     device_path_to_text: Option<&DevicePathToText>,
@@ -564,36 +504,10 @@ fn decode_eisa_id(raw: u32) -> Option<String> {
     ))
 }
 
-/// Display hardware inventory in a formatted table.
+/// Pretty-print the collected hardware inventory summary.
 ///
-/// This function provides a human-readable summary of the collected hardware
-/// inventory, including device counts, memory usage, and device type summaries.
-///
-/// # Arguments
-/// * `inventory` - The hardware inventory to display
-///
-/// # Output Format
-/// The function creates a bordered table showing:
-/// - Total number of devices discovered
-/// - Memory usage (in bytes and KB)
-/// - Device array pointer address
-/// - Summary of device types found
-///
-/// # Example Output
-/// ```
-/// ┌─────────────────────────────────────────────────────────┐
-/// │                Hardware Device Inventory               │
-/// ├─────────────────────────────────────────────────────────┤
-/// │ Total Devices Found: 22                              │
-/// │ Inventory Size: 704 bytes (0.69 KB)                  │
-/// │ Devices Pointer: 0x000000003EAB9018                  │
-/// ├─────────────────────────────────────────────────────────┤
-/// │ Device Type Summary:                                  │
-/// │   Device Path Handles: Found                         │
-/// │   Human-Readable Paths: Available                     │
-/// │   Protocol Support: DevicePathToText                  │
-/// └─────────────────────────────────────────────────────────┘
-/// ```
+/// This is presentation glue around the already-built inventory metadata; it is not
+/// part of the handoff contract itself.
 pub fn display_hardware_inventory(inventory: &HardwareInventory) {
     write_line("");
     write_line("┌─────────────────────────────────────────────────────────┐");
@@ -642,29 +556,13 @@ pub fn display_hardware_inventory(inventory: &HardwareInventory) {
     write_line("");
 }
 
-/// Get the device path information for the currently loaded EFI image.
+/// Retrieve device-path metadata for the currently loaded EFI image.
 ///
-/// This function retrieves the device path of the EFI image that's currently
-/// being executed (i.e., the bootloader itself). This is useful for understanding
-/// where the bootloader was loaded from and can be used for debugging or
-/// configuration purposes.
-///
-/// # Returns
-/// * `Some((u64, u32))` - Tuple containing (path_pointer, path_size)
-/// * `None` - Failed to retrieve device path
-///
-/// # Process
-/// 1. Get the current image handle from UEFI
-/// 2. Open the LoadedImage protocol on that handle
-/// 3. Retrieve the device path from the loaded image
-/// 4. Return the pointer and size (size may be 0 if not easily determinable)
-///
-/// # Limitations
-/// - The path size is often 0 because UEFI DevicePath doesn't expose length easily
-/// - The returned pointer is only valid while boot services are active
-/// - This information is primarily useful for debugging and logging
+/// This is a best-effort boot-time helper for logging/handoff context. The returned
+/// pointer is only meaningful while the firmware-side environment is still valid, and
+/// the size often remains `0` because UEFI device paths do not expose length cleanly.
 pub fn get_loaded_image_device_path() -> Option<(u64, u32)> {
-    write_line("Getting loaded image device path...");
+    write_line("Collecting loaded image device path...");
 
     let image_handle = uefi::boot::image_handle();
 
@@ -677,12 +575,11 @@ pub fn get_loaded_image_device_path() -> Option<(u64, u32)> {
         }
     };
 
-    // Get the device path
     let device_path = loaded_image.file_path();
 
     if let Some(path) = device_path {
-        // For now, we'll just store the pointer without trying to get size
-        // The DevicePath doesn't expose len() and as_ptr() methods directly
+        // Store the pointer and leave size at 0; the UEFI device-path abstraction does
+        // not expose cheap exact sizing here.
         let path_ptr = core::ptr::addr_of!(*path) as *const u8 as usize as u64;
         let path_size = 0; // We can't easily get the size without more complex parsing
 

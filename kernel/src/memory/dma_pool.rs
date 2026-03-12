@@ -1,38 +1,29 @@
+//! Module: memory::dma_pool
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/memory.md
+//! - docs/plans/drivers-and-io.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/memory.md#A4:-The-persistent-physical-allocator-is-initialized-from-the-UEFI-memory-map-after-the-permanent-heap-exists
+//! - docs/axioms/memory.md#A2:-Physical-memory-is-accessed-through-a-fixed-PHYS_OFFSET-linear-mapping-after-paging-is-active
+//!
+//! INVARIANTS:
+//! - This module provides a fixed-size DMA block pool carved from larger `DmaBuffer` slabs.
+//! - Pool blocks inherit the cache policy and physical-contiguity guarantees of their parent slabs.
+//! - Allocation/free behavior is pool-local reuse, not arbitrary runtime compaction.
+//!
+//! SAFETY:
+//! - Returning a block to the pool must only happen once the device is done touching it; automatic pool reuse does not protect against in-flight DMA misuse.
+//! - Pool ergonomics do not relax the underlying DMA lifetime/alignment/cache-policy requirements of the slab allocator.
+//!
+//! PROGRESS:
+//! - docs/plans/memory.md
+//! - docs/plans/drivers-and-io.md
+//!
 //! Fixed-size DMA buffer pool backed by `DmaBuffer` slabs.
 //!
 //! This module provides a memory pool allocator specifically designed for DMA operations.
-//! It allocates large slabs of contiguous DMA memory and carves them into fixed-size
-//! blocks, providing efficient allocation and deallocation of DMA buffers.
-//!
-//! ## Design Philosophy
-//!
-//! The pool is designed to minimize fragmentation and allocation overhead:
-//! - **Slab-based**: Allocates large contiguous slabs and subdivides them
-//! - **Fixed-size blocks**: All blocks in a pool are the same size
-//! - **Fast allocation**: O(1) allocation from a free list
-//! - **Automatic cleanup**: Blocks are automatically returned to the pool when dropped
-//!
-//! ## Use Cases
-//!
-//! This pool is ideal for:
-//! - Network packet buffers
-//! - Storage I/O buffers
-//! - Device descriptor rings
-//! - Any scenario requiring many small, fixed-size DMA buffers
-//!
-//! ## Example Usage
-//!
-//! ```rust,no_run
-//! // Create a pool for 1KB blocks
-//! let mut pool = DmaPool::new(1024, CachePolicy::WriteBack);
-//!
-//! // Allocate a block
-//! let block = pool.allocate()?;
-//! let phys_addr = block.phys_addr();
-//! let size = block.len();
-//!
-//! // Block is automatically returned to pool when dropped
-//! ```
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;

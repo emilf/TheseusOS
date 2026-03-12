@@ -1,4 +1,26 @@
-//! Device enumeration command
+//! Module: monitor::commands::devices
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//! - docs/plans/drivers-and-io.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//!
+//! INVARIANTS:
+//! - This module implements monitor commands for inspecting the current driver-manager device view.
+//! - Device listings reflect the live registered-device/resource state rather than a cached design document.
+//!
+//! SAFETY:
+//! - Device/resource output is observational and can lag or mislead if the underlying runtime state is already corrupted.
+//! - Friendly formatting here must not obscure the fact that driver/resource data can include raw addresses and privileged hardware details.
+//!
+//! PROGRESS:
+//! - docs/plans/observability.md
+//! - docs/plans/drivers-and-io.md
+//!
+//! Device enumeration command.
 //!
 //! This module implements the `devices` command for listing registered hardware devices.
 

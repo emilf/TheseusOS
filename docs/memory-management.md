@@ -1,9 +1,9 @@
 # Memory Management
 
-TheseusOS spends a large portion of its boot bringing up a predictable virtual memory layout. The `kernel::memory` module owns that responsibility and exposes a set of helpers that other subsystems can rely on when they need to look at physical memory, map device MMIO, or zero frames safely. This page explains the architecture, highlights the key data structures, and provides concrete examples of how to use the APIs from elsewhere in the kernel.
+TheseusOS spends a large portion of boot bringing up a predictable virtual memory layout. The `kernel::memory` module owns that responsibility and exposes helpers other subsystems use to inspect physical memory, map device MMIO, or zero frames safely. This page explains the current architecture, highlights the key data structures, and shows how other kernel code is expected to use the mapping/allocation APIs.
 
 - New to the boot flow? Start with [Kernel Architecture](kernel-architecture.md) for the timeline that surrounds these calls.
-- Want to dive into historical design notes? See `docs/archive/memory_manager_review.md`.
+- Want historical design notes? See `docs/archive/memory_manager_review.md`, but treat it as background rather than current authority.
 
 ## Architecture Overview
 
@@ -23,7 +23,7 @@ The memory subsystem is deliberately split into three phases that mirror the boo
    - `physical_memory::init_from_handoff` turns the firmware memory map into the long-lived bitmap allocator.
    - Identity mappings are optionally torn down to catch stale low-half pointers.
 
-All of the helpers discussed below live in `kernel/src/memory.rs` unless otherwise noted.
+Most helpers discussed below live in `kernel/src/memory.rs` unless otherwise noted.
 
 ## Virtual Address Layout
 

@@ -1,3 +1,26 @@
+//! Module: memory::mapping
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/memory.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/memory.md#A1:-The-kernel-executes-from-a-higher-half-virtual-base
+//! - docs/axioms/memory.md#A2:-Physical-memory-is-accessed-through-a-fixed-PHYS_OFFSET-linear-mapping-after-paging-is-active
+//! - docs/axioms/memory.md#A3:-The-boot-path-keeps-a-temporary-heap-before-switching-to-a-permanent-kernel-heap
+//!
+//! INVARIANTS:
+//! - This module owns the low-level policies for installing page-table mappings used during bring-up.
+//! - Identity, higher-half kernel, PHYS_OFFSET, framebuffer, MMIO, and temporary-heap mappings all flow through helpers here.
+//! - Mapping helpers are generic over `FrameSource` so both boot-time and runtime frame sources can participate where appropriate.
+//!
+//! SAFETY:
+//! - Mapping helpers mutate live page tables and therefore must be used with the correct alignment, size, and flag assumptions for each region.
+//! - Huge-page vs 4 KiB mapping choices are architectural decisions here, not cosmetic optimizations.
+//! - Guard/padding behavior around kernel-image mappings must track the actual boot/runtime contract instead of drifting into undocumented folklore.
+//!
+//! PROGRESS:
+//! - docs/plans/memory.md
+//!
 //! Mapping helpers moved out of `memory.rs` to isolate page-table construction
 //! and mapping policies.
 
@@ -48,10 +71,7 @@ fn kernel_mapping_extents(
     })
 }
 
-/// Identity-map a low physical memory range using 2 MiB pages.
-///
-/// This is used during early boot so that low-VA virtual accesses still find
-/// expected physical frames while the higher-half mappings are established.
+/// Identity-map a low physical memory range using 2 MiB pages.
 pub unsafe fn identity_map_range_2mb_alloc<F: FrameSource>(
     pml4: &mut PageTable,
     fa: &mut F,

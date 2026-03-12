@@ -1,18 +1,20 @@
 # Hardware & Drivers
 
-TheseusOS front-loads hardware discovery in the bootloader and then hands a curated inventory to the kernel. The kernel layers interrupts, device enumeration, and the driver framework on top of that handoff. This page explains how the pieces fit together and how to write your own driver.
+TheseusOS front-loads hardware discovery in the bootloader and then hands a curated inventory to the kernel. The kernel layers interrupts, device enumeration, and the driver framework on top of that handoff. This page explains how those pieces fit together and how to write your own driver.
+
+This page is a narrative guide. For binding repo truth, prefer `docs/plans/drivers-and-io.md` plus the relevant axiom pages.
 
 - New to paging and address space setup? See [Memory Management](memory-management.md).
 - Looking for run/debug tips? Jump to [Development & Debugging](development-and-debugging.md).
 
 ## Architecture Snapshot
 
-1. **Bootloader inventory** — UEFI services enumerate graphics, firmware, ACPI, PCI/handle devices, and serial ports. Everything is serialized into `handoff.hardware_*`.
+1. **Bootloader inventory** — UEFI services enumerate graphics, firmware, ACPI, hardware inventory entries, and boot-time platform data. Treat this as one discovery input, not as the complete story for later runtime PCI/USB state.
 2. **Driver system init** — `drivers::system::init()` validates ACPI, registers built-in drivers (serial), and turns inventory entries into `Device` descriptors.
 3. **Driver manager** — Maintains registries of drivers and devices, handles probing, and dispatches interrupts/I/O to the proper driver.
 4. **Monitor & tooling** — The serial monitor and logging stack sit on top of the driver framework for inspection and control.
 
-The design favors clarity over features: no hot removal yet, synchronous I/O paths, and first-driver-wins binding.
+The current design favors clarity over features: no hot removal yet, synchronous I/O paths, and first-driver-wins binding.
 
 ## Bootloader Hardware Inventory
 
@@ -135,7 +137,7 @@ pub fn register() {
 
 Tips:
 - Allocate runtime state on the heap and leak it deliberately; the driver manager stores raw pointers in `driver_data`.
-- For memory-mapped I/O, convert physical addresses using `phys_to_virt_pa`.
+- For memory-mapped I/O, convert physical addresses using `phys_to_virt_pa` once the documented mapping transition is complete.
 - Use `physical_memory::PersistentFrameAllocator` if the driver needs to map new regions (`map_range_with_policy`).
 
 ### Device Registration Flow
@@ -178,4 +180,4 @@ When a device arrives (via firmware inventory or runtime discovery):
 
 - Dive into the paging story and MMIO mapping helpers in [Memory Management](memory-management.md).
 - For step-by-step runtime workflows (building, QEMU, GDB, monitor), read [Development & Debugging](development-and-debugging.md).
-- Historical design notes for drivers live in `docs/archive/` (e.g., `serial-driver.md`, `DRIVERS_MVP.md`).
+- Historical design notes for drivers live in `docs/archive/` (for example `serial-driver.md` and `DRIVERS_MVP.md`).

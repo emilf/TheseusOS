@@ -1,39 +1,33 @@
-//! Interrupt handling subsystem
+//! Module: interrupts
 //!
-//! This module provides comprehensive interrupt management for the x86-64 kernel:
+//! SOURCE OF TRUTH:
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/observability.md
 //!
-//! ## Core Components
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/arch-x86_64.md#A1:-The-kernel-is-x86_64-no_std-code-using-the-x86-interrupt-ABI
+//! - docs/axioms/arch-x86_64.md#A2:-GDT/TSS-setup-provides-dedicated-IST-stacks-for-critical-faults
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
 //!
-//! - **IDT Setup**: Initialize and load the Interrupt Descriptor Table
-//! - **Exception Handlers**: CPU exceptions (page faults, general protection, etc.)
-//! - **Hardware Interrupts**: APIC timer, serial port, spurious interrupts
-//! - **APIC Management**: Local APIC configuration and control
-//! - **Timer Control**: LAPIC timer for periodic interrupts
-//! - **Debug Utilities**: IDT/GDT inspection tools
+//! INVARIANTS:
+//! - This module owns IDT setup, exception/interrupt handler registration, APIC-facing vectors, and shared interrupt-time state used during bring-up.
+//! - Hardware interrupt delivery is APIC-based in the current kernel path, with the documented timer/serial/xHCI vectors layered on top.
+//! - Debug and monitor tooling may inspect interrupt state, but the source of truth for vector behavior remains the live IDT/APIC code here.
 //!
-//! ## Module Organization
+//! SAFETY:
+//! - Interrupt state changes here are system-wide and ordering-sensitive: descriptor tables, APIC state, and handler installation must agree before interrupts are enabled.
+//! - Raw MMIO and privileged-instruction usage in submodules require valid mappings, valid IST/GDT state, and correct vector ownership assumptions.
+//! - Comments that overclaim “everything is masked” or otherwise simplify architectural interrupt behavior are dangerous and should be treated as bugs.
 //!
-//! - `handlers`: Exception and interrupt handler implementations
-//! - `apic`: APIC configuration, MMIO access, interrupt disabling
-//! - `timer`: LAPIC timer setup and control
-//! - `debug`: Debugging utilities (IDT/GDT printing, QEMU debug port)
+//! PROGRESS:
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/observability.md
 //!
-//! ## Interrupt Vectors
+//! Interrupt handling subsystem.
 //!
-//! - 0-31: CPU exceptions (reserved by Intel)
-//! - 0x40 (64): APIC timer interrupt
-//! - 0x41 (65): Serial RX interrupt (COM1, IRQ 4)
-//! - 0xFE (254): APIC error interrupt
-//! - 0xFF (255): Spurious interrupt vector
-//!
-//! ## Safety
-//!
-//! Most functions in this module are `unsafe` because they:
-//! - Modify system-wide interrupt state
-//! - Access hardware registers (APIC MMIO)
-//! - Execute privileged instructions (CLI, STI, LIDT, etc.)
-//!
-//! Callers must ensure the system is in an appropriate state for these operations.
+//! This module owns IDT setup, exception/interrupt handler installation, APIC
+//! integration, timer support, and interrupt-oriented debug helpers.
 
 // Submodules
 mod apic;
@@ -69,16 +63,16 @@ use x86_64::structures::idt::InterruptDescriptorTable;
 // Public Constants
 // ============================================================================
 
-/// APIC timer interrupt vector number
+/// APIC timer interrupt vector number.
 pub const APIC_TIMER_VECTOR: u8 = 0x40; // 64
 
-/// Serial RX interrupt vector number  
+/// Serial RX interrupt vector number.
 pub const SERIAL_RX_VECTOR: u8 = APIC_TIMER_VECTOR + 1; // 65
 
 /// Default MSI vector assigned to xHCI controllers.
 pub const XHCI_MSI_VECTOR: u8 = 0x50;
 
-/// APIC error interrupt vector
+/// APIC error interrupt vector.
 const APIC_ERROR_VECTOR: u8 = 0xFE; // 254
 
 // ============================================================================
@@ -88,34 +82,24 @@ const APIC_ERROR_VECTOR: u8 = 0xFE; // 254
 /// Interrupt Descriptor Table (initialized once via SpinOnce)
 static IDT_X86: SpinOnce<InterruptDescriptorTable> = SpinOnce::new();
 
-/// Global timer tick counter
+/// Global timer tick counter.
 ///
 /// Incremented by the APIC timer interrupt handler on every tick.
-/// Used for timing, delays, and animation.
 pub static TIMER_TICKS: AtomicU32 = AtomicU32::new(0);
 
-/// Double fault context (captured before double fault occurs)
-///
-/// When a double fault happens, this contains saved state from the
-/// fault that led to the double fault.
+/// Double-fault context captured before the fault escalates.
 pub static mut DOUBLE_FAULT_CONTEXT: Option<DoubleFaultContext> = None;
 
-/// Global handoff pointer for timer interrupt access
+/// Global handoff pointer used by the timer path for framebuffer animation access.
 ///
-/// The timer interrupt handler uses this to access framebuffer info
-/// for heart animation updates.
-///
-/// # TODO: Remove this and get framebuffer via driver subsystem
+/// This is still transitional plumbing rather than the final long-term interface.
 static mut HANDOFF_FOR_TIMER: Option<&'static theseus_shared::handoff::Handoff> = None;
 
 // ============================================================================
 // Public Data Structures
 // ============================================================================
 
-/// Context information for double fault debugging
-///
-/// Contains register state and stack snapshot from when a fault occurred
-/// that led to a double fault.
+/// Best-effort context captured for double-fault debugging.
 #[derive(Copy, Clone)]
 pub struct DoubleFaultContext {
     /// Instruction pointer where fault occurred
@@ -129,7 +113,7 @@ pub struct DoubleFaultContext {
 }
 
 impl DoubleFaultContext {
-    /// Create a new double fault context
+    /// Construct a double-fault context value.
     pub const fn new(rip: u64, cr2: u64, rsp: u64, stack: [u64; 6]) -> Self {
         Self {
             rip,
@@ -140,10 +124,7 @@ impl DoubleFaultContext {
     }
 }
 
-/// IDT entry structure (for debugging with SIDT)
-///
-/// Represents a single 16-byte entry in the IDT.
-/// Used by debug utilities to inspect the IDT.
+/// Packed IDT entry layout used by the debug helpers.
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
 struct IdtEntry {
@@ -191,46 +172,11 @@ pub fn set_double_fault_context(rip: u64, cr2: u64, rsp: u64, stack: [u64; 6]) {
     }
 }
 
-/// Set up the Interrupt Descriptor Table
+/// Build and load the runtime IDT.
 ///
-/// Creates and loads the IDT with handlers for all critical exceptions and
-/// hardware interrupts. Sets up IST (Interrupt Stack Table) indices for
-/// critical handlers that need dedicated stacks.
-///
-/// # Handlers Installed
-///
-/// **Exceptions (using IST stacks)**:
-/// - Vector 2 (NMI): Non-maskable interrupt
-/// - Vector 8 (DF): Double fault
-/// - Vector 14 (PF): Page fault
-/// - Vector 18 (MC): Machine check
-///
-/// **Exceptions (using main stack)**:
-/// - Vector 0 (DE): Divide error
-/// - Vector 3 (BP): Breakpoint
-/// - Vector 6 (UD): Invalid opcode
-/// - Vector 13 (GP): General protection fault
-///
-/// **Hardware Interrupts**:
-/// - Vector 0x40 (64): APIC timer
-/// - Vector 0x41 (65): Serial RX (COM1)
-/// - Vector 0xFE (254): APIC error
-/// - Vector 0xFF (255): Spurious interrupt
-///
-/// # Safety
-/// - Should be called during kernel initialization
-/// - Must be called before enabling interrupts
-/// - IDT must remain valid for the lifetime of the kernel
-/// - IST stacks must be properly configured in TSS before calling
-///
-/// # Examples
-/// ```rust
-/// unsafe {
-///     setup_gdt();          // Set up GDT and TSS with IST stacks
-///     setup_idt();          // Set up IDT with exception handlers
-///     enable_interrupts();  // Enable IF flag
-/// }
-/// ```
+/// The current IDT installs the documented exception handlers plus the APIC timer,
+/// serial RX, xHCI MSI, spurious, and APIC-error vectors. Critical faults are wired
+/// to dedicated IST stacks supplied by the GDT/TSS path.
 pub unsafe fn setup_idt() {
     let idt = IDT_X86.call_once(|| {
         let mut idt = InterruptDescriptorTable::new();
@@ -276,17 +222,7 @@ pub unsafe fn setup_idt() {
     idt.load();
 }
 
-/// Validate basic IDT setup
-///
-/// Performs sanity checks on the IDT to ensure it's properly configured.
-/// Checks that key exception handlers are installed.
-///
-/// # Returns
-/// * `true` - IDT appears valid
-/// * `false` - IDT has issues
-///
-/// # Safety
-/// Uses SIDT to read IDT base, then inspects entries.
+/// Perform a small sanity check on the loaded IDT.
 pub unsafe fn validate_idt_basic() -> bool {
     use x86_64::instructions::tables::sidt;
     let idtr = sidt();
@@ -314,57 +250,28 @@ pub unsafe fn validate_idt_basic() -> bool {
     true
 }
 
-/// Trigger a breakpoint exception
-///
-/// Executes INT3 instruction to trigger vector 3 (breakpoint).
-/// Useful for testing exception handling.
-///
-/// # Examples
-/// ```rust
-/// trigger_breakpoint();  // Will invoke BP handler
-/// ```
+/// Trigger a breakpoint exception with `int3`.
 pub fn trigger_breakpoint() {
     unsafe {
         core::arch::asm!("int3");
     }
 }
 
-/// Check if interrupts are enabled
-///
-/// Reads the IF (Interrupt Flag) from RFLAGS.
-///
-/// # Returns
-/// * `true` - Interrupts enabled (IF=1)
-/// * `false` - Interrupts disabled (IF=0)
+/// Check whether the CPU interrupt flag is currently enabled.
 pub fn interrupts_enabled() -> bool {
     use x86_64::registers::rflags::{self, RFlags};
     rflags::read().contains(RFlags::INTERRUPT_FLAG)
 }
 
-/// Set handoff pointer for timer interrupt handler
+/// Set the transitional handoff pointer used by the timer handler.
 ///
-/// The timer handler needs access to the handoff structure to update
-/// the heart animation framebuffer.
-///
-/// # Arguments
-/// * `handoff` - Static reference to handoff structure
-///
-/// # Safety
-/// - Handoff reference must be valid for 'static lifetime
-/// - Should only be called once during initialization
-///
-/// # TODO: Remove this and get framebuffer via driver subsystem
+/// This exists only because the timer-driven framebuffer animation still reaches
+/// through handoff data instead of a more final subsystem boundary.
 pub unsafe fn set_handoff_for_timer(handoff: &'static theseus_shared::handoff::Handoff) {
     HANDOFF_FOR_TIMER = Some(handoff);
 }
 
-/// Get handoff pointer for timer interrupt handler
-///
-/// # Returns
-/// * `Some(&Handoff)` - Handoff is available
-/// * `None` - Handoff not yet set
-///
-/// # TODO: Remove this and get framebuffer via driver subsystem
+/// Get the transitional handoff pointer used by the timer handler.
 pub unsafe fn get_handoff_for_timer() -> Option<&'static theseus_shared::handoff::Handoff> {
     HANDOFF_FOR_TIMER
 }

@@ -1,35 +1,31 @@
-//! Persistent physical memory manager.
+//! Module: physical_memory
 //!
-//! During early boot we rely on `BootFrameAllocator`, which simply walks the
-//! UEFI memory map and hands out frames monotonically. Once paging is active and
-//! the kernel heap exists we need a reclaimable allocator that can both hand out
-//! and free frames for the remainder of the kernel's lifetime. This module owns
-//! that allocator. At the moment the APIs are implemented but callers still need
-//! to switch from the boot-time allocator—future work will wire that up.
+//! SOURCE OF TRUTH:
+//! - docs/plans/memory.md
+//! - docs/plans/drivers-and-io.md
 //!
-//! # Architecture
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/memory.md#A2:-Physical-memory-is-accessed-through-a-fixed-PHYS_OFFSET-linear-mapping-after-paging-is-active
+//! - docs/axioms/memory.md#A4:-The-persistent-physical-allocator-is-initialized-from-the-UEFI-memory-map-after-the-permanent-heap-exists
 //!
-//! The physical memory manager uses a bitmap-based allocation scheme:
-//! - Each bit represents one physical frame (4 KiB page)
-//! - Bit = 1 means the frame is allocated or reserved
-//! - Bit = 0 means the frame is free
+//! INVARIANTS:
+//! - This module owns the long-lived reclaimable physical frame allocator used after early boot allocator staging ends.
+//! - The allocator’s bitmap is derived from the UEFI memory map and boot-consumed regions recorded during bring-up.
+//! - Runtime frame allocation/freeing semantics depend on this module, not on the one-way boot allocator.
 //!
-//! The allocator tracks all usable memory from the UEFI memory map and reserves
-//! regions that are in use (kernel code, page tables, stacks, etc.). It supports
-//! both allocation and freeing of frames, making it suitable for long-term use.
+//! SAFETY:
+//! - Physical-frame bookkeeping must agree with real consumed regions or later mappings will alias live kernel/device memory.
+//! - Access to memory-map data and bitmap storage assumes the documented mapping transition already happened.
+//! - Any stale comments claiming the runtime never really switches off boot-time allocation would now be misleading, because current code does wire in the persistent allocator path.
 //!
-//! # Initialization
+//! PROGRESS:
+//! - docs/plans/memory.md
+//! - docs/plans/drivers-and-io.md
 //!
-//! Call [`init_from_handoff`] once during early boot after the heap is available.
-//! This will parse the UEFI memory map, construct the bitmap, and mark all
-//! consumed regions as allocated.
+//! Persistent physical-frame allocation.
 //!
-//! # Usage
-//!
-//! - [`alloc_frame`]: Allocate a single physical frame
-//! - [`free_frame`]: Return a frame to the free pool
-//! - [`stats`]: Query allocator statistics
-//! - [`record_boot_consumed_region`]: Mark early-boot allocations as consumed
+//! This module owns the bitmap-backed allocator used after early boot staging,
+//! including initialization from the handoff memory map and reclaimable frame APIs.
 
 use crate::{log_debug, log_error, log_info};
 use alloc::vec::Vec;
@@ -45,17 +41,7 @@ use x86_64::{
 /// Frame size (4 KiB) expressed as `u64`.
 const FRAME_SIZE: u64 = PAGE_SIZE as u64;
 
-/// Physical frame number (PFN) — the index of a 4 KiB physical page.
-///
-/// A PFN is computed by dividing a physical address by the page size (4 KiB).
-/// This allows us to represent physical frames compactly as simple indices,
-/// which is especially useful for bitmap-based allocation schemes.
-///
-/// # Example
-/// ```ignore
-/// let pfn = Pfn::containing(0x1000);  // PFN = 1
-/// assert_eq!(pfn.start_address(), 0x1000);
-/// ```
+/// Physical frame number (PFN), i.e. the index of a 4 KiB physical page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Pfn(u64);
 
@@ -77,10 +63,6 @@ impl Pfn {
 }
 
 /// Memory region descriptor derived from the UEFI memory map.
-///
-/// Each region represents a contiguous range of physical memory with a
-/// specific type (free or reserved). During initialization, we parse the
-/// UEFI memory map into a collection of these regions.
 #[derive(Debug, Clone)]
 struct Region {
     /// Starting PFN of this region (inclusive).
@@ -91,7 +73,7 @@ struct Region {
     kind: RegionKind,
 }
 
-/// Type of memory region.
+/// Kind of memory region tracked during initialization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RegionKind {
     /// Free memory available for allocation (UEFI conventional memory).
@@ -100,7 +82,7 @@ enum RegionKind {
     Reserved,
 }
 
-/// Errors that can occur during physical memory allocation or deallocation.
+/// Errors returned by physical-frame allocation or deallocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllocError {
     /// No free frames available.
@@ -495,34 +477,11 @@ where
     f(slice)
 }
 
-/// Initialises the persistent allocator using the UEFI memory map plus any
-/// pre-consumed regions (page tables, stacks, etc.).
+/// Initialise the persistent allocator from the handoff memory map.
 ///
-/// This function should be called once during early boot after the kernel heap
-/// is available. It parses the UEFI memory map, constructs a bitmap covering
-/// all usable memory, and marks all consumed regions as allocated.
-///
-/// # Parameters
-/// - `handoff`: Boot handoff structure containing UEFI memory map information
-/// - `consumed`: Array of memory regions already consumed (kernel, page tables, etc.)
-/// - `bitmap_alloc`: Callback to allocate bitmap storage (typically from the heap)
-///
-/// # Errors
-/// - [`AllocError::UnknownFrame`] if already initialized
-/// - [`AllocError::NoMemoryMap`] if the UEFI memory map is missing
-/// - [`AllocError::OutOfMemory`] if no free regions are found
-///
-/// # Example
-/// ```ignore
-/// let consumed = vec![
-///     consumed(kernel_start, kernel_size),
-///     consumed(page_table_addr, page_table_size),
-/// ];
-/// init_from_handoff(&handoff, &consumed, |words| {
-///     // Allocate bitmap from heap
-///     vec![0u64; words].leak()
-/// })?;
-/// ```
+/// The allocator is built after the kernel heap exists. It treats reserved
+/// firmware regions, boot-consumed regions, and any explicit `consumed`
+/// entries as already allocated.
 pub fn init_from_handoff<F>(
     handoff: &Handoff,
     consumed: &[ConsumedRegion],
@@ -609,18 +568,7 @@ fn reserve_boot_consumed(manager: &mut PhysicalMemoryManager) {
     }
 }
 
-/// Merges overlapping or adjacent consumed regions to reduce fragmentation.
-///
-/// This function sorts the regions by start address and then merges any
-/// that overlap or are adjacent. This is useful for reducing the number
-/// of reservation operations during initialization.
-///
-/// # Parameters
-/// - `regions`: Mutable slice of consumed regions to merge in-place
-/// - `len`: Number of valid entries in `regions`
-///
-/// # Returns
-/// A new `Vec` containing the merged regions (non-overlapping and sorted).
+/// Merge overlapping or adjacent consumed regions before reservation.
 fn merge_regions_in_place(regions: &mut [ConsumedRegion], len: usize) -> Vec<ConsumedRegion> {
     // Collect non-empty regions into a vector
     let mut entries: Vec<ConsumedRegion> = regions

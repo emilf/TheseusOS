@@ -1,23 +1,33 @@
-//! Exception and interrupt handlers
+//! Module: interrupts::handlers
 //!
-//! This module contains all the x86-interrupt handlers for exceptions and hardware interrupts:
-//! - **Exception handlers**: DE, BP, UD, GP, PF, DF, NMI, MC
-//! - **Hardware interrupts**: APIC timer, serial RX, spurious
+//! SOURCE OF TRUTH:
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/observability.md
 //!
-//! ## Handler Responsibilities
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/arch-x86_64.md#A1:-The-kernel-is-x86_64-no_std-code-using-the-x86-interrupt-ABI
+//! - docs/axioms/arch-x86_64.md#A2:-GDT/TSS-setup-provides-dedicated-IST-stacks-for-critical-faults
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//! - docs/axioms/debug.md#A2:-Panic-handling-reports-failure-through-kernel-logging-and-exits-QEMU-with-error-status
 //!
-//! Each handler must:
-//! 1. Acknowledge the interrupt (EOI for APIC interrupts)
-//! 2. Perform minimal processing
-//! 3. Return quickly to avoid blocking other interrupts
+//! INVARIANTS:
+//! - This module contains the concrete exception and hardware-interrupt handlers installed into the IDT.
+//! - Critical fault handlers rely on dedicated IST stacks configured by the GDT/TSS path.
+//! - Hardware interrupt handlers are expected to perform bounded work and cooperate with the APIC/monitor/driver subsystems.
 //!
-//! ## IST (Interrupt Stack Table)
+//! SAFETY:
+//! - Handler code executes under interrupt/exception constraints and must not casually assume normal runtime context or allocator availability.
+//! - Debug-printing inside fatal handlers is best-effort diagnostic behavior, not a substitute for coherent interrupt-state management.
+//! - EOI behavior and side effects must stay aligned with APIC ownership rules or handler success/failure reporting becomes misleading.
 //!
-//! Critical handlers use dedicated stacks via IST to prevent stack corruption:
-//! - Page Fault (PF): IST stack to handle faults during stack operations
-//! - Double Fault (DF): IST stack to recover from stack overflow
-//! - NMI: IST stack for non-maskable interrupts
-//! - Machine Check (MC): IST stack for hardware errors
+//! PROGRESS:
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/observability.md
+//!
+//! Exception and hardware-interrupt handlers.
+//!
+//! This module contains the concrete `extern "x86-interrupt"` handlers installed
+//! into the current kernel IDT.
 
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
@@ -28,7 +38,7 @@ use super::{DOUBLE_FAULT_CONTEXT, TIMER_TICKS};
 // Import helper functions from parent module
 use super::get_handoff_for_timer;
 use super::{get_apic_base, write_apic_register};
-use super::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9}; // # TODO: Remove this and get framebuffer via driver subsystem
+use super::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9};
 use crate::drivers::usb;
 use crate::log_trace;
 use core::sync::atomic::AtomicBool;
@@ -37,14 +47,7 @@ use core::sync::atomic::AtomicBool;
 // Exception Handlers
 // ============================================================================
 
-/// Divide Error (#DE, Vector 0) handler
-///
-/// Triggered when:
-/// - Division by zero
-/// - Division overflow (quotient too large for destination)
-///
-/// # Behavior
-/// Prints "DE" and halts the system. This is a fatal error.
+/// Divide-error (`#DE`, vector 0) handler.
 pub(super) extern "x86-interrupt" fn handler_de(_stack: InterruptStackFrame) {
     unsafe {
         print_str_0xe9("DE\n");
@@ -54,13 +57,7 @@ pub(super) extern "x86-interrupt" fn handler_de(_stack: InterruptStackFrame) {
     }
 }
 
-/// Breakpoint (#BP, Vector 3) handler
-///
-/// Triggered by INT3 instruction, commonly used by debuggers.
-///
-/// # Behavior
-/// Prints "BP" and halts. In a full debugger implementation, this would
-/// pause execution and allow inspection of state.
+/// Breakpoint (`#BP`, vector 3) handler.
 pub(super) extern "x86-interrupt" fn handler_bp(_stack: InterruptStackFrame) {
     unsafe {
         print_str_0xe9("BP\n");
@@ -70,17 +67,7 @@ pub(super) extern "x86-interrupt" fn handler_bp(_stack: InterruptStackFrame) {
     }
 }
 
-/// Invalid Opcode (#UD, Vector 6) handler
-///
-/// Triggered when the CPU encounters an instruction it doesn't recognize.
-///
-/// Common causes:
-/// - Executing data as code
-/// - Using unsupported CPU instructions
-/// - Corrupted code segment
-///
-/// # Behavior
-/// Prints instruction pointer, code segment, and RFLAGS, then exits QEMU.
+/// Invalid-opcode (`#UD`, vector 6) handler.
 pub(super) extern "x86-interrupt" fn handler_ud(stack: InterruptStackFrame) {
     unsafe {
         print_str_0xe9("UD RIP=");
@@ -97,17 +84,7 @@ pub(super) extern "x86-interrupt" fn handler_ud(stack: InterruptStackFrame) {
     }
 }
 
-/// General Protection Fault (#GP, Vector 13) handler
-///
-/// Triggered by various protection violations:
-/// - Accessing a null selector
-/// - Executing privileged instructions in user mode
-/// - Writing to a read-only segment
-/// - Accessing beyond segment limit
-///
-/// # Behavior
-/// Prints error code, RIP, CS, RFLAGS, task register, instruction bytes at RIP,
-/// and top of stack for debugging. Then exits QEMU.
+/// General-protection-fault (`#GP`, vector 13) handler.
 pub(super) extern "x86-interrupt" fn handler_gp(stack: InterruptStackFrame, code: u64) {
     unsafe {
         print_str_0xe9("GP EC=");
@@ -147,23 +124,10 @@ pub(super) extern "x86-interrupt" fn handler_gp(stack: InterruptStackFrame, code
     }
 }
 
-/// Page Fault (#PF, Vector 14) handler
+/// Page-fault (`#PF`, vector 14) handler.
 ///
-/// Triggered when:
-/// - Accessing a non-present page (P=0)
-/// - Page protection violation (write to read-only, user accessing kernel, etc.)
-/// - Instruction fetch from no-execute page
-///
-/// # Error Code Bits
-/// - Bit 0 (P): 0=non-present page, 1=protection violation
-/// - Bit 1 (W/R): 0=read, 1=write
-/// - Bit 2 (U/S): 0=supervisor, 1=user mode
-/// - Bit 3 (RSVD): 1=reserved bit violation
-/// - Bit 4 (I/D): 1=instruction fetch
-///
-/// # Behavior
-/// Prints CR2 (faulting address), error code, RIP, and stack, then halts.
-/// Uses IST stack to prevent recursive faults during stack access.
+/// This prints the fault address, error code, and a small stack snapshot before
+/// halting on the dedicated IST stack.
 pub(super) extern "x86-interrupt" fn handler_pf(
     stack: InterruptStackFrame,
     code: PageFaultErrorCode,
@@ -200,22 +164,9 @@ pub(super) extern "x86-interrupt" fn handler_pf(
     }
 }
 
-/// Double Fault (#DF, Vector 8) handler
+/// Double-fault (`#DF`, vector 8) handler.
 ///
-/// Triggered when an exception occurs while handling another exception.
-/// This is a critical error indicating severe system instability.
-///
-/// Common causes:
-/// - Stack overflow (exception during exception handler on corrupted stack)
-/// - Missing exception handler
-/// - Invalid TSS or IST configuration
-///
-/// # Behavior
-/// Prints saved context (if available) and exits. Uses dedicated IST stack
-/// to ensure we can handle the fault even if the main stack is corrupted.
-///
-/// # Note
-/// This handler never returns (`!`) - double faults are unrecoverable.
+/// This prints the saved pre-fault context when available and then exits.
 pub(super) extern "x86-interrupt" fn handler_df(_stack: InterruptStackFrame, _code: u64) -> ! {
     unsafe {
         print_str_0xe9("DF at");
@@ -244,15 +195,7 @@ pub(super) extern "x86-interrupt" fn handler_df(_stack: InterruptStackFrame, _co
     }
 }
 
-/// Non-Maskable Interrupt (NMI, Vector 2) handler
-///
-/// NMI cannot be disabled by CLI and is used for critical hardware events:
-/// - Memory parity errors
-/// - Hardware watchdog timeouts
-/// - Debug/profiling interrupts
-///
-/// # Behavior
-/// Prints "NMI", exits QEMU, and halts. Uses IST stack for safety.
+/// Non-maskable interrupt (NMI, vector 2) handler.
 pub(super) extern "x86-interrupt" fn handler_nmi(_stack: InterruptStackFrame) {
     unsafe {
         print_str_0xe9("NMI\n");
@@ -263,17 +206,7 @@ pub(super) extern "x86-interrupt" fn handler_nmi(_stack: InterruptStackFrame) {
     }
 }
 
-/// Machine Check (#MC, Vector 18) handler
-///
-/// Triggered by severe hardware errors detected by the CPU:
-/// - CPU internal errors
-/// - Bus errors
-/// - Cache errors
-/// - TLB errors
-///
-/// # Behavior
-/// Prints "MC", exits QEMU, and halts. This is a fatal hardware error.
-/// Uses IST stack. Never returns.
+/// Machine-check (`#MC`, vector 18) handler.
 pub(super) extern "x86-interrupt" fn handler_mc(_stack: InterruptStackFrame) -> ! {
     unsafe {
         print_str_0xe9("MC\n");
@@ -288,18 +221,7 @@ pub(super) extern "x86-interrupt" fn handler_mc(_stack: InterruptStackFrame) -> 
 // Hardware Interrupt Handlers
 // ============================================================================
 
-/// APIC Timer interrupt handler (Vector 0x40)
-///
-/// Called periodically when the Local APIC timer fires.
-///
-/// # Responsibilities
-/// 1. Send EOI (End of Interrupt) to LAPIC
-/// 2. Increment global tick counter
-/// 3. Update heart animation framebuffer (if handoff available)
-///
-/// # Performance
-/// This runs frequently (e.g., 100Hz), so it must be fast.
-/// All work should be minimal and non-blocking.
+/// APIC timer interrupt handler (vector `0x40`).
 pub(super) extern "x86-interrupt" fn handler_timer(_stack: InterruptStackFrame) {
     // Acknowledge LAPIC EOI first to avoid stuck-in-service
     unsafe {
@@ -310,8 +232,7 @@ pub(super) extern "x86-interrupt" fn handler_timer(_stack: InterruptStackFrame) 
     // Record the tick atomically
     TIMER_TICKS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-    // Update heart animation if handoff is available
-    // # TODO: Update this to get framebuffer via driver subsystem
+    // Update the simple framebuffer animation if the transitional handoff pointer is available.
     unsafe {
         if let Some(handoff) = get_handoff_for_timer() {
             crate::framebuffer::update_heart_animation(handoff);
@@ -319,18 +240,7 @@ pub(super) extern "x86-interrupt" fn handler_timer(_stack: InterruptStackFrame) 
     }
 }
 
-/// Serial RX interrupt handler (Vector 0x41)
-///
-/// Called when data arrives on the COM1 serial port (IRQ 4).
-///
-/// # Responsibilities
-/// 1. Delegate to the driver manager to handle the IRQ
-/// 2. Send EOI to LAPIC
-/// 3. Log if no driver handled the interrupt
-///
-/// # Note
-/// The actual serial processing is done by the serial driver,
-/// not directly in this handler.
+/// Serial RX interrupt handler (vector `0x41`).
 pub(super) extern "x86-interrupt" fn handler_serial_rx(_stack: InterruptStackFrame) {
     let mut handled = false;
 
@@ -354,11 +264,7 @@ pub(super) extern "x86-interrupt" fn handler_serial_rx(_stack: InterruptStackFra
     }
 }
 
-/// xHCI MSI interrupt handler (Vector 0x50)
-///
-/// This handler services message-signalled interrupts delivered by xHCI host controllers.
-/// It clears the LAPIC in-service state and forwards processing to the USB driver so
-/// controller completions are drained promptly.
+/// xHCI MSI interrupt handler (vector `0x50`).
 pub(super) extern "x86-interrupt" fn handler_usb_xhci(_stack: InterruptStackFrame) {
     unsafe {
         let apic_base = get_apic_base();
@@ -376,16 +282,7 @@ pub(super) extern "x86-interrupt" fn handler_usb_xhci(_stack: InterruptStackFram
     usb::service_runtime_interrupt();
 }
 
-/// Spurious interrupt handler (Vector 0xFF and APIC error vector 0xFE)
-///
-/// Spurious interrupts can occur due to:
-/// - APIC hardware race conditions
-/// - Interrupt masking timing
-/// - External interrupt controller issues
-///
-/// # Behavior
-/// Logs the spurious interrupt and returns immediately.
-/// Does NOT send EOI (spurious interrupts don't require acknowledgment).
+/// Spurious interrupt handler (vector `0xFF` and APIC error vector `0xFE`).
 pub(super) extern "x86-interrupt" fn handler_spurious(_stack: InterruptStackFrame) {
     // Log spurious interrupt entry for debugging nested/extra interrupts
     unsafe {

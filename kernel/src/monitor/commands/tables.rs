@@ -1,9 +1,32 @@
-//! Table inspection commands (IDT, GDT, memory map)
+//! Module: monitor::commands::tables
 //!
-//! This module implements commands for inspecting system tables:
-//! - `idt`: Display Interrupt Descriptor Table
-//! - `gdt`: Display Global Descriptor Table
-//! - `mmap`: Display UEFI memory map
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/memory.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//! - docs/axioms/arch-x86_64.md#A2:-GDT/TSS-setup-provides-dedicated-IST-stacks-for-critical-faults
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//!
+//! INVARIANTS:
+//! - This module implements monitor commands for inspecting descriptor tables and the boot/runtime memory-map view.
+//! - Table inspection reflects the live machine state and handoff-derived structures currently visible to the kernel.
+//!
+//! SAFETY:
+//! - Descriptor-table and memory-map dumps are diagnostic snapshots, not proofs that the surrounding runtime is healthy.
+//! - Large table dumps should stay bounded/readable enough to remain useful over a serial monitor.
+//!
+//! PROGRESS:
+//! - docs/plans/observability.md
+//! - docs/plans/interrupts-and-platform.md
+//! - docs/plans/memory.md
+//!
+//! Table inspection commands (IDT, GDT, memory map).
+//!
+//! This module implements commands for inspecting system tables such as the
+//! IDT, GDT, and boot/runtime memory map.
 
 use crate::monitor::parsing::parse_number;
 use crate::monitor::Monitor;
@@ -117,7 +140,10 @@ impl Monitor {
         ));
     }
 
-    /// Display GDT information
+    /// Display GDT information.
+    ///
+    /// This is a live descriptor-table snapshot for debugging, not proof that the
+    /// surrounding segment/TSS/IST state is healthy just because the entries decode cleanly.
     ///
     /// Shows entries from the Global Descriptor Table (GDT), including:
     /// - GDTR base and limit

@@ -2,7 +2,7 @@
 
 TheseusOS includes a small Rust CLI tool to **generate** and **run** the QEMU command-line in a reproducible way.
 
-It is intended to replace (or eventually supersede) `startQemu.sh` once we’ve reached feature parity and added profiles.
+It is the preferred current path for running QEMU reproducibly, even though `startQemu.sh` still exists as older convenience glue.
 
 ## Why a Rust runner?
 
@@ -54,7 +54,7 @@ Notes:
 
 ## Profiles
 
-Current profiles (early days):
+Current profiles:
 - `default`: mirrors `startQemu.sh` device defaults (q35, nvme, root ports, xhci, virtio-gpu, virtio-net)
 - `min`: minimal bring-up (no GPU/USB/NIC)
 - `usb-kbd`: xHCI + usb keyboard
@@ -141,7 +141,7 @@ cargo run -p theseus-qemu -- artifact --out build/qemu-argv.json
 
 ## Relationship with `startQemu.sh`
 
-Right now `startQemu.sh` remains the historical reference implementation.
+`startQemu.sh` remains useful historical/convenience glue, but the Rust runner is the preferred current path.
 
 As of the `feat/theseus-qemu-parity` work, the Rust runner supports several of the practical conveniences from `startQemu.sh`:
 - **Build-before-run** (default): runs `make all` before launching QEMU. Disable with `--no-build`.
@@ -154,7 +154,7 @@ The runner still focuses on:
 - profile selection
 - explicit socket toggles
 
-Next steps for parity:
+Known gaps / likely next steps:
 - richer profiles (net/storage variants)
 - optional log cleanup and artifact capture
 - first-class QMP/HMP helpers (later skills will consume these)

@@ -7,12 +7,14 @@ TheseusOS is a teaching-focused x86_64 operating system written in Rust. The cod
 - **OS theory in practice** — paging, interrupts, drivers, and kernel services that align with classic textbook material.
 - **x86_64 familiarity** — concrete exposure to control registers, APIC programming, model specific registers, and UEFI firmware.
 
-## Current Capabilities (October 2025)
+## Current Capabilities
 - UEFI bootloader that gathers graphics, ACPI, CPU, firmware, and memory map data before calling `kernel_entry`.
-- Higher-half kernel that installs its own GDT/IDT, enables LAPIC timer interrupts, and manages logging, drivers, and memory.
+- Higher-half kernel that installs its own GDT/IDT, brings up LAPIC timer interrupts, and manages logging, drivers, and memory.
 - Deterministic virtual memory layout with a `PHYS_OFFSET` window, kernel heap bootstrap, and MMIO mappings.
 - Serial-first tooling: unified logging, COM1 interrupt handler, and an interactive Wozmon-inspired monitor.
-- QEMU-friendly workflows with automated build scripts, debug pipes, and `isa-debug-exit` signalling for test automation.
+- QEMU-friendly workflows with `theseus-qemu` as the preferred current path, while some older helper scripts and debug plumbing still remain in-repo.
+
+> For binding architectural truth, prefer `docs/axioms/` and `docs/plans/` over this narrative overview.
 
 ## Suggested Learning Path
 1. Read the [Boot Sequence & Handoff](boot-sequence.md) guide to understand how the UEFI phase gathers information.
@@ -20,4 +22,4 @@ TheseusOS is a teaching-focused x86_64 operating system written in Rust. The cod
 3. Deep dive into [Memory Management](memory-management.md) to understand paging and frame allocation.
 4. Explore [Hardware & Drivers](hardware-and-drivers.md) and [Development & Debugging](development-and-debugging.md) when you are ready to experiment.
 
-Throughout the documentation you will find cross-links that let you jump between related topics—treat the pages like a wiki.
+The docs are cross-linked like a wiki, but prefer the axioms/plans split whenever a narrative page sounds smoother than the code really is.

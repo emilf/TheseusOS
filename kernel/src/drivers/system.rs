@@ -1,8 +1,31 @@
-//! High-level driver system initialization
+//! Module: drivers::system
 //!
-//! This module glues together ACPI discovery and the driver manager. It is
-//! responsible for initializing ACPI, enumerating platform devices, and feeding
-//! them into the manager so that concrete drivers can bind.
+//! SOURCE OF TRUTH:
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/arch-x86_64.md#A3:-Interrupt-delivery-is-APIC-based-during-kernel-bring-up-with-legacy-PIC-masked
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//!
+//! INVARIANTS:
+//! - This module is the bridge from discovered platform state into the runtime driver manager.
+//! - ACPI/platform discovery, PCI enumeration, USB handoff, and driver registration are sequenced here during bring-up.
+//! - The module may seed the monitor and serial/USB-facing drivers, but it is not itself the long-term owner of device-specific runtime state.
+//!
+//! SAFETY:
+//! - Handoff-derived inventory and ACPI-derived resource descriptions are inputs to validation and classification, not blind guarantees that a device is safe to program.
+//! - Driver registration and device insertion happen under the manager’s synchronization rules; avoid expanding this path with long-running work while locks are held.
+//! - Platform-to-driver translation must preserve IRQ/MMIO/resource identity accurately or downstream drivers will program the wrong hardware.
+//!
+//! PROGRESS:
+//! - docs/plans/drivers-and-io.md
+//! - docs/plans/interrupts-and-platform.md
+//!
+//! High-level driver system initialization.
+//!
+//! This module glues together ACPI discovery, PCI enumeration, firmware inventory processing,
+//! USB ownership handoff, and driver-manager seeding so concrete drivers can bind.
 
 use alloc::format;
 use alloc::vec::Vec;
@@ -24,33 +47,8 @@ pub type DriverResult<T> = Result<T, &'static str>;
 
 /// Initialize the driver system using information from the handoff.
 ///
-/// This is the main entry point for driver system initialization. It performs
-/// the following steps:
-///
-/// 1. **ACPI Initialization**: Parse ACPI tables and discover platform devices
-/// 2. **Hardware Inventory**: Process UEFI hardware inventory if available
-/// 3. **PCI Enumeration**: Scan PCI buses and discover PCI devices
-/// 4. **Device Registration**: Register all discovered devices with the driver manager
-/// 5. **Monitor Initialization**: Start the kernel monitor if enabled
-///
-/// # Arguments
-/// None (uses global handoff information)
-///
-/// # Returns
-/// * `Ok(PlatformInfo)` - Successfully initialized with platform information
-/// * `Err(&'static str)` - Initialization failed with error message
-///
-/// # Error Handling
-/// The function will return an error if any critical step fails:
-/// - ACPI initialization failure
-/// - Hardware inventory parsing errors
-/// - PCI enumeration problems
-///
-/// # Example
-/// ```rust,no_run
-/// let platform_info = drivers::system::init()?;
-/// log_info!("Found {} PCI devices", platform_info.pci_bridges.len());
-/// ```
+/// This sequences ACPI discovery, firmware inventory import, PCI enumeration,
+/// USB handoff/registration, and monitor bring-up.
 pub fn init() -> DriverResult<PlatformInfo> {
     log_debug!("Initializing driver system");
 

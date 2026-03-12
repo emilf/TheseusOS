@@ -1,7 +1,26 @@
-//! System information collection module
+//! Module: bootloader::system_info
 //!
-//! This module provides functions to collect various system information
-//! during UEFI boot, including firmware, boot time, and CPU information.
+//! SOURCE OF TRUTH:
+//! - docs/plans/boot-flow.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/boot.md#A2:-Boot-Services-are-exited-before-kernel-entry
+//!
+//! INVARIANTS:
+//! - This module collects firmware/boot-time/system context for the handoff while boot services are still available.
+//! - The gathered data is boot-time context for the kernel, not a guarantee that identical services remain available later.
+//!
+//! SAFETY:
+//! - Firmware/runtime-service queries here are only valid in the intended UEFI phase.
+//! - Placeholder or best-effort collection paths should not be over-documented into sounding more complete than they really are.
+//!
+//! PROGRESS:
+//! - docs/plans/boot-flow.md
+//!
+//! Boot-time system-information collection helpers.
+//!
+//! This module gathers firmware, boot-time, boot-device, and conservative CPU
+//! context while UEFI services are still available.
 
 // TODO: Re-enable when ACPI parsing is fixed
 // use acpi::AcpiTables;
@@ -12,20 +31,7 @@ use uefi::table;
 
 // Device tree support removed (x86-only build)
 
-/// Collect firmware information
-///
-/// This function gathers information about the UEFI firmware, including
-/// vendor string and revision information.
-///
-/// # Returns
-///
-/// * `Some((u64, u32, u32))` - Tuple of (vendor_ptr, vendor_len, revision) if available
-/// * `None` - If firmware information is not available
-///
-/// # Note
-///
-/// This is currently a placeholder implementation. Firmware information
-/// collection needs to be implemented using UEFI system table access.
+/// Collect basic firmware identity information from the live UEFI system table.
 pub fn collect_firmware_info() -> Option<(u64, u32, u32)> {
     let system_table = match table::system_table_raw() {
         Some(st) => st,
@@ -57,22 +63,10 @@ pub fn collect_firmware_info() -> Option<(u64, u32, u32)> {
     Some((vendor_ptr, len_chars, revision))
 }
 
-/// Collect boot time information
-///
-/// This function gathers information about when the boot process started,
-/// including timestamp and timing information.
-///
-/// # Returns
-///
-/// * `Some((u64, u32))` - Tuple of (seconds, nanoseconds) if available
-/// * `None` - If boot time information is not available
-///
-/// # Note
-///
-/// This is currently a placeholder implementation. Boot time information
-/// collection needs to be implemented using UEFI runtime services.
+/// Collect a best-effort boot-time snapshot for the handoff.
 pub fn collect_boot_time_info() -> Option<(u64, u32)> {
-    // Use UEFI runtime service get_time(). Convert to UNIX seconds if possible.
+    // Use UEFI runtime-service get_time() and collapse it into a simple UNIX-like
+    // `(seconds, nanos)` snapshot for the handoff.
     let system_table = match table::system_table_raw() {
         Some(st) => st,
         None => return None,
@@ -124,20 +118,7 @@ pub fn collect_boot_time_info() -> Option<(u64, u32)> {
     Some((seconds as u64, nanos))
 }
 
-/// Collect boot device path information
-///
-/// This function gathers information about the device path from which
-/// the current EFI application was booted.
-///
-/// # Returns
-///
-/// * `Some((u64, u32))` - Tuple of (device_path_ptr, device_path_size) if available
-/// * `None` - If boot device path information is not available
-///
-/// # Note
-///
-/// This is currently a placeholder implementation. Boot device path
-/// collection needs to be implemented using the LoadedImage protocol.
+/// Collect boot-device path information for the current EFI image.
 pub fn collect_boot_device_path() -> Option<(u64, u32)> {
     // Prefer using our existing helper in hardware.rs, but implement a local fallback.
     // Try to open LoadedImage and extract file_path pointer.
@@ -154,17 +135,17 @@ pub fn collect_boot_device_path() -> Option<(u64, u32)> {
     }
 }
 
-/// Collect CPU information using ACPI tables (MADT)
+/// Collect CPU information for the handoff.
 ///
-/// Returns (cpu_count, cpu_features, microcode_revision). Features and microcode
-/// are placeholders for now; proper CPUID/MSR probing can be added later.
+/// Returns `(cpu_count, cpu_features, microcode_revision)`. In current repo reality
+/// the latter two fields stay dummy values and the count remains conservative rather
+/// than pretending firmware-side CPU discovery is fully implemented.
 ///
 /// # Note
 ///
-/// ACPI parsing is currently disabled due to stability issues with the `acpi` crate
-/// in the UEFI environment. This function returns hardcoded values until the ACPI
-/// parsing can be properly debugged and fixed.
-/// This function never worked, so the commented code would even work if it wouldnt crash.
+/// This remains intentionally conservative. ACPI-driven CPU enumeration is not the
+/// current firmware-side source of truth here, so this helper still returns dummy
+/// values rather than pretending bootloader-side CPU discovery is fully implemented.
 ///
 /// # TODO
 ///
@@ -214,7 +195,7 @@ pub fn collect_cpu_info() -> Option<(u32, u64, u32)> {
     // let microcode_revision: u32 = 0; // Microcode revision reading deferred to kernel
     // Some((count, cpu_features, microcode_revision))
 
-    // Return hardcoded values for now
+    // Return conservative dummy values until bootloader-side CPU discovery grows up.
     // CPU count: 1 (single-core assumption for QEMU)
     // CPU features: 0 (handled in kernel)
     // Microcode revision: 0 (handled in kernel)

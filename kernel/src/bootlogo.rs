@@ -1,3 +1,24 @@
+//! Module: bootlogo
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/observability.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/debug.md#A3:-The-runtime-monitor-is-a-first-class-inspection-surface
+//!
+//! INVARIANTS:
+//! - This module contains static pixel data for the boot logo asset used by the current framebuffer-side visual path.
+//! - The asset is data, not a separate rendering policy or architecture document.
+//!
+//! SAFETY:
+//! - Large embedded assets here affect binary size and memory footprint but should not hide runtime logic.
+//! - Consumers still own the correctness of pixel-format interpretation and framebuffer writes.
+//!
+//! PROGRESS:
+//! - docs/plans/observability.md
+//!
+//! Embedded boot-logo pixel asset.
+
 pub const BOOT_LOGO_ARRAY: [[u32; 256]; 256] = [
     [
         0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000,

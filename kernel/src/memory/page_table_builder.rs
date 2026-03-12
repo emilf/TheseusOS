@@ -1,8 +1,27 @@
-//! PageTableBuilder: batch mapping helper that applies a mapping policy
+//! Module: memory::page_table_builder
+//!
+//! SOURCE OF TRUTH:
+//! - docs/plans/memory.md
+//!
+//! DEPENDS ON AXIOMS:
+//! - docs/axioms/memory.md#A1:-The-kernel-executes-from-a-higher-half-virtual-base
+//! - docs/axioms/memory.md#A2:-Physical-memory-is-accessed-through-a-fixed-PHYS_OFFSET-linear-mapping-after-paging-is-active
+//!
+//! INVARIANTS:
+//! - `PageTableBuilder` is a convenience layer over the lower-level mapping helpers, not a separate mapping policy authority.
+//! - Range mapping still follows the centralized policy implemented in `memory::mapping`.
+//!
+//! SAFETY:
+//! - Builder ergonomics do not reduce the safety obligations of page-table mutation, alignment, or mapping correctness.
+//! - Callers must still ensure the VA/PA ranges and flags reflect valid architectural intent.
+//!
+//! PROGRESS:
+//! - docs/plans/memory.md
+//!
+//! PageTableBuilder: batch mapping helper that applies a mapping policy.
 //!
 //! Provides a small builder that lets callers add mapping ranges and applies
-//! a centralized mapping policy (prefers 2MiB huge pages when aligned) which
-//! simplifies higher-level mapping logic.
+//! a centralized mapping policy which simplifies higher-level mapping logic.
 
 use crate::memory::mapping::map_range_with_policy;
 use crate::memory::FrameSource;
