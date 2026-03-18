@@ -17,6 +17,7 @@ Track descriptor-table setup, APIC interrupt routing, timer bring-up, ACPI platf
 - [x] IMPLEMENTED: ACPI parsing records CPU/APIC topology, IO APIC data, and local APIC address into runtime platform structures.
 - [x] IMPLEMENTED: The serial driver programs IOAPIC routing for interrupt-driven receive handling.
 - [x] IMPLEMENTED: The current CPU setup path detects CPUID features once, applies a limited CR0/CR4 setup during bring-up, and enables SSE/AVX state only when the detected feature set and current setup path allow it.
+- [x] IMPLEMENTED: APIC base/mode reporting now comes from `IA32_APIC_BASE`, so the monitor can distinguish x2APIC capability from the current runtime access mode even though mainline interrupt delivery still uses xAPIC-style MMIO.
 
 ## TODO
 

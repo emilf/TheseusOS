@@ -14,7 +14,7 @@ Track logging, panic reporting, runtime inspection, and debugging surfaces.
 - [x] IMPLEMENTED: Kernel logging is initialized at the start of `kernel_entry`.
 - [x] IMPLEMENTED: Logging output is designed to work without heap allocation and remain usable in interrupt and panic contexts.
 - [x] IMPLEMENTED: Panic handling logs failure details and exits QEMU with an error status.
-- [x] IMPLEMENTED: The kernel monitor exposes live inspection for tables, memory, ACPI, CPU state, devices, and log-output routing.
+- [x] IMPLEMENTED: The kernel monitor exposes live inspection for tables, memory, ACPI, CPU state, devices, APIC mode/base state, and log-output routing.
 - [x] IMPLEMENTED: Monitor input handling stays split between cheap IRQ-fed serial byte queuing and later command processing in monitor context.
 - [x] IMPLEMENTED: The development workflow uses QEMU debug output and serial as first-class observability channels.
 - [x] IMPLEMENTED: Bootloader-side output selection currently prefers the QEMU debug-port path for normal development/test runs, with firmware serial and raw UART support treated as fallback observability helpers.

@@ -68,6 +68,16 @@ impl Monitor {
             self.writeln("  physical memory:    persistent allocator not initialised");
         }
 
+        let apic = unsafe { crate::interrupts::apic_base_info() };
+        self.writeln(&format!(
+            "  apic:               mode={} base={:#x} global={} x2apic={} bsp={}",
+            apic.access_mode().as_str(),
+            apic.phys_base,
+            if apic.global_enabled { "yes" } else { "no" },
+            if apic.x2apic_enabled { "yes" } else { "no" },
+            if apic.bsp { "yes" } else { "no" }
+        ));
+
         if let Some(info) = acpi::cached_platform_info() {
             self.writeln(&format!(
                 "  platform:           cpus={} io_apics={} local_apic={:#x} legacy_pic={}",
