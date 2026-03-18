@@ -34,6 +34,18 @@ cargo run -p theseus-qemu -- --relays --headless
 
 The older `startQemu.sh` script still exists as historical/convenience glue, but the Rust runner is the preferred current run path.
 
+For a self-contained interactive debugging loop that also creates tmux-managed relay endpoints, use:
+
+```bash
+./scripts/tmux-qemu-live.sh
+```
+
+That helper script:
+- creates a `theseus-live` tmux session
+- starts serial / monitor / debugcon / QMP relays with `socat`
+- launches headless QEMU via `theseus-qemu --relays`
+- leaves stable host-side endpoints under `/tmp/qemu-*-host`
+
 ## Debugging with GDB
 - Launch QEMU with `QEMU_OPTS="-S -s"` to pause CPU 0 and listen on TCP 1234.
 - Use the provided script `debug.gdb` as a starting point:

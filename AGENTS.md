@@ -110,6 +110,8 @@ If you move code or change ownership, update the map.
 - Do **not** mix logic changes into purely mechanical doc/header cleanup unless the task explicitly calls for both.
 - Keep narrative docs subordinate to axioms/plans if there is a conflict.
 - Treat `docs/archive/` as historical material, not current authority.
+- Do autonomous work on a **feature branch**, not directly on `main`.
+- Keep `main` stable and reviewable; when a feature or fix is ready, open a PR instead of treating local branch work as implicitly mergeable.
 
 ## 5. Before Writing Code
 
