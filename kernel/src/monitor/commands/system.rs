@@ -33,6 +33,54 @@ use alloc::vec::Vec;
 use core::str;
 
 impl Monitor {
+    /// Display a compact summary of the current live system state.
+    pub(in crate::monitor) fn cmd_status(&self) {
+        let ticks = crate::interrupts::timer_tick_count();
+        let devices = {
+            let mgr = crate::drivers::manager::driver_manager().lock();
+            mgr.devices().len()
+        };
+
+        self.writeln("System status:");
+        self.writeln(&format!(
+            "  timer ticks:        {}",
+            ticks
+        ));
+        self.writeln(&format!(
+            "  kernel monitor:     {}",
+            if crate::config::ENABLE_KERNEL_MONITOR { "enabled" } else { "disabled" }
+        ));
+        self.writeln(&format!(
+            "  idle loop:          {}",
+            if crate::config::KERNEL_SHOULD_IDLE { "enabled" } else { "disabled" }
+        ));
+        self.writeln(&format!("  registered devices: {}", devices));
+
+        if let Some(stats) = physical_memory::stats() {
+            let page_size = memory::PAGE_SIZE as u64;
+            let total_bytes = stats.total_frames.saturating_mul(page_size);
+            let free_bytes = stats.free_frames.saturating_mul(page_size);
+            self.writeln(&format!(
+                "  physical memory:    free {} / total {} frames ({:#X} / {:#X} bytes)",
+                stats.free_frames, stats.total_frames, free_bytes, total_bytes
+            ));
+        } else {
+            self.writeln("  physical memory:    persistent allocator not initialised");
+        }
+
+        if let Some(info) = acpi::cached_platform_info() {
+            self.writeln(&format!(
+                "  platform:           cpus={} io_apics={} local_apic={:#x} legacy_pic={}",
+                info.cpu_count,
+                info.io_apic_count,
+                info.local_apic_address,
+                if info.has_legacy_pic { "yes" } else { "no" }
+            ));
+        } else {
+            self.writeln("  platform:           ACPI/platform cache not initialised");
+        }
+    }
+
     /// Display physical memory manager statistics
     ///
     /// Shows statistics from the persistent physical memory allocator, including:

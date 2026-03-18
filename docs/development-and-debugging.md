@@ -70,7 +70,7 @@ That helper script:
 - Enabled by default via `config::ENABLE_KERNEL_MONITOR`.
 - Access through the COM1 serial line (see QEMU pipe above).
 - Type `help` for an interactive command list. Favorites:
-  - `status` — quick system summary (ticks, heap usage, active drivers).
+  - `status` — quick system summary (timer ticks, monitor/idle state, physical-memory summary, platform info, registered devices).
   - `mem <addr>` — inspect memory.
   - `idt`, `gdt`, `lapic` — inspect descriptor tables and APIC state.
   - `devices`, `drivers` — inspect driver manager registries.

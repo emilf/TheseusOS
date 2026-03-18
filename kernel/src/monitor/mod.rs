@@ -322,6 +322,7 @@ impl Monitor {
         // Command dispatch table
         match parts[0] {
             "help" | "?" => self.cmd_help(),
+            "status" | "stat" => self.cmd_status(),
             "regs" | "r" => self.cmd_registers(),
             "mem" | "m" => self.cmd_memory(&parts[1..]),
             "dump" | "d" => self.cmd_dump(&parts[1..]),
@@ -367,6 +368,7 @@ impl Monitor {
         self.writeln("  ptdump LEVEL [...]  - Dump entries from a page-table level");
         self.writeln("");
         self.writeln("System Inspection:");
+        self.writeln("  status|stat         - Quick system summary");
         self.writeln("  regs|r              - Display CPU registers");
         self.writeln("  stack|bt            - Display stack backtrace");
         self.writeln("  acpi                - Display ACPI information");
