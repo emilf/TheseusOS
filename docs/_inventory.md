@@ -65,8 +65,8 @@ Evidence-only notes about the kernel as it exists on `main`. Every bullet below 
 - SSE is explicitly enabled after the high-half transition. Source: `kernel/src/environment.rs` (`continue_after_stack_switch`, `setup_floating_point`).
 - MSRs are configured after SSE setup. Source: `kernel/src/environment.rs` (`continue_after_stack_switch`, `setup_msrs`).
 - The kernel relies on a GDT + TSS with dedicated IST stacks for double fault, NMI, machine check, and page fault. Source: `kernel/src/gdt.rs` (`TaskStateSegment`, `interrupt_stack_table[...]`, `setup_gdt`, `refresh_tss_ist`).
-- The Local APIC base is read from architectural state and then accessed via MMIO through `PHYS_OFFSET`. Source: `kernel/src/interrupts/apic.rs` (`get_apic_base`, `read_apic_register`, `write_apic_register`).
-- The codebase contains x2APIC detection in monitor tooling but not an x2APIC bring-up path in the main interrupt initialization flow. Source: `kernel/src/monitor/commands/cpu.rs` (`has_x2apic` reporting); no corresponding main-path x2APIC init symbol found in `kernel/src/interrupts/*.rs`.
+- The Local APIC base is read from `IA32_APIC_BASE` and the current runtime access mode (disabled/xAPIC/x2APIC) is decoded from the same MSR, but live register access still uses xAPIC-style MMIO through `PHYS_OFFSET`. Source: `kernel/src/interrupts/apic.rs` (`apic_base_info`, `get_apic_base`, `read_apic_register`, `write_apic_register`).
+- The codebase now distinguishes x2APIC capability from x2APIC enablement in monitor tooling, but it still does not implement a main-path x2APIC bring-up switch. Source: `kernel/src/monitor/commands/cpu.rs` (CPUID feature reporting plus `apic_base_info` output); no corresponding main-path x2APIC init symbol found in `kernel/src/interrupts/*.rs`.
 
 ## Interrupts and exceptions status
 

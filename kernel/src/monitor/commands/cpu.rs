@@ -73,6 +73,14 @@ impl Monitor {
                 fi.model_id(),
                 fi.stepping_id()
             ));
+            let apic = unsafe { crate::interrupts::apic_base_info() };
+            self.writeln(&format!(
+                "  APIC mode: {}  base: {:#x}  global: {}  x2APIC enabled: {}",
+                apic.access_mode().as_str(),
+                apic.phys_base,
+                if apic.global_enabled { "yes" } else { "no" },
+                if apic.x2apic_enabled { "yes" } else { "no" }
+            ));
             self.writeln(&format!(
                 "  APIC ID: {}  Logical CPUs/package: {}",
                 fi.initial_local_apic_id(),

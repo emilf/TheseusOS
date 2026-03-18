@@ -15,7 +15,7 @@
 //! SAFETY:
 //! - APIC register reads/writes are raw MMIO and must only target the mapped LAPIC window.
 //! - Early “disable interrupts” helpers are ordering-sensitive bring-up tools, not magical absolute guarantees about all NMI-class behavior.
-//! - Any future switch away from the fixed LAPIC base assumption must update both code and docs together.
+//! - The current runtime still assumes xAPIC-style MMIO register access even though the LAPIC base now comes from `IA32_APIC_BASE`; future x2APIC enablement must update both code and docs together.
 //!
 //! PROGRESS:
 //! - docs/plans/interrupts-and-platform.md
@@ -27,9 +27,54 @@
 
 use crate::log_trace;
 use x86_64::instructions::port::Port;
+use x86_64::registers::model_specific::Msr;
 
 /// APIC error interrupt vector
 pub(super) const APIC_ERROR_VECTOR: u8 = 0xFE;
+
+const IA32_APIC_BASE_MSR: u32 = 0x1B;
+const IA32_APIC_BASE_BSP_BIT: u64 = 1 << 8;
+const IA32_APIC_BASE_X2APIC_ENABLE_BIT: u64 = 1 << 10;
+const IA32_APIC_BASE_GLOBAL_ENABLE_BIT: u64 = 1 << 11;
+const IA32_APIC_BASE_PHYS_MASK: u64 = 0xFFFF_F000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApicAccessMode {
+    Disabled,
+    XApic,
+    X2Apic,
+}
+
+impl ApicAccessMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ApicAccessMode::Disabled => "disabled",
+            ApicAccessMode::XApic => "xapic",
+            ApicAccessMode::X2Apic => "x2apic",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ApicBaseInfo {
+    pub raw_msr: u64,
+    pub phys_base: u64,
+    pub global_enabled: bool,
+    pub x2apic_enabled: bool,
+    pub bsp: bool,
+}
+
+impl ApicBaseInfo {
+    pub const fn access_mode(self) -> ApicAccessMode {
+        if !self.global_enabled {
+            ApicAccessMode::Disabled
+        } else if self.x2apic_enabled {
+            ApicAccessMode::X2Apic
+        } else {
+            ApicAccessMode::XApic
+        }
+    }
+}
 
 /// Disable the current early-boot interrupt sources.
 ///
@@ -71,17 +116,24 @@ unsafe fn has_apic() -> bool {
     false
 }
 
-/// Return the LAPIC physical base address assumed by the current bring-up path.
+/// Read and decode `IA32_APIC_BASE`.
+pub unsafe fn apic_base_info() -> ApicBaseInfo {
+    let raw = Msr::new(IA32_APIC_BASE_MSR).read();
+    ApicBaseInfo {
+        raw_msr: raw,
+        phys_base: raw & IA32_APIC_BASE_PHYS_MASK,
+        global_enabled: (raw & IA32_APIC_BASE_GLOBAL_ENABLE_BIT) != 0,
+        x2apic_enabled: (raw & IA32_APIC_BASE_X2APIC_ENABLE_BIT) != 0,
+        bsp: (raw & IA32_APIC_BASE_BSP_BIT) != 0,
+    }
+}
+
+/// Return the LAPIC physical base address reported by `IA32_APIC_BASE`.
 ///
-/// Today this is the fixed legacy base `0xFEE0_0000`; the function does not yet
-/// query `IA32_APIC_BASE`.
+/// The current runtime still uses xAPIC/MMIO register access even when CPUID advertises
+/// x2APIC capability; callers that need mode information should inspect [`apic_base_info`].
 pub unsafe fn get_apic_base() -> u64 {
-    // Use standard LAPIC base address
-    // Could be read from IA32_APIC_BASE MSR (0x1B) if needed:
-    // let mut msr = Msr::new(0x1B);
-    // let val = msr.read();
-    // (val & 0xFFFF_F000) as u64
-    0xFEE0_0000u64
+    apic_base_info().phys_base
 }
 
 /// Read a LAPIC register through the `PHYS_OFFSET` mapping.

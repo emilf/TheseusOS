@@ -36,7 +36,10 @@ mod handlers;
 mod timer;
 
 // Re-export commonly used items from submodules
-pub use apic::{disable_all_interrupts, enable_interrupts, get_apic_base, read_apic_register};
+pub use apic::{
+    apic_base_info, disable_all_interrupts, enable_interrupts, get_apic_base, read_apic_register,
+    ApicAccessMode, ApicBaseInfo,
+};
 pub use debug::{print_gdt_summary_basic, print_idt_summary_compact};
 pub use timer::{
     install_timer_vector_runtime, lapic_timer_configure, lapic_timer_mask,
