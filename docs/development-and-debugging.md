@@ -76,6 +76,19 @@ That helper script:
   - `devices`, `drivers` — inspect driver manager registries.
 - Monitor processing is interrupt-driven; the CPU can `hlt` between keystrokes.
 
+### Practical note: talking to the serial monitor from automation
+- Writing commands into the serial PTY is easy: `printf 'status\r' > /tmp/qemu-serial-host`
+- Reading responses back from that same PTY can be awkward/non-deterministic in automation because PTY semantics, relay timing, and already-buffered boot output interact in annoying ways.
+- For ad-hoc human use, the tmux relay workflow is fine.
+- For deterministic command/response capture, prefer a one-off QEMU run with serial on stdio and delay the command until the monitor prompt is ready, e.g.:
+  ```bash
+  (sleep 4; printf 'status\r') | cargo run -p theseus-qemu -- \
+    --headless --profile min --serial stdio \
+    --debugcon-pty /tmp/qemu-debugcon \
+    --no-build --no-qemu-debug --timeout-secs 10
+  ```
+- If another QEMU instance already has `build/disk.img` open, stop that instance first or use a separate disk image/copy.
+
 ## Automated Tests
 - `run_tests.sh` executes host-side Rust tests and any available guest smoke tests. The script ensures the right targets are built first.
 - The crate still carries the `custom_test_frameworks` hook for compatibility, but the current bare-metal test workflow does not rely on trait-object-based runners.
