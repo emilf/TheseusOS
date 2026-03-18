@@ -143,6 +143,7 @@ fn write_qemu_debug(bytes: &[u8]) {
 fn write_serial(bytes: &[u8]) {
     // Try serial driver first (if available)
     if crate::drivers::serial::write_bytes_direct(bytes).is_ok() {
+        crate::monitor::notify_external_serial_output();
         return;
     }
 
@@ -154,6 +155,7 @@ fn write_serial(bytes: &[u8]) {
             port.write(byte);
         }
     }
+    crate::monitor::notify_external_serial_output();
 }
 
 /// Convert a stored `u8` value back into an `OutputTarget`.

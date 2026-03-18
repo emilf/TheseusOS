@@ -172,6 +172,22 @@ pub fn start_monitor() -> ! {
     }
 }
 
+/// Repaint the prompt after non-monitor serial output (for example normal kernel logs)
+/// so interactive monitor sessions stay readable.
+pub fn notify_external_serial_output() {
+    if !config::ENABLE_KERNEL_MONITOR {
+        return;
+    }
+
+    let Some(mut guard) = MONITOR.try_lock() else {
+        return;
+    };
+
+    if let Some(monitor) = guard.as_mut() {
+        monitor.restore_prompt_after_external_output();
+    }
+}
+
 /// State for the shared monitor instance.
 pub(crate) struct Monitor {
     /// Current input line buffer.
@@ -227,6 +243,18 @@ impl Monitor {
     pub(crate) fn writeln(&self, s: &str) {
         self.write(s);
         self.write("\r\n");
+    }
+
+    /// Repaint the prompt and any in-progress line buffer after unrelated serial output.
+    fn restore_prompt_after_external_output(&self) {
+        if !self.active {
+            return;
+        }
+
+        self.write(PROMPT);
+        if !self.line_buffer.is_empty() {
+            self.write(&self.line_buffer);
+        }
     }
 
     /// Handle one incoming monitor character.
