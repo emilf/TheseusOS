@@ -46,6 +46,14 @@ That helper script:
 - launches headless QEMU via `theseus-qemu --relays`
 - leaves stable host-side endpoints under `/tmp/qemu-*-host`
 
+For one-shot QMP control against the host-side relay socket, use:
+
+```bash
+./scripts/qmp-command.py status
+./scripts/qmp-command.py hmp 'info pci'
+./scripts/qmp-command.py reset
+```
+
 ## Debugging with GDB
 - Launch QEMU with `QEMU_OPTS="-S -s"` to pause CPU 0 and listen on TCP 1234.
 - Use the provided script `debug.gdb` as a starting point:

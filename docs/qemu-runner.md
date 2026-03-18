@@ -124,6 +124,18 @@ cargo run -p theseus-qemu -- --qmp /tmp/qemu-qmp.sock
 If you also enable the QMP relay unit, it exposes a stable host socket:
 - `/tmp/qemu-qmp-host.sock` → forwards to `/tmp/qemu-qmp.sock`
 
+The repo also ships a tiny helper for one-shot QMP commands:
+
+```bash
+./scripts/qmp-command.py status
+./scripts/qmp-command.py reset
+./scripts/qmp-command.py quit
+./scripts/qmp-command.py hmp 'info pci'
+./scripts/qmp-command.py cmd query-pci
+```
+
+That helper negotiates QMP capabilities automatically and prints the JSON reply.
+
 ### HMP unix socket (optional)
 
 ```bash
