@@ -655,8 +655,5 @@ unsafe fn program_io_apic_entry(address: u64, pin: u32, vector: u8, destination_
 }
 
 fn current_apic_id() -> u8 {
-    unsafe {
-        let base = interrupts::get_apic_base();
-        (interrupts::read_apic_register(base, 0x20) >> 24) as u8
-    }
+    unsafe { interrupts::local_apic_id() as u8 }
 }

@@ -37,7 +37,7 @@ use super::{DOUBLE_FAULT_CONTEXT, TIMER_TICKS};
 
 // Import helper functions from parent module
 use super::get_handoff_for_timer;
-use super::{get_apic_base, write_apic_register};
+use super::local_apic_eoi;
 use super::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9};
 use crate::drivers::usb;
 use crate::log_trace;
@@ -223,10 +223,9 @@ pub(super) extern "x86-interrupt" fn handler_mc(_stack: InterruptStackFrame) -> 
 
 /// APIC timer interrupt handler (vector `0x40`).
 pub(super) extern "x86-interrupt" fn handler_timer(_stack: InterruptStackFrame) {
-    // Acknowledge LAPIC EOI first to avoid stuck-in-service
+    // Acknowledge LAPIC EOI first to avoid stuck-in-service.
     unsafe {
-        let apic_base = get_apic_base();
-        write_apic_register(apic_base, 0xB0, 0); // Write to EOI register
+        local_apic_eoi();
     }
 
     // Record the tick atomically
@@ -252,8 +251,7 @@ pub(super) extern "x86-interrupt" fn handler_serial_rx(_stack: InterruptStackFra
 
     // Send EOI to LAPIC
     unsafe {
-        let apic_base = get_apic_base();
-        write_apic_register(apic_base, 0xB0, 0);
+        local_apic_eoi();
     }
 
     // Log if interrupt was unhandled (debugging)
@@ -267,8 +265,7 @@ pub(super) extern "x86-interrupt" fn handler_serial_rx(_stack: InterruptStackFra
 /// xHCI MSI interrupt handler (vector `0x50`).
 pub(super) extern "x86-interrupt" fn handler_usb_xhci(_stack: InterruptStackFrame) {
     unsafe {
-        let apic_base = get_apic_base();
-        write_apic_register(apic_base, 0xB0, 0);
+        local_apic_eoi();
     }
 
     static FIRST_XHCI_MSI: AtomicBool = AtomicBool::new(true);

@@ -44,7 +44,7 @@ use crate::config;
 use crate::drivers::manager::driver_manager;
 use crate::drivers::pci;
 use crate::drivers::traits::{Device, DeviceClass, DeviceId, DeviceResource, Driver};
-use crate::interrupts::{get_apic_base, read_apic_register, XHCI_MSI_VECTOR};
+use crate::interrupts::XHCI_MSI_VECTOR;
 use crate::memory::dma::DmaBuffer;
 use crate::memory::{
     current_pml4_phys, map_range_with_policy, phys_to_virt_pa, PageTable, PTE_GLOBAL, PTE_NO_EXEC,
@@ -637,10 +637,7 @@ impl XhciDriver {
     /// Read the local APIC ID of the current processor so MSI/MSI-X targets the
     /// correct destination.
     fn local_apic_id() -> u8 {
-        unsafe {
-            let apic_base = get_apic_base();
-            (read_apic_register(apic_base, 0x20) >> 24) as u8
-        }
+        unsafe { crate::interrupts::local_apic_id() as u8 }
     }
 
     /// Extract the PCI segment/bus/device/function tuple from a device entry.
