@@ -187,6 +187,24 @@ pub unsafe fn local_apic_eoi() {
     write_apic_register(base, 0xB0, 0);
 }
 
+/// Read one Local APIC register through the current runtime access path.
+///
+/// Today this is still xAPIC/MMIO-backed. The helper exists so future x2APIC work can
+/// change one access surface instead of every subsystem re-encoding LAPIC offsets.
+pub unsafe fn local_apic_read(offset: u32) -> u32 {
+    let base = get_apic_base();
+    read_apic_register(base, offset)
+}
+
+/// Write one Local APIC register through the current runtime access path.
+///
+/// Today this is still xAPIC/MMIO-backed. The helper exists so future x2APIC work can
+/// change one access surface instead of every subsystem re-encoding LAPIC offsets.
+pub unsafe fn local_apic_write(offset: u32, value: u32) {
+    let base = get_apic_base();
+    write_apic_register(base, offset, value);
+}
+
 /// Set the CPU interrupt flag once the runtime is ready for maskable IRQs.
 pub unsafe fn enable_interrupts() {
     x86_64::instructions::interrupts::enable();

@@ -38,16 +38,14 @@ mod timer;
 // Re-export commonly used items from submodules
 pub use apic::{
     apic_base_info, disable_all_interrupts, enable_interrupts, get_apic_base, local_apic_eoi,
-    local_apic_id, read_apic_register, ApicAccessMode, ApicBaseInfo,
+    local_apic_id, local_apic_read, local_apic_write, read_apic_register, ApicAccessMode,
+    ApicBaseInfo,
 };
 pub use debug::{print_gdt_summary_basic, print_idt_summary_compact};
 pub use timer::{
     install_timer_vector_runtime, lapic_timer_configure, lapic_timer_mask,
     lapic_timer_start_oneshot, lapic_timer_start_periodic, timer_tick_count,
 };
-
-// Make APIC functions available to submodules
-use apic::write_apic_register;
 
 // Make debug functions available to submodules
 use debug::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9};
