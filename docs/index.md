@@ -35,6 +35,7 @@ TheseusOS currently boots as a single UEFI executable. The bootloader gathers fi
 - [`plans/boot-flow.md`](plans/boot-flow.md)
 - [`plans/memory.md`](plans/memory.md)
 - [`plans/interrupts-and-platform.md`](plans/interrupts-and-platform.md)
+- [`plans/x2apic-prep.md`](plans/x2apic-prep.md)
 - [`plans/observability.md`](plans/observability.md)
 - [`plans/drivers-and-io.md`](plans/drivers-and-io.md)
 
