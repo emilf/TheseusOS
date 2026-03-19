@@ -169,6 +169,24 @@ pub(super) unsafe fn write_apic_register(apic_base: u64, offset: u32, value: u32
     }
 }
 
+/// Return the current processor's APIC ID as exposed by the current xAPIC runtime path.
+///
+/// This remains xAPIC/MMIO-backed today even though the code now reports x2APIC mode
+/// separately. Future x2APIC enablement should update this helper rather than every caller.
+pub unsafe fn local_apic_id() -> u32 {
+    let base = get_apic_base();
+    read_apic_register(base, 0x20) >> 24
+}
+
+/// Signal end-of-interrupt to the Local APIC using the current runtime access path.
+///
+/// This helper centralizes a key xAPIC-only operation so that any future x2APIC support
+/// can change one place first instead of patching each interrupt handler independently.
+pub unsafe fn local_apic_eoi() {
+    let base = get_apic_base();
+    write_apic_register(base, 0xB0, 0);
+}
+
 /// Set the CPU interrupt flag once the runtime is ready for maskable IRQs.
 pub unsafe fn enable_interrupts() {
     x86_64::instructions::interrupts::enable();
