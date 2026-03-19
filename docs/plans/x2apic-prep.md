@@ -38,10 +38,7 @@ Goal: enumerate exactly where the current runtime assumes xAPIC/MMIO semantics.
   - EOI writes in interrupt handlers
   - APIC ID reads used by serial/USB IRQ routing
   - any direct assumptions about LAPIC base or ID register layout
-- [x] IMPLEMENTED: The first audited xAPIC-only touchpoints have been recorded and partially centralized:
-  - EOI writes in `kernel/src/interrupts/handlers.rs` now flow through `kernel/src/interrupts/apic.rs::local_apic_eoi`
-  - APIC ID reads in `kernel/src/drivers/serial.rs` and `kernel/src/drivers/usb/xhci/mod.rs` now flow through `kernel/src/interrupts/apic.rs::local_apic_id`
-  - LAPIC timer helpers in `kernel/src/interrupts/timer.rs` are still direct xAPIC/MMIO callers and remain an active audit/cleanup target
+- [ ] TODO: Record the audited touchpoints in this plan with concrete file/symbol references.
 - [ ] TODO: Confirm whether any current helper already assumes x2APIC-style semantics implicitly or would become wrong immediately after an x2APIC mode switch.
 
 ## Phase 2 — Structural Cleanup
