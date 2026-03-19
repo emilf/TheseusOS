@@ -83,6 +83,19 @@ This file is meant to be a maintenance surface, not polished prose: if a module 
 - `docs/qemu-runner.md`
 - `tools/theseus-qemu/src/main.rs`
 
+### `plans/x2apic-prep.md`
+
+- `kernel/src/interrupts/apic.rs`
+- `kernel/src/interrupts/timer.rs`
+- `kernel/src/interrupts/handlers.rs`
+- `kernel/src/interrupts/mod.rs`
+- `kernel/src/environment.rs`
+- `kernel/src/drivers/serial.rs`
+- `kernel/src/drivers/usb/xhci/mod.rs`
+- `kernel/src/monitor/commands/cpu.rs`
+- `kernel/src/monitor/commands/system.rs`
+- `docs/_inventory.md`
+
 ### `plans/drivers-and-io.md`
 
 - `kernel/src/drivers/mod.rs`
@@ -143,14 +156,15 @@ This file is meant to be a maintenance surface, not polished prose: if a module 
 ### Platform / interrupts
 
 - `kernel/src/gdt.rs` → `plans/interrupts-and-platform.md`
-- `kernel/src/interrupts/mod.rs` → `plans/interrupts-and-platform.md`
-- `kernel/src/interrupts/handlers.rs` → `plans/interrupts-and-platform.md`
-- `kernel/src/interrupts/apic.rs` → `plans/interrupts-and-platform.md`
-- `kernel/src/interrupts/timer.rs` → `plans/interrupts-and-platform.md`
+- `kernel/src/interrupts/mod.rs` → `plans/interrupts-and-platform.md`, `plans/x2apic-prep.md`
+- `kernel/src/interrupts/handlers.rs` → `plans/interrupts-and-platform.md`, `plans/x2apic-prep.md`
+- `kernel/src/interrupts/apic.rs` → `plans/interrupts-and-platform.md`, `plans/x2apic-prep.md`
+- `kernel/src/interrupts/timer.rs` → `plans/interrupts-and-platform.md`, `plans/x2apic-prep.md`
 - `kernel/src/acpi/mod.rs` → `plans/interrupts-and-platform.md`
 - `kernel/src/acpi/madt.rs` → `plans/interrupts-and-platform.md`
-- `kernel/src/drivers/serial.rs` → `plans/interrupts-and-platform.md`, `plans/observability.md`, `plans/drivers-and-io.md`
+- `kernel/src/drivers/serial.rs` → `plans/interrupts-and-platform.md`, `plans/observability.md`, `plans/drivers-and-io.md`, `plans/x2apic-prep.md`
 - `kernel/src/drivers/system.rs` → `plans/interrupts-and-platform.md`, `plans/drivers-and-io.md`
+- `kernel/src/environment.rs` → `plans/memory.md`, `plans/interrupts-and-platform.md`, `plans/x2apic-prep.md`
 
 ### Drivers / I/O
 
@@ -161,11 +175,14 @@ This file is meant to be a maintenance surface, not polished prose: if a module 
 - `kernel/src/drivers/usb/mod.rs` → `plans/drivers-and-io.md`
 - `kernel/src/drivers/usb/handoff.rs` → `plans/drivers-and-io.md`
 - `kernel/src/drivers/usb/xhci/*` → `plans/drivers-and-io.md`
+- `kernel/src/drivers/usb/xhci/mod.rs` → `plans/drivers-and-io.md`, `plans/x2apic-prep.md`
 - `kernel/src/input/*` → `plans/drivers-and-io.md`
 - `kernel/src/monitor/commands/devices.rs` → `plans/drivers-and-io.md`
 - `kernel/src/monitor/commands/pci.rs` → `plans/drivers-and-io.md`
 - `kernel/src/monitor/commands/usb.rs` → `plans/drivers-and-io.md`
 - `kernel/src/monitor/mod.rs` → `plans/drivers-and-io.md`, `plans/observability.md`
+- `kernel/src/monitor/commands/cpu.rs` → `plans/observability.md`, `plans/x2apic-prep.md`
+- `kernel/src/monitor/commands/system.rs` → `plans/observability.md`, `plans/x2apic-prep.md`
 - `tools/theseus-qemu/src/main.rs` → `plans/drivers-and-io.md`, `plans/observability.md`
 
 ### Observability
