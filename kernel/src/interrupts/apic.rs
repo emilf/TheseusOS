@@ -132,7 +132,7 @@ pub unsafe fn apic_base_info() -> ApicBaseInfo {
 ///
 /// The current runtime still uses xAPIC/MMIO register access even when CPUID advertises
 /// x2APIC capability; callers that need mode information should inspect [`apic_base_info`].
-pub unsafe fn get_apic_base() -> u64 {
+pub(super) unsafe fn get_apic_base() -> u64 {
     apic_base_info().phys_base
 }
 
@@ -161,7 +161,7 @@ unsafe fn require_xapic_mmio_access(op: &str) {
 }
 
 /// Read a LAPIC register through the `PHYS_OFFSET` mapping.
-pub unsafe fn read_apic_register(apic_base: u64, offset: u32) -> u32 {
+pub(super) unsafe fn read_apic_register(apic_base: u64, offset: u32) -> u32 {
     // The LAPIC MMIO is mapped at PHYS_OFFSET + physical address
     let vbase = crate::memory::phys_to_virt_pa(apic_base & 0xFFFFF000);
     let addr = vbase + (offset as u64);

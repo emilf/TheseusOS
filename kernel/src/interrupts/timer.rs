@@ -27,7 +27,7 @@
 //! This module owns the current LAPIC timer bring-up helpers, including one-shot,
 //! periodic, and shared tick-counter support.
 
-use super::{get_apic_base, local_apic_read, local_apic_write};
+use super::{local_apic_read, local_apic_write};
 use crate::{log_debug, log_trace};
 use core::sync::atomic::Ordering;
 // Debug output functions kept for potential low-level debugging
@@ -131,21 +131,12 @@ pub unsafe fn lapic_timer_start_periodic(initial_count: u32) {
 
 /// Mask/stop the LAPIC timer.
 pub unsafe fn lapic_timer_mask() {
-    let apic_base = get_apic_base();
-    let vbase = crate::memory::PHYS_OFFSET + (apic_base & 0xFFFFF000);
-
-    // Debug: print APIC addresses and CR3
+    // Debug: print CR3 while masking to help diagnose page-table issues.
     use x86_64::registers::control::Cr3;
     let (frame, _f) = Cr3::read();
     let cr3pa = frame.start_address().as_u64();
 
-    log_trace!(
-        "LAPIC mask: apic_base={:#x} vbase={:#x} CR3={:#x} LVT_addr={:#x}",
-        apic_base,
-        vbase,
-        cr3pa,
-        vbase + 0x320
-    );
+    log_trace!("LAPIC mask: CR3={:#x}", cr3pa);
 
     // Read current LVT value
     let val = local_apic_read(0x320);
