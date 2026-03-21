@@ -25,7 +25,7 @@
 //! This module contains the LAPIC accessors plus the early interrupt-masking path
 //! used during kernel bring-up.
 
-use crate::log_trace;
+use crate::{log_error, log_trace};
 use x86_64::instructions::port::Port;
 use x86_64::registers::model_specific::Msr;
 
@@ -136,6 +136,30 @@ pub unsafe fn get_apic_base() -> u64 {
     apic_base_info().phys_base
 }
 
+/// Guardrail: ensure the current runtime APIC access mode matches the current LAPIC access path.
+///
+/// Today, TheseusOS uses xAPIC-style MMIO access (through `PHYS_OFFSET`) for LAPIC register reads/writes.
+/// If x2APIC is enabled in `IA32_APIC_BASE`, MMIO access is no longer the correct transport and
+/// continuing silently would be actively misleading.
+#[inline(always)]
+unsafe fn require_xapic_mmio_access(op: &str) {
+    let info = apic_base_info();
+    match info.access_mode() {
+        ApicAccessMode::XApic => {}
+        ApicAccessMode::Disabled => {
+            log_error!("LAPIC access attempted while APIC is disabled (op={})", op);
+            panic!("LAPIC access while APIC disabled");
+        }
+        ApicAccessMode::X2Apic => {
+            log_error!(
+                "LAPIC MMIO access attempted while x2APIC is enabled (op={}); x2APIC requires MSR-based access",
+                op
+            );
+            panic!("LAPIC MMIO access while x2APIC enabled");
+        }
+    }
+}
+
 /// Read a LAPIC register through the `PHYS_OFFSET` mapping.
 pub unsafe fn read_apic_register(apic_base: u64, offset: u32) -> u32 {
     // The LAPIC MMIO is mapped at PHYS_OFFSET + physical address
@@ -174,6 +198,7 @@ pub(super) unsafe fn write_apic_register(apic_base: u64, offset: u32, value: u32
 /// This remains xAPIC/MMIO-backed today even though the code now reports x2APIC mode
 /// separately. Future x2APIC enablement should update this helper rather than every caller.
 pub unsafe fn local_apic_id() -> u32 {
+    require_xapic_mmio_access("local_apic_id");
     let base = get_apic_base();
     read_apic_register(base, 0x20) >> 24
 }
@@ -183,6 +208,7 @@ pub unsafe fn local_apic_id() -> u32 {
 /// This helper centralizes a key xAPIC-only operation so that any future x2APIC support
 /// can change one place first instead of patching each interrupt handler independently.
 pub unsafe fn local_apic_eoi() {
+    require_xapic_mmio_access("local_apic_eoi");
     let base = get_apic_base();
     write_apic_register(base, 0xB0, 0);
 }
@@ -192,6 +218,7 @@ pub unsafe fn local_apic_eoi() {
 /// Today this is still xAPIC/MMIO-backed. The helper exists so future x2APIC work can
 /// change one access surface instead of every subsystem re-encoding LAPIC offsets.
 pub unsafe fn local_apic_read(offset: u32) -> u32 {
+    require_xapic_mmio_access("local_apic_read");
     let base = get_apic_base();
     read_apic_register(base, offset)
 }
@@ -201,6 +228,7 @@ pub unsafe fn local_apic_read(offset: u32) -> u32 {
 /// Today this is still xAPIC/MMIO-backed. The helper exists so future x2APIC work can
 /// change one access surface instead of every subsystem re-encoding LAPIC offsets.
 pub unsafe fn local_apic_write(offset: u32, value: u32) {
+    require_xapic_mmio_access("local_apic_write");
     let base = get_apic_base();
     write_apic_register(base, offset, value);
 }

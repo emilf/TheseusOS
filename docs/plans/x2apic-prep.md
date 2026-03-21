@@ -62,7 +62,7 @@ Goal: make unsupported APIC-mode combinations obvious instead of silently danger
 ### Checklist
 
 - [ ] TODO: Add explicit runtime reporting for APIC access support, not just APIC capability/mode.
-- [ ] TODO: Add assertions or defensive checks where x2APIC-enabled state would make current xAPIC-MMIO access invalid or misleading.
+- [x] IMPLEMENTED: The shared LAPIC access helpers (`local_apic_read/write`, `local_apic_eoi`, `local_apic_id`) now hard-fail if `IA32_APIC_BASE` reports x2APIC enabled, so we never silently perform xAPIC/MMIO accesses in an incompatible mode.
 - [ ] TODO: Extend monitor/debugging surfaces if needed so APIC mode transitions can be inspected without adding default boot logspam.
 
 ## Phase 4 — First Narrow Functional x2APIC Step
