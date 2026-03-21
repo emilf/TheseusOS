@@ -37,9 +37,8 @@ mod timer;
 
 // Re-export commonly used items from submodules
 pub use apic::{
-    apic_base_info, disable_all_interrupts, enable_interrupts, get_apic_base, local_apic_eoi,
-    local_apic_id, local_apic_read, local_apic_write, read_apic_register, ApicAccessMode,
-    ApicBaseInfo,
+    apic_base_info, disable_all_interrupts, enable_interrupts, local_apic_eoi, local_apic_id,
+    local_apic_read, local_apic_write, ApicAccessMode, ApicBaseInfo,
 };
 pub use debug::{print_gdt_summary_basic, print_idt_summary_compact};
 pub use timer::{
