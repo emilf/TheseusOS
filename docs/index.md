@@ -50,6 +50,7 @@ These remain useful as human-oriented guides, but they are subordinate to the ax
 - [`hardware-and-drivers.md`](hardware-and-drivers.md) — device inventory, driver manager, serial stack, interrupts, and newer driver subsystems.
 - [`development-and-debugging.md`](development-and-debugging.md) — building, running under QEMU, logging, and the serial monitor.
 - [`qemu-runner.md`](qemu-runner.md) — the `theseus-qemu` Rust runner and its reproducible QEMU profiles.
+- [`qemu-io-relays.md`](qemu-io-relays.md) — relay architecture, socket endpoints, and connecting tools across QEMU restarts.
 - [`logging.md`](logging.md) — current logging behavior and routing notes.
 
 Bootloader-side observability and output plumbing now also live in the architecture split (see `plans/boot-flow.md`, `plans/observability.md`, and `axioms/debug.md`), rather than only in the older narrative guides. The same is true for the bootloader-side memory/handoff story via `plans/memory.md` and `axioms/memory.md`.

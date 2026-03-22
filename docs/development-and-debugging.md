@@ -46,6 +46,10 @@ That helper script:
 - launches headless QEMU via `theseus-qemu --relays`
 - leaves stable host-side endpoints under `/tmp/qemu-*-host`
 
+For a full explanation of the relay architecture, how to connect tools, and the
+difference between systemd relay services and tmux-managed relays, see
+[`docs/qemu-io-relays.md`](qemu-io-relays.md).
+
 For one-shot QMP control against the host-side relay socket, use:
 
 ```bash
