@@ -4,12 +4,13 @@
 #   1. launch QEMU with -S -s so CPUs start halted
 #   2. gdb -x debug.gdb
 #   3. let the firmware run once (it will print `efi_main @ 0x...`)
-#   4. run: theseus-load 0x3da60a10   # replace with your runtime address
+#   4. run: theseus-load 0x<runtime_efi_main_address>
 #      (the command computes the relocation delta, reloads DWARF at the correct
-#       runtime base, and installs a hardware breakpoint at the entry plus
-#       software breakpoints at +0x200/+0x300)
-#   5. reset the guest (e.g. `monitor system_reset` or restart QEMU) and rerun
-#      so `efi_main` executes again and trips the breakpoints.
+#       runtime base, and installs a hardware breakpoint at the entry)
+#   5. reset the guest (monitor system_reset or restart QEMU) so efi_main fires
+#
+# NOTE: Section deltas are computed dynamically from BOOTX64.SYM at startup.
+#       No hardcoded offsets — safe across rebuilds.
 #
 
 set pagination off
@@ -38,26 +39,69 @@ _elf_image = _read_elf(SYMBOL_PATH)
 if _elf_image[:4] != b"\x7fELF":
     raise gdb.GdbError(f"{SYMBOL_PATH} is not an ELF file")
 
-_E_PHOFF = struct.unpack_from("<Q", _elf_image, 0x20)[0]
+# --------------------------------------------------------------------------
+# Parse ELF header
+# --------------------------------------------------------------------------
+_E_PHOFF     = struct.unpack_from("<Q", _elf_image, 0x20)[0]
+_E_SHOFF     = struct.unpack_from("<Q", _elf_image, 0x28)[0]
 _E_PHENTSIZE = struct.unpack_from("<H", _elf_image, 0x36)[0]
-_E_PHNUM = struct.unpack_from("<H", _elf_image, 0x38)[0]
+_E_PHNUM     = struct.unpack_from("<H", _elf_image, 0x38)[0]
+_E_SHENTSIZE = struct.unpack_from("<H", _elf_image, 0x3a)[0]
+_E_SHNUM     = struct.unpack_from("<H", _elf_image, 0x3c)[0]
+_E_SHSTRNDX  = struct.unpack_from("<H", _elf_image, 0x3e)[0]
 
+# --------------------------------------------------------------------------
+# PT_LOAD segments → derive link-time image base
+# --------------------------------------------------------------------------
 def _iter_program_headers():
     for i in range(_E_PHNUM):
         off = _E_PHOFF + i * _E_PHENTSIZE
-        p_type = struct.unpack_from("<I", _elf_image, off)[0]
+        p_type   = struct.unpack_from("<I", _elf_image, off)[0]
         p_offset = struct.unpack_from("<Q", _elf_image, off + 0x08)[0]
-        p_vaddr = struct.unpack_from("<Q", _elf_image, off + 0x10)[0]
+        p_vaddr  = struct.unpack_from("<Q", _elf_image, off + 0x10)[0]
         p_filesz = struct.unpack_from("<Q", _elf_image, off + 0x20)[0]
         yield p_type, p_offset, p_vaddr, p_filesz
 
-# Compute link-time image base.
+# Use only PT_LOAD segments with p_offset != 0 to derive the base.
+# Segments where vaddr - offset is inconsistent (e.g. .bss gap segments)
+# are excluded by taking the minimum across segments whose file-offset is
+# aligned with their vaddr (i.e. the non-gap ones at offset > 0).
 _image_base_link = min(
-    (vaddr - offset) for p_type, offset, vaddr, _ in _iter_program_headers()
-    if p_type == 1  # PT_LOAD
+    (vaddr - offset)
+    for p_type, offset, vaddr, _ in _iter_program_headers()
+    if p_type == 1 and offset != 0
 )
 
-# Locate the signature inside the ELF file to recover its link-time address.
+# --------------------------------------------------------------------------
+# Section headers → compute per-section deltas from image base
+# (computed fresh from the actual ELF — no hardcoded constants)
+# --------------------------------------------------------------------------
+_shstr_entry_off = _E_SHOFF + _E_SHSTRNDX * _E_SHENTSIZE
+_shstr_data_off  = struct.unpack_from("<Q", _elf_image, _shstr_entry_off + 0x18)[0]
+
+_section_deltas = {}   # name -> delta from image base (link-time)
+
+for i in range(_E_SHNUM):
+    off        = _E_SHOFF + i * _E_SHENTSIZE
+    sh_name_i  = struct.unpack_from("<I", _elf_image, off)[0]
+    sh_addr    = struct.unpack_from("<Q", _elf_image, off + 0x10)[0]
+    if sh_addr == 0:
+        continue
+    name_start = _shstr_data_off + sh_name_i
+    name_end   = _elf_image.index(b"\x00", name_start)
+    name       = _elf_image[name_start:name_end].decode()
+    _section_deltas[name] = sh_addr - _image_base_link
+
+# Dump computed deltas at startup so you can verify they match reality
+gdb.write("Theseus: section deltas computed from BOOTX64.SYM\n")
+gdb.write(f"  image_base_link = 0x{_image_base_link:x}\n")
+for sname, delta in sorted(_section_deltas.items()):
+    if not sname.startswith(".debug"):
+        gdb.write(f"    {sname:20s} Δ = 0x{delta:x}\n")
+
+# --------------------------------------------------------------------------
+# Locate THESEUS_DEBUG_SIGNATURE in ELF to get its link-time address
+# --------------------------------------------------------------------------
 _signature_offset = _elf_image.find(SIGNATURE)
 if _signature_offset == -1:
     raise gdb.GdbError(
@@ -74,24 +118,26 @@ for p_type, offset, vaddr, filesz in _iter_program_headers():
 
 if _signature_link_addr is None:
     raise gdb.GdbError(
-        "failed to map THESES_DEBUG_SIGNATURE to a PT_LOAD segment"
+        "failed to map THESEUS_DEBUG_SIGNATURE to a PT_LOAD segment"
     )
 
-# Link-time address of efi_main (already loaded via symbol-file).
-_efi_main_symbol = gdb.lookup_global_symbol('theseus_efi::efi_main')
+# --------------------------------------------------------------------------
+# Resolve efi_main link-time address
+# --------------------------------------------------------------------------
+_efi_main_symbol = gdb.lookup_global_symbol("theseus_efi::efi_main")
 if _efi_main_symbol is None:
     raise gdb.GdbError("Unable to resolve theseus_efi::efi_main symbol")
 
-_efi_main_link_addr = int(_efi_main_symbol.value().cast(gdb.lookup_type("long long")))
+_efi_main_link_addr = int(
+    _efi_main_symbol.value().cast(gdb.lookup_type("long long"))
+)
 _efi_entry_offset = _efi_main_link_addr - _image_base_link
 
-TEXT_DELTA   = 0x1000
-RDATA_DELTA  = 0x12000
-DATA_DELTA   = 0x1a000
-BSS_DELTA    = 0x1c000
-EH_DELTA     = 0x6c000
-RELOC_DELTA  = 0x6d000
+gdb.write(f"  efi_main link addr  = 0x{_efi_main_link_addr:x}  (offset 0x{_efi_entry_offset:x} from base)\n")
 
+# --------------------------------------------------------------------------
+# Helpers
+# --------------------------------------------------------------------------
 def _remove_existing_symbols():
     try:
         gdb.execute(f"remove-symbol-file {SYMBOL_PATH}", to_string=True)
@@ -109,41 +155,38 @@ def _clear_auto_breakpoints():
             bp.delete()
     _AUTO_BREAK_LOCATIONS.clear()
 
-_LL_TYPE = gdb.lookup_type("long long")
-
-def _eval_address(expr: str):
-    try:
-        value = gdb.parse_and_eval(expr)
-        if value.type.code == gdb.TYPE_CODE_PTR:
-            value = value.cast(_LL_TYPE)
-        else:
-            value = value.cast(_LL_TYPE)
-        return int(value)
-    except gdb.error:
-        return None
-
 def _set_breakpoints(runtime_entry: int):
     _clear_auto_breakpoints()
 
-    addresses = []
-    labels = []
-
-    gdb.execute(f"hbreak *0x{runtime_entry:x}", to_string=True)
-    _AUTO_BREAK_LOCATIONS.add(f"*0x{runtime_entry:x}")
-    gdb.write(f"   · Hardware breakpoint set at efi_main entry (*0x{runtime_entry:x}).\n")
+    loc = f"*0x{runtime_entry:x}"
+    gdb.execute(f"hbreak {loc}", to_string=True)
+    _AUTO_BREAK_LOCATIONS.add(loc)
+    gdb.write(f"   · Hardware breakpoint at efi_main entry ({loc}).\n")
 
     for delta, label in ((0x200, "efi_main+0x200"), (0x300, "efi_main+0x300")):
         addr = runtime_entry + delta
-        loc = f"*0x{addr:x}"
-        gdb.execute(f"break {loc}", to_string=True)
-        _AUTO_BREAK_LOCATIONS.add(loc)
-        gdb.write(f"   · Software breakpoint set at {label} ({loc}).\n")
+        aloc = f"*0x{addr:x}"
+        gdb.execute(f"break {aloc}", to_string=True)
+        _AUTO_BREAK_LOCATIONS.add(aloc)
+        gdb.write(f"   · Software breakpoint at {label} ({aloc}).\n")
 
+# --------------------------------------------------------------------------
+# theseus-load command
+# --------------------------------------------------------------------------
 class TheseusLoadCommand(gdb.Command):
-    """Load Theseus EFI symbols at runtime with relocated base.
+    """Load Theseus EFI symbols relocated to the runtime image base.
 
 Usage: theseus-load <efi_main_runtime_address>
 Example: theseus-load 0x3da60a10
+
+The runtime address is printed by the bootloader on the debug port:
+  efi_main @ 0x<addr>
+
+This command:
+  1. Computes the runtime image base from the runtime efi_main address.
+  2. Applies per-section relocation (computed from BOOTX64.SYM, not hardcoded).
+  3. Reloads DWARF symbols via add-symbol-file with all section addresses.
+  4. Sets a hardware breakpoint at efi_main entry + two software sentinels.
 """
 
     def __init__(self):
@@ -163,38 +206,43 @@ Example: theseus-load 0x3da60a10
         signature_runtime  = image_base_runtime + (_signature_link_addr - _image_base_link)
 
         gdb.write("Theseus symbol loader:\n")
-        gdb.write(f"  · runtime efi_main:    0x{runtime_entry:x}\n")
-        gdb.write(f"  · image base (runtime):0x{image_base_runtime:x}\n")
-        gdb.write(f"  · signature (runtime): 0x{signature_runtime:x}\n")
+        gdb.write(f"  · runtime efi_main:     0x{runtime_entry:x}\n")
+        gdb.write(f"  · image base (runtime): 0x{image_base_runtime:x}\n")
+        gdb.write(f"  · signature (runtime):  0x{signature_runtime:x}\n")
 
-        text_addr  = image_base_runtime + TEXT_DELTA
-        rdata_addr = image_base_runtime + RDATA_DELTA
-        data_addr  = image_base_runtime + DATA_DELTA
-        bss_addr   = image_base_runtime + BSS_DELTA
-        eh_addr    = image_base_runtime + EH_DELTA
-        reloc_addr = image_base_runtime + RELOC_DELTA
+        # Build add-symbol-file command with all non-debug sections
+        # that have a non-zero address (skip debug sections — GDB handles
+        # those automatically from the ELF's DWARF).
+        SKIP_PREFIXES = (".debug_", ".shstrtab")
+        sections = {
+            name: image_base_runtime + delta
+            for name, delta in _section_deltas.items()
+            if not any(name.startswith(p) for p in SKIP_PREFIXES)
+        }
 
-        gdb.write("  · Section remap targets:\n")
-        gdb.write(f"      .text   → 0x{text_addr:x}\n")
-        gdb.write(f"      .rdata  → 0x{rdata_addr:x}\n")
-        gdb.write(f"      .data   → 0x{data_addr:x}\n")
-        gdb.write(f"      .bss    → 0x{bss_addr:x}\n")
-        gdb.write(f"      .eh_fram→ 0x{eh_addr:x}\n")
-        gdb.write(f"      .reloc  → 0x{reloc_addr:x}\n")
+        if ".text" not in sections:
+            raise gdb.GdbError("No .text section found in symbol file")
 
-        _remove_existing_symbols()
-        gdb.execute(
+        text_addr = sections.pop(".text")
+
+        gdb.write("  · Section runtime addresses:\n")
+        gdb.write(f"      .text   = 0x{text_addr:x}\n")
+        extra_args = []
+        for sname, saddr in sorted(sections.items()):
+            gdb.write(f"      {sname:20s} = 0x{saddr:x}\n")
+            extra_args.append(f"-s {sname} 0x{saddr:x}")
+
+        cmd = (
             f"add-symbol-file {SYMBOL_PATH} 0x{text_addr:x} "
-            f"-s .rdata 0x{rdata_addr:x} "
-            f"-s .data 0x{data_addr:x} "
-            f"-s .bss 0x{bss_addr:x} "
-            f"-s .eh_fram 0x{eh_addr:x} "
-            f"-s .reloc 0x{reloc_addr:x}",
-            to_string=True,
+            + " ".join(extra_args)
         )
 
+        _remove_existing_symbols()
+        gdb.execute(cmd, to_string=True)
+        gdb.write("  · Symbols loaded.\n")
+
         _set_breakpoints(runtime_entry)
-        gdb.write("⛳ Breakpoints armed on theseus_efi::efi_main (entry [HW], +0x200, +0x300). Reset or rerun so they trigger.\n")
+        gdb.write("⛳ Ready. Reset or rerun the guest so efi_main fires.\n")
 
 TheseusLoadCommand()
 end
