@@ -112,6 +112,39 @@ pub mod uefi {
     pub const ACPI_RSDP_SIGNATURE: &[u8; 8] = b"RSD PTR ";
 }
 
+/// GDB Debug Mailbox
+///
+/// A fixed low-memory page used to communicate the runtime `efi_main` address
+/// to GDB without requiring a probe-then-restart workflow.
+///
+/// Layout (at `DEBUG_MAILBOX_PHYS`):
+///   offset +0x00  u64  Runtime virtual address of `efi_main` (written on entry)
+///   offset +0x08  u64  Sentinel magic: `DEBUG_MAILBOX_MAGIC` (written after addr)
+///
+/// GDB watches the sentinel location for the magic value. When it fires, it
+/// reads the address at +0x00 and calls `theseus-load` automatically.
+///
+/// The page at `DEBUG_MAILBOX_PHYS` is allocated via UEFI `AllocateType::Address`
+/// before writing, so the firmware knows we own it.
+pub mod debug_mailbox {
+    /// Physical address of the debug mailbox page.
+    ///
+    /// 0x7000 sits in the "conventional memory" gap below 0x10000 that OVMF
+    /// leaves as `EfiConventionalMemory`. We allocate it explicitly via UEFI
+    /// before writing to avoid aliasing with firmware data structures.
+    pub const PHYS: u64 = 0x7000;
+
+    /// Byte offset within the mailbox page where the efi_main address lives.
+    pub const ADDR_OFFSET: u64 = 0x00;
+
+    /// Byte offset within the mailbox page where the sentinel magic lives.
+    /// Written *after* the address — GDB watches this to know the addr is valid.
+    pub const MAGIC_OFFSET: u64 = 0x08;
+
+    /// Sentinel value written to `PHYS + MAGIC_OFFSET` after the address.
+    pub const MAGIC: u64 = 0xDEAD_BEEF_CAFE_F00D;
+}
+
 /// Exit Codes
 pub mod exit_codes {
     /// QEMU exit code for successful completion

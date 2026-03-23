@@ -19,6 +19,12 @@ set demangle-style rust
 set breakpoint pending on
 set confirm off
 
+# GDB stub connection target used by theseus-auto for reconnect after reset.
+# Override before sourcing this file if using a TCP port instead of a socket:
+#   (gdb) python gdb.set_convenience_variable("_gdb_target", "localhost:1234")
+#   (gdb) source debug.gdb
+# Default: unix socket used by gdb-auto.py / make debug-auto
+
 # Make DWARF types and symbols available up-front.
 symbol-file build/BOOTX64.SYM
 
@@ -27,7 +33,20 @@ import gdb
 import os
 import struct
 
-SYMBOL_PATH = os.path.abspath("build/BOOTX64.SYM")
+SYMBOL_PATH  = os.path.abspath("build/BOOTX64.SYM")
+
+# GDB connection target for theseus-auto reconnect after system_reset.
+# Defaults to the unix socket used by gdb-auto.py / make debug-auto.
+# Override via: python gdb.set_convenience_variable("_gdb_target", "localhost:1234")
+def _get_gdb_target():
+    """Read GDB connection target, re-evaluating the convenience variable each call."""
+    raw = gdb.convenience_variable("_gdb_target")
+    if raw is not None:
+        return str(raw).strip('"').strip("'")
+    return "localhost:1234"
+
+# Evaluated at source time for initial display; re-read in theseus-auto.invoke.
+_GDB_SOCKET = _get_gdb_target()
 SIGNATURE = b"THESEUSDBGBASE!\x00"
 
 def _read_elf(path):
@@ -274,4 +293,90 @@ but issued in the correct synchronous context to avoid the
         gdb.execute("continue", to_string=False)
 
 TheseusGoCommand()
+
+
+class TheseusAutoCommand(gdb.Command):
+    """Fully automated Theseus debug session — no address argument needed.
+
+Usage: theseus-auto
+
+Workflow:
+  1. Sets a hardware watchpoint on the GDB debug mailbox sentinel
+     (physical address 0x7000 + 0x08, value 0xDEADBEEF_CAFEF00D).
+  2. Issues 'continue' — UEFI boots and efi_main writes its runtime address
+     to the mailbox, then writes the sentinel.
+  3. The watchpoint fires. theseus-auto reads the runtime efi_main address
+     from mailbox+0x00, removes the watchpoint, and calls theseus-load.
+  4. Issues 'continue' again — execution reaches efi_main a second time and
+     hits the software breakpoint planted by theseus-load.
+
+Requirements:
+  - QEMU must be started with -S (halted) so theseus-auto can set the
+    watchpoint before efi_main runs.
+  - The kernel must be built with the debug mailbox write at efi_main entry
+    (see bootloader/src/main.rs and shared/src/constants.rs::debug_mailbox).
+
+This is the recommended single-command debug workflow. No probe run needed.
+
+Example:
+  $ make debug              # starts QEMU paused, GDB stub on :1234
+  $ gdb -x debug.gdb
+  (gdb) target remote localhost:1234
+  (gdb) theseus-auto        # does everything else automatically
+"""
+
+    # Mailbox layout (matches shared/src/constants.rs :: debug_mailbox)
+    MAILBOX_PHYS  = 0x7000
+    ADDR_OFFSET   = 0x00   # u64: runtime efi_main address
+    MAGIC_OFFSET  = 0x08   # u64: sentinel written after address
+    MAGIC_VALUE   = 0xDEADBEEFCAFEF00D
+
+    def __init__(self):
+        super().__init__("theseus-auto", gdb.COMMAND_USER)
+
+    def invoke(self, arg, from_tty):
+        addr_ptr   = self.MAILBOX_PHYS + self.ADDR_OFFSET
+        magic_ptr  = self.MAILBOX_PHYS + self.MAGIC_OFFSET
+        magic_expr = f"*(unsigned long long*)0x{magic_ptr:x} == 0x{self.MAGIC_VALUE:x}"
+
+        gdb.write(f"theseus-auto: setting watchpoint on mailbox sentinel "
+                  f"(*0x{magic_ptr:x} == 0x{self.MAGIC_VALUE:x})...\n")
+
+        # Hardware watchpoint — fires when the sentinel is written
+        wp = gdb.Breakpoint(magic_expr, gdb.BP_WATCHPOINT, gdb.WP_WRITE,
+                            internal=False)
+
+        gdb.write("theseus-auto: continuing until mailbox is written...\n")
+        gdb.execute("continue", to_string=False)
+
+        # After this returns we're stopped at the watchpoint.
+        # Read the runtime efi_main address.
+        try:
+            runtime_addr = int(
+                gdb.parse_and_eval(f"*(unsigned long long*)0x{addr_ptr:x}")
+            ) & 0xFFFFFFFFFFFFFFFF
+        except gdb.error as e:
+            raise gdb.GdbError(
+                f"theseus-auto: failed to read mailbox address: {e}"
+            )
+
+        gdb.write(f"theseus-auto: mailbox fired — "
+                  f"runtime efi_main = 0x{runtime_addr:x}\n")
+
+        # Remove the watchpoint
+        wp.delete()
+
+        # We are stopped inside efi_main right now (the watchpoint fired while
+        # efi_main was executing the mailbox write). Load symbols — this gives
+        # us source-level debug for the rest of this run. The breakpoints set
+        # by theseus-load are armed for any future efi_main invocations.
+        #
+        # We do NOT issue continue here: execution is already inside efi_main
+        # with full symbols loaded. The user is exactly where they want to be.
+        # They can step, inspect locals, set additional breakpoints, then 'c'.
+        gdb.execute(f"theseus-load 0x{runtime_addr:x}", to_string=False)
+        gdb.write("theseus-auto: ✅ stopped inside efi_main with symbols loaded.\n")
+        gdb.write("              Use 'stepi', 'next', 'c', or set more breakpoints.\n")
+
+TheseusAutoCommand()
 end
