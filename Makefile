@@ -165,6 +165,28 @@ debug: all
 	@echo "Starting QEMU paused with GDB on :1234 and monitor on 127.0.0.1:55555"
 	QEMU_OPTS="-S -s" ./startQemu.sh headless
 
+# Automated GDB session via pexpect (no manual address copying).
+# Requires: pip install --break-system-packages pexpect
+# Requires: tmux session named 'theseus' (created automatically if absent)
+#
+# Full interactive session (default):
+#   make debug-auto
+#
+# Non-interactive smoke-test (CI-friendly, exits after breakpoint check):
+#   make debug-auto-ci
+#
+# Skip probe run if you already know the address:
+#   make debug-auto ADDR=0x7d7388e3
+.PHONY: debug-auto debug-auto-ci
+debug-auto: all
+	@echo "Starting automated GDB session (pexpect)..."
+	python3 scripts/gdb-auto.py $(if $(ADDR),--addr $(ADDR),) --tmux theseus
+
+debug-auto-ci: all
+	@echo "Starting non-interactive GDB breakpoint smoke-test..."
+	python3 scripts/gdb-auto.py $(if $(ADDR),--addr $(ADDR),) --tmux theseus \
+		--no-interactive --timeout-boot 180
+
 # Print a short help message describing common targets and how to set PROFILE
 .PHONY: help
 help:

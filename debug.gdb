@@ -159,9 +159,15 @@ def _set_breakpoints(runtime_entry: int):
     _clear_auto_breakpoints()
 
     loc = f"*0x{runtime_entry:x}"
-    gdb.execute(f"hbreak {loc}", to_string=True)
+    # Use software breakpoints (int3) rather than hardware breakpoints.
+    # Hardware breakpoints (hbreak / GDB Z1 packets) cause QEMU's GDB stub
+    # to briefly resume the vCPU to install the DR register, leaving GDB in
+    # a "target is running" state that blocks the subsequent 'continue'.
+    # Software breakpoints are inserted directly into memory and don't have
+    # this side-effect.
+    gdb.execute(f"break {loc}", to_string=True)
     _AUTO_BREAK_LOCATIONS.add(loc)
-    gdb.write(f"   · Hardware breakpoint at efi_main entry ({loc}).\n")
+    gdb.write(f"   · Breakpoint at efi_main entry ({loc}).\n")
 
     for delta, label in ((0x200, "efi_main+0x200"), (0x300, "efi_main+0x300")):
         addr = runtime_entry + delta
@@ -243,6 +249,29 @@ This command:
 
         _set_breakpoints(runtime_entry)
         gdb.write("⛳ Ready. Reset or rerun the guest so efi_main fires.\n")
+        gdb.write("   (call 'continue' or 'c' to run)\n")
 
 TheseusLoadCommand()
+
+
+class TheseusGoCommand(gdb.Command):
+    """Shortcut: theseus-load <addr> then continue.
+
+Usage: theseus-go <efi_main_runtime_address>
+
+Equivalent to:
+  theseus-load <addr>
+  continue
+but issued in the correct synchronous context to avoid the
+'target is running' race that can occur in batch/script mode.
+"""
+
+    def __init__(self):
+        super().__init__("theseus-go", gdb.COMMAND_USER)
+
+    def invoke(self, arg, from_tty):
+        gdb.execute(f"theseus-load {arg}", to_string=False)
+        gdb.execute("continue", to_string=False)
+
+TheseusGoCommand()
 end
