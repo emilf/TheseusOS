@@ -52,7 +52,43 @@ Affected modules:
 - `kernel/src/panic.rs`
 - `kernel/src/logging/*`
 
-## A3: The runtime monitor is a first-class inspection surface
+## A3: The GDB debug mailbox provides a stable physical address for runtime efi_main discovery
+
+**REQUIRED**
+
+`efi_main` writes its own runtime virtual address to physical `0x7000` and a
+magic sentinel (`0xDEADBEEFCAFEF00D`) to physical `0x7008` as the very first
+action at entry, before any UEFI call. This allows GDB to discover the correct
+load address via a hardware watchpoint without a probe-then-restart workflow.
+
+The page at `0x7000` is reserved via `AllocateType::Address` so the UEFI
+firmware records ownership in the memory map. The sentinel is written *after*
+the address so a watchpoint on `0x7008` guarantees the address at `0x7000` is
+already valid when it fires.
+
+Layout:
+```
+0x7000 + 0x00  u64  runtime efi_main virtual address
+0x7000 + 0x08  u64  magic sentinel 0xDEADBEEFCAFEF00D
+```
+
+Implements / evidence:
+- `bootloader/src/main.rs` — mailbox write at top of `efi_main`
+- `shared/src/constants.rs::debug_mailbox` — address and magic constants
+
+Related plans:
+- `../plans/observability.md`
+
+Tooling:
+- `debug.gdb::theseus-auto` — GDB command that uses this mailbox
+- `scripts/gdb-auto.py` — pexpect driver for fully automated sessions
+- `make debug-auto` — one-command entry point
+
+Affected modules:
+- `bootloader/src/main.rs`
+- `shared/src/constants.rs`
+
+## A4: The runtime monitor is a first-class inspection surface
 
 **REQUIRED**
 
