@@ -1,16 +1,47 @@
 # Theseus EFI GDB helpers ----------------------------------------------------
 #
-# Usage:
-#   1. launch QEMU with -S -s so CPUs start halted
-#   2. gdb -x debug.gdb
-#   3. let the firmware run once (it will print `efi_main @ 0x...`)
-#   4. run: theseus-load 0x<runtime_efi_main_address>
-#      (the command computes the relocation delta, reloads DWARF at the correct
-#       runtime base, and installs a hardware breakpoint at the entry)
-#   5. reset the guest (monitor system_reset or restart QEMU) so efi_main fires
+# RECOMMENDED WORKFLOW (fully automated, no address copying):
 #
-# NOTE: Section deltas are computed dynamically from BOOTX64.SYM at startup.
-#       No hardcoded offsets — safe across rebuilds.
+#   make debug-auto
+#
+# This starts QEMU, spawns GDB via pexpect, and runs 'theseus-auto'
+# which uses a hardware watchpoint on the debug mailbox to automatically
+# capture the runtime efi_main address and load symbols. You land inside
+# efi_main with full Rust source-level symbols, hands-free.
+#
+# MANUAL WORKFLOW (if you want direct GDB control):
+#
+#   make debug                        # starts QEMU paused on :1234
+#   gdb -x debug.gdb                  # in a separate terminal
+#   (gdb) target remote localhost:1234
+#   (gdb) theseus-auto                # automated: watchpoint → symbols → stop
+#
+# If theseus-auto is unavailable (older build without debug mailbox):
+#
+#   (gdb) target remote localhost:1234
+#   (gdb) continue                    # let UEFI run; read "efi_main @ 0x..." from debugcon
+#   (gdb) theseus-load 0x<addr>       # load symbols at the runtime address
+#   (gdb) monitor system_reset        # reset guest so efi_main runs again with BP armed
+#
+# COMMANDS PROVIDED BY THIS SCRIPT:
+#
+#   theseus-auto             Fully automated session. Sets a hw watchpoint on
+#                            the debug mailbox sentinel (0x7008), continues,
+#                            waits for efi_main to write its address + magic,
+#                            then calls theseus-load automatically. Stops inside
+#                            efi_main with symbols loaded. No address argument.
+#
+#   theseus-load <addr>      Load DWARF symbols relocated to the given runtime
+#                            efi_main address. Computes all section addresses
+#                            dynamically from BOOTX64.SYM (no hardcoded offsets).
+#                            Arms software breakpoints at efi_main entry,
+#                            entry+0x200, and entry+0x300.
+#
+#   theseus-go <addr>        Like theseus-load but also issues 'continue'.
+#
+# SECTION DELTAS:
+#   Computed fresh from BOOTX64.SYM at startup — safe across rebuilds.
+#   Section layout is printed on load for verification.
 #
 
 set pagination off
@@ -301,28 +332,31 @@ class TheseusAutoCommand(gdb.Command):
 Usage: theseus-auto
 
 Workflow:
-  1. Sets a hardware watchpoint on the GDB debug mailbox sentinel
-     (physical address 0x7000 + 0x08, value 0xDEADBEEF_CAFEF00D).
-  2. Issues 'continue' — UEFI boots and efi_main writes its runtime address
-     to the mailbox, then writes the sentinel.
-  3. The watchpoint fires. theseus-auto reads the runtime efi_main address
-     from mailbox+0x00, removes the watchpoint, and calls theseus-load.
-  4. Issues 'continue' again — execution reaches efi_main a second time and
-     hits the software breakpoint planted by theseus-load.
+  1. Sets a hardware watchpoint on the debug mailbox sentinel
+     (physical address 0x7008, value 0xDEADBEEFCAFEF00D).
+  2. Issues 'continue' — UEFI boots, efi_main writes its runtime address
+     to 0x7000 then writes the magic to 0x7008.
+  3. Watchpoint fires. theseus-auto reads the runtime efi_main address from
+     0x7000, removes the watchpoint, and calls theseus-load with it.
+  4. Returns to GDB prompt. Execution is stopped inside efi_main (at the
+     mailbox write instruction) with full Rust source-level symbols loaded.
+
+No reset needed — efi_main is caught on its first execution. QEMU does not
+need to be started with -S; gdb-auto.py starts it running.
 
 Requirements:
-  - QEMU must be started with -S (halted) so theseus-auto can set the
-    watchpoint before efi_main runs.
-  - The kernel must be built with the debug mailbox write at efi_main entry
-    (see bootloader/src/main.rs and shared/src/constants.rs::debug_mailbox).
+  - Kernel built with debug mailbox support:
+      bootloader/src/main.rs  — mailbox write at efi_main entry
+      shared/src/constants.rs — debug_mailbox constants
 
-This is the recommended single-command debug workflow. No probe run needed.
+Recommended via make:
+  $ make debug-auto           # starts everything automatically
 
-Example:
-  $ make debug              # starts QEMU paused, GDB stub on :1234
+Manual (any QEMU session with GDB stub, -S optional):
+  $ make debug                # QEMU paused on :1234
   $ gdb -x debug.gdb
   (gdb) target remote localhost:1234
-  (gdb) theseus-auto        # does everything else automatically
+  (gdb) theseus-auto
 """
 
     # Mailbox layout (matches shared/src/constants.rs :: debug_mailbox)

@@ -3,34 +3,41 @@
 gdb-auto.py — One-command GDB debug session for TheseusOS.
 
 Usage:
-    python3 scripts/gdb-auto.py [--tmux SESSION] [--timeout-boot SECS]
-                                 [--qemu-pane 0] [--gdb-pane 1]
+    python3 scripts/gdb-auto.py [options]
+    make debug-auto             # interactive (default)
+    make debug-auto-ci          # non-interactive CI mode
 
 Workflow:
-    1. Start QEMU paused (-S) with a unix-socket GDB stub in a tmux pane.
-    2. Spawn GDB via pexpect, source debug.gdb, connect.
-    3. Run 'theseus-auto' — a GDB Python command that:
-         a. Sets a hardware watchpoint on the debug mailbox sentinel
-            (physical address 0x7008, written by efi_main on entry).
-         b. Continues — UEFI boots and efi_main writes its runtime address
-            to 0x7000, then writes the magic sentinel to 0x7008.
-         c. Watchpoint fires; theseus-auto reads the address from 0x7000,
-            calls theseus-load with it, continues to the efi_main breakpoint.
-    4. Drops into interactive GDB (or exits cleanly for --no-interactive CI).
+    1. Starts QEMU running (no -S) with a TCP GDB stub on localhost:1251,
+       keeping it alive in a tmux pane (required: tmux session named 'theseus',
+       created automatically if absent).
+    2. Spawns GDB via pexpect and sources debug.gdb.
+    3. Connects to QEMU and runs 'theseus-auto', which:
+         a. Sets a hardware watchpoint on the debug mailbox sentinel at 0x7008.
+         b. Issues continue — UEFI boots, efi_main writes its runtime address
+            to 0x7000 then writes magic 0xDEADBEEFCAFEF00D to 0x7008.
+         c. Watchpoint fires. theseus-auto reads the address, calls theseus-load
+            with correct per-section deltas (computed from BOOTX64.SYM).
+         d. Returns to GDB prompt stopped inside efi_main with full Rust symbols.
+    4. In interactive mode: hands off to pexpect.interact() for live GDB use.
+       In --no-interactive mode: prints RIP + backtrace and exits (CI-friendly).
 
-Key property: single QEMU session, no probe-then-restart, address is always
-correct because it comes from the running binary itself.
-
-Every wait has a hard timeout — the script never hangs silently.
+Key properties:
+    - Single QEMU run, no probe-then-restart.
+    - Address captured from the running binary — correct every boot regardless
+      of UEFI load address variation.
+    - Hard timeout on every wait — never hangs silently.
+    - Ctrl-C via pexpect.sendcontrol reliably interrupts the remote target.
 
 Requirements:
-    pip install pexpect       (or: pip install --break-system-packages pexpect)
-    Kernel built with debug mailbox support (shared/src/constants.rs::debug_mailbox)
+    pip install --break-system-packages pexpect
+    Kernel built with debug mailbox support (see shared/src/constants.rs::debug_mailbox
+    and bootloader/src/main.rs efi_main entry).
 
-Environment:
-    Designed to run inside the bwrap sandbox that OpenClaw uses.
-    QEMU is kept alive in a tmux pane (survives sandbox exec sessions).
-    GDB is driven via pexpect so Ctrl-C reliably reaches the remote target.
+tmux:
+    QEMU runs in a tmux pane so it survives across bwrap sandbox exec sessions.
+    Default session: 'theseus', pane 0 = QEMU, pane 1 = GDB output.
+    Override with --tmux, --qemu-pane, --gdb-pane.
 """
 
 import argparse
