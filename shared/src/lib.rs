@@ -32,4 +32,3 @@ pub mod allocator;
 pub mod constants;
 pub mod handoff;
 pub mod macros;
-pub mod test_environments;
