@@ -282,19 +282,26 @@ pub(super) extern "x86-interrupt" fn handler_usb_xhci(_stack: InterruptStackFram
 
 /// General IRQ handler for vectors 0x20‑0xFF (excluding timer/serial/xHCI/spurious).
 ///
-/// Looks up the registered handler in the IRQ registry and dispatches.
+/// Generic interrupt handler that reads vector from APIC ISR.
+/// This handler is installed for all "general" interrupt vectors.
 pub(super) extern "x86-interrupt" fn handler_general(_stack: InterruptStackFrame) {
-    // The vector is passed as an argument to x86-interrupt handlers
-    // We need to get it from the interrupt number.
-    // For now, we'll need to figure out which vector triggered this.
-    // This is a placeholder that will need proper implementation.
     unsafe {
-        super::local_apic_eoi(); // Send EOI to avoid stuck interrupt
-        crate::log_warn!("General IRQ handler called (vector unknown)");
+        // Try to read the vector from APIC In-Service Register (ISR)
+        match super::apic::read_isr_vector() {
+            Some(vector) => {
+                // Dispatch to registered handler
+                super::irq_registry::dispatch_irq(vector);
+            }
+            None => {
+                // ISR is empty - this shouldn't happen for a real interrupt
+                // Could be a spurious interrupt or race condition
+                // Send EOI to clear any pending state
+                super::apic::local_apic_eoi();
+                crate::log_warn!("General IRQ handler: ISR empty (spurious or race?)");
+            }
+        }
     }
 }
-
-
 
 /// Spurious interrupt handler (vector `0xFF` and APIC error vector `0xFE`).
 pub(super) extern "x86-interrupt" fn handler_spurious(_stack: InterruptStackFrame) {

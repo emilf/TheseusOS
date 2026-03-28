@@ -266,3 +266,58 @@ pub unsafe fn local_apic_write(offset: u32, value: u32) {
 pub unsafe fn enable_interrupts() {
     x86_64::instructions::interrupts::enable();
 }
+
+/// Read the In-Service Register (ISR) to find which vector is in service.
+///
+/// Returns the highest-priority vector currently in service, or None if no
+/// vector is in service. This can be used to determine which interrupt
+/// is currently being handled.
+///
+/// Note: This only works in xAPIC mode. In x2APIC mode, ISR is accessed
+/// via MSRs, which is more complex.
+pub unsafe fn read_isr_vector() -> Option<u8> {
+    match cached_apic_mode() {
+        ApicAccessMode::XApic => {
+            let base = get_apic_base();
+            
+            // ISR is at offsets 0x100-0x170 (8 registers, 32 bits each)
+            // Each bit represents a vector (0-255)
+            for i in 0..8 {
+                let offset = 0x100 + (i * 0x10);
+                let reg = read_apic_register(base, offset);
+                
+                if reg != 0 {
+                    // Find the highest set bit (lowest vector number in this register)
+                    let bit = 31 - reg.leading_zeros() as u8;
+                    let vector = (i as u8 * 32) + bit;
+                    return Some(vector);
+                }
+            }
+            None
+        }
+        ApicAccessMode::X2Apic => {
+            // x2APIC ISR is accessed via MSRs 0x810-0x817
+            // Each MSR contains 32 bits representing vectors
+            for i in 0..8 {
+                let msr = 0x810 + i;
+                // Note: rdmsr is unsafe and requires CPUID.01H:EDX[5] = 1 (MSR support)
+                // We assume MSR support is available on x2APIC systems
+                let reg: u64;
+                unsafe {
+                    core::arch::asm!("rdmsr", out("rax") reg, in("rcx") msr, options(nostack, preserves_flags));
+                }
+                
+                if reg != 0 {
+                    // Find the highest set bit
+                    let bit = 31 - (reg as u32).leading_zeros() as u8;
+                    let vector = (i as u8 * 32) + bit;
+                    return Some(vector);
+                }
+            }
+            None
+        }
+        ApicAccessMode::Disabled => {
+            panic!("LAPIC access while APIC disabled (read_isr_vector)");
+        }
+    }
+}
