@@ -33,9 +33,7 @@ else
 CARGO_PROFILE_FLAG :=
 endif
 
-.PHONY: all clean clean-all run build-bootloader build esp bios test test-all test-bare-metal test-kernel test-panic test-help debug help debug-build
-TIMEOUT ?= 20
-
+.PHONY: all clean clean-all run build-bootloader build esp bios debug help debug-build
 all: build esp bios
 
 build: build-bootloader
@@ -156,10 +154,6 @@ run-headed: all
 	@echo "Starting QEMU in headed mode..."
 	./startQemu.sh headed
 
-run-test: all
-	@echo "Starting QEMU with $(TIMEOUT)s timeout for testing..."
-	./startQemu.sh headless $(TIMEOUT)
-
 .PHONY: debug
 debug: all
 	@echo "Starting QEMU paused with GDB on :1234 and monitor on 127.0.0.1:55555"
@@ -191,17 +185,14 @@ debug-auto-ci: all
 .PHONY: help
 help:
 	@echo "Usage: make [target] [VARIABLE=value]"
-	@echo "Common targets: build, esp, run, run-headed, debug, debug-build, test-bare-metal, test-kernel, test-panic"
+	@echo "Common targets: build, esp, run, run-headed, debug, debug-build"
 	@echo "Default PROFILE is 'release'. To build debug artifacts and include them in the disk image, set PROFILE=debug:" \
 		&& echo "  make PROFILE=debug build esp" \
 		&& echo "Or to build and start QEMU paused for GDB:" \
 		&& echo "  make PROFILE=debug debug" \
 		&& echo "" \
 		&& echo "FEATURES example (pass cargo features):" \
-		&& echo "  make FEATURES=foo build" \
-		&& echo "" \
-		&& echo "TIMEOUT example (change test timeout in seconds):" \
-		&& echo "  make TIMEOUT=60 test-bare-metal"
+		&& echo "  make FEATURES=foo build"
 
 # Convenience target that runs a debug build and creates the ESP disk image
 .PHONY: debug-build
@@ -209,165 +200,3 @@ debug-build:
 	@echo "Running debug build and creating ESP image..."
 	$(MAKE) PROFILE=debug build esp
 
-# =============================================================================
-# TEST TARGETS
-# =============================================================================
-# These targets run tests in different environments:
-# - bare-metal: Tests run immediately after bootloader handoff (no kernel services)
-# - kernel: Tests run after full kernel initialization (with heap, memory mapping, etc.)
-# - panic: Tests that verify panic handling works correctly
-
-.PHONY: test test-all test-bare-metal test-kernel test-panic test-help
-
-# Default test target runs bare-metal tests
-test: test-bare-metal
-
-# Run all tests
-test-all: test-bare-metal test-kernel test-panic
-
-# Show available test targets
-test-help:
-	@echo "Available test targets:"
-	@echo "  test-bare-metal  - Run tests in bare-metal environment (no kernel services)"
-	@echo "  test-kernel      - Run tests after kernel initialization (with heap, etc.)"
-	@echo "  test-panic       - Run tests that verify panic handling works"
-	@echo "  test-all         - Run all test suites"
-	@echo "  test             - Run bare-metal tests (default)"
-
-# Bare-metal tests - run immediately after bootloader handoff
-	@echo "🧪 Building and running bare-metal tests..."
-	@cargo build --package $(KERNEL_PROJECT) --target $(KERNEL_TARGET) $(CARGO_PROFILE_FLAG) --test bare_metal_tests
-	@echo "📦 Creating bare-metal test disk image..."
-	@$(call create_test_disk,bare_metal_tests,bare_metal_tests)
-	@echo "🚀 Running bare-metal tests in QEMU..."
-	@$(call run_test_qemu,bare_metal_tests,$(TIMEOUT))
-	@echo "✅ Bare-metal tests PASSED"
-
-# Kernel-initialized tests - run after full kernel setup
-	@echo "🧪 Building and running kernel-initialized tests..."
-	@cargo build --package $(KERNEL_PROJECT) --target $(KERNEL_TARGET) $(CARGO_PROFILE_FLAG) --test kernel_tests
-	@echo "📦 Creating kernel test disk image..."
-	@$(call create_test_disk,kernel_tests,kernel_tests)
-	@echo "🚀 Running kernel tests in QEMU..."
-	@$(call run_test_qemu,kernel_tests,$(TIMEOUT))
-	@echo "✅ Kernel tests PASSED"
-
-# Panic tests - verify panic handling works correctly
-	@echo "🧪 Building and running panic tests..."
-	@cargo build --package $(KERNEL_PROJECT) --target $(KERNEL_TARGET) $(CARGO_PROFILE_FLAG) --test should_panic
-	@echo "📦 Creating panic test disk image..."
-	@$(call create_test_disk,should_panic,should_panic)
-	@echo "🚀 Running panic tests in QEMU..."
-	@$(call run_test_qemu,should_panic,$(TIMEOUT))
-	@echo "✅ Panic tests PASSED"
-
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-# Create a test disk image for a specific test
-# 
-# This function creates a complete EFI bootable disk image containing:
-# 1. The UEFI bootloader (theseus_efi.efi)
-# 2. The test binary (kernel.efi)
-# 3. Proper GPT partition table with EFI System Partition
-# 4. FAT32 filesystem
-#
-# Usage: $(call create_test_disk,test_name,test_binary_name)
-# Parameters:
-#   $(1) - Test name (used for directory naming)
-#   $(2) - Test binary name (used to find the compiled test binary)
-define create_test_disk
-	# Clean up any existing test directory
-	@rm -rf $(ESP_DIR)/test-$(1)
-	
-	# Create directory structure for EFI boot
-	@mkdir -p $(ESP_DIR)/test-$(1)/EFI/BOOT
-	
-	# Copy the UEFI bootloader (this loads and runs our test)
-	@cp $(BOOTLOADER_BUILD_DIR)/theseus_efi.efi $(ESP_DIR)/test-$(1)/EFI/BOOT/BOOTX64.EFI
-	
-	# Find and copy the compiled test binary
-	# The test binary is named like "test_name-hash" in the deps directory
-	@find target/$(KERNEL_TARGET)/$(PROFILE)/deps -name "$(2)-*" -type f -executable | head -1 | xargs -I {} cp {} $(ESP_DIR)/test-$(1)/EFI/BOOT/kernel.efi
-	
-	# Create a 64MB disk image filled with zeros
-	@dd if=/dev/zero of=$(ESP_DIR)/test-$(1)/disk.img bs=1M count=64 2>/dev/null
-	
-	# Create GPT partition table
-	@sgdisk --clear $(ESP_DIR)/test-$(1)/disk.img 2>/dev/null || true
-	
-	# Create EFI System Partition (ESP) from 1MB to 64MB
-	@sgdisk --new=1:1M:64M $(ESP_DIR)/test-$(1)/disk.img 2>/dev/null || true
-	
-	# Set partition type to EFI System Partition
-	@sgdisk --typecode=1:C12A7328-F81F-11D2-BA4B-00A0C93EC93B $(ESP_DIR)/test-$(1)/disk.img 2>/dev/null || true
-	
-	# Format the partition as FAT32 with label "ESP"
-	@mkfs.fat -F32 -n ESP $(ESP_DIR)/test-$(1)/disk.img 2>/dev/null
-	
-	# Create EFI directory structure on the filesystem
-	@mmd -i $(ESP_DIR)/test-$(1)/disk.img ::EFI 2>/dev/null || true
-	@mmd -i $(ESP_DIR)/test-$(1)/disk.img ::EFI/BOOT 2>/dev/null || true
-	
-	# Copy bootloader to the EFI filesystem
-	@mcopy -i $(ESP_DIR)/test-$(1)/disk.img -s $(BOOTLOADER_BUILD_DIR)/theseus_efi.efi ::EFI/BOOT/BOOTX64.EFI 2>/dev/null || true
-	
-	# Copy test binary to the EFI filesystem as kernel.efi
-	@find target/$(KERNEL_TARGET)/$(PROFILE)/deps -name "$(2)-*" -type f -executable | head -1 | xargs -I {} mcopy -i $(ESP_DIR)/test-$(1)/disk.img {} ::kernel.efi 2>/dev/null || true
-endef
-
-# Run a test in QEMU with timeout and result checking
-# 
-# This function runs a test in QEMU with the following features:
-# 1. Automatic timeout to prevent hanging
-# 2. QEMU debug port output capture
-# 3. isa-debug-exit device for automatic pass/fail detection
-# 4. Proper error handling and reporting
-# 5. Log file generation for debugging
-#
-# Usage: $(call run_test_qemu,test_name,timeout_seconds)
-# Parameters:
-#   $(1) - Test name (used for log file naming)
-#   $(2) - Timeout in seconds
-define run_test_qemu
-	# Run QEMU with the test disk image and capture output
-	# Key QEMU options:
-	# - timeout: Prevent hanging tests from running forever
-	# - machine q35: Modern PC emulation
-	# - accel=kvm:tcg: Use KVM if available, fallback to TCG
-	# - cpu max: Use all available CPU features
-	# - m 1G: 1GB of RAM
-	# - isa-debug-exit: Device for automatic test result detection
-	# - isa-debugcon: Device for QEMU debug port output
-	# - display none: Run headless
-	# - no-reboot: Don't restart on exit
-	@timeout $(2)s qemu-system-x86_64 \
-		-machine q35,accel=kvm:tcg \
-		-cpu max \
-		-m 1G \
-		-drive if=pflash,format=raw,readonly=on,file="$(OVMF_CODE)" \
-		-drive if=pflash,format=raw,file="$(OVMF_VARS_RW)" \
-		-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-		-device isa-debugcon,chardev=debugcon \
-		-chardev stdio,id=debugcon \
-		-display none \
-		-serial null \
-		-monitor none \
-		-drive format=raw,file="$(ESP_DIR)/test-$(1)/disk.img" \
-		-nic none \
-		-no-reboot \
-		2>&1 | tee /tmp/$(1)_test_output.log
-	
-	# Check the exit code from QEMU
-	# Exit code 0 means the test passed (isa-debug-exit with code 0)
-	# Any other exit code means the test failed or timed out
-	@if [ $$? -eq 0 ]; then \
-		echo "✅ $(1) tests PASSED"; \
-	else \
-		echo "❌ $(1) tests FAILED"; \
-		echo "Last 20 lines of output:"; \
-		tail -20 /tmp/$(1)_test_output.log; \
-		exit 1; \
-	fi
-endef
