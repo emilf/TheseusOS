@@ -33,7 +33,7 @@
 mod apic;
 pub mod calibration;
 mod debug;
-mod handlers;
+pub(crate) mod handlers;
 mod irq_registry;
 mod timer;
 
@@ -56,7 +56,6 @@ use debug::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9};
 use handlers::{
     handler_bp, handler_de, handler_df, handler_gp, handler_mc, handler_nmi, handler_pf,
     handler_spurious, handler_ud,
-    irq_timer, irq_serial_rx, irq_usb_xhci,
     IRQ_STUB_TABLE,
 };
 
@@ -210,14 +209,8 @@ pub unsafe fn setup_idt() {
             }
         }
 
-        // Register built-in IRQ handlers in the registry so the stub dispatcher
-        // can call them. Drivers register their own handlers similarly during init.
-        irq_registry::register_irq_handler(APIC_TIMER_VECTOR, "apic-timer", irq_timer)
-            .expect("timer IRQ already registered");
-        irq_registry::register_irq_handler(SERIAL_RX_VECTOR, "serial-rx", irq_serial_rx)
-            .expect("serial IRQ already registered");
-        irq_registry::register_irq_handler(XHCI_MSI_VECTOR, "xhci-msi", irq_usb_xhci)
-            .expect("xhci IRQ already registered");
+        // IRQ handler registrations are done by each driver/subsystem during
+        // their own init — not here. init_idt only sets up the IDT structure.
 
         // Assign IST indices for critical exceptions
         // These use dedicated stacks to prevent recursive faults

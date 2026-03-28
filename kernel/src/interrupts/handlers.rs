@@ -230,8 +230,8 @@ pub(super) extern "x86-interrupt" fn handler_mc(_stack: InterruptStackFrame) -> 
 // called by irq_dispatch_common after the stub has already handled the
 // interrupt-frame mechanics. Each handler is responsible for its own EOI.
 
-/// APIC timer IRQ handler (vector 0x40). Registered during interrupt init.
-pub(super) fn irq_timer() {
+/// APIC timer IRQ handler (vector 0x40). Registered by `lapic_timer_configure`.
+pub(crate) fn irq_timer() {
     // Acknowledge LAPIC EOI first to avoid stuck-in-service.
     unsafe { local_apic_eoi(); }
 
@@ -245,8 +245,8 @@ pub(super) fn irq_timer() {
     }
 }
 
-/// Serial RX IRQ handler (vector 0x41). Registered during interrupt init.
-pub(super) fn irq_serial_rx() {
+/// Serial RX IRQ handler (vector 0x41). Registered by `init_serial`.
+pub(crate) fn irq_serial_rx() {
     let mut handled = false;
 
     if let Some(irq) = crate::drivers::serial::current_irq_number() {
@@ -261,8 +261,8 @@ pub(super) fn irq_serial_rx() {
     }
 }
 
-/// xHCI MSI IRQ handler (vector 0x50). Registered during interrupt init.
-pub(super) fn irq_usb_xhci() {
+/// xHCI MSI IRQ handler (vector 0x50). Registered by `usb::init`.
+pub(crate) fn irq_usb_xhci() {
     unsafe { local_apic_eoi(); }
 
     static FIRST_XHCI_MSI: AtomicBool = AtomicBool::new(true);

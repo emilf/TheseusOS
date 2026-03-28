@@ -38,4 +38,17 @@ pub use xhci::{
 /// Register all USB-class drivers with the driver manager.
 pub fn init() {
     xhci::register_xhci_driver();
+
+    // Register the xHCI MSI IRQ handler. The xHCI driver programs its MSI
+    // vector during probe; we register the handler here so it is dispatched
+    // via the uniform IRQ registry when the MSI fires.
+    if let Err(e) = crate::interrupts::register_irq_handler(
+        crate::interrupts::XHCI_MSI_VECTOR,
+        "xhci-msi",
+        crate::interrupts::handlers::irq_usb_xhci,
+    ) {
+        if e != "already registered" {
+            panic!("usb::init: failed to register IRQ handler: {}", e);
+        }
+    }
 }

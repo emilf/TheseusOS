@@ -43,6 +43,19 @@ use super::{APIC_TIMER_VECTOR, TIMER_TICKS};
 /// installs the masked timer vector, masks LINT0/LINT1, and sets the APIC error
 /// vector.
 pub unsafe fn lapic_timer_configure() {
+    // Register the timer IRQ handler in the kernel IRQ registry.
+    // This must happen before the LAPIC unmasked the timer vector.
+    if let Err(e) = super::irq_registry::register_irq_handler(
+        APIC_TIMER_VECTOR,
+        "apic-timer",
+        super::handlers::irq_timer,
+    ) {
+        // "already registered" is fine on re-init; anything else is a bug.
+        if e != "already registered" {
+            panic!("lapic_timer_configure: failed to register IRQ handler: {}", e);
+        }
+    }
+
     log_debug!("LAPIC TPR=0");
     // Set Task Priority Register to 0 (allow all interrupt priorities)
     local_apic_write(0x80, 0x00);

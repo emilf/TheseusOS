@@ -48,12 +48,13 @@ irq_registry::register_irq_handler(vector, "driver-name", handler_fn)
     .expect("vector already claimed");
 ```
 
-Built-in registrations happen in `init_idt()`:
-- `0x40` → `irq_timer` (APIC timer tick)
-- `0x41` → `irq_serial_rx` (serial receive)
-- `0x50` → `irq_usb_xhci` (xHCI MSI)
+Each subsystem registers its own handler during init — `init_idt` only
+installs the IDT stubs:
+- `0x40` → `irq_timer` — registered in `lapic_timer_configure()`
+- `0x41` → `irq_serial_rx` — registered in `init_serial()`
+- `0x50` → `irq_usb_xhci` — registered in `usb::init()`
 
-Any driver can claim any free vector the same way during its `init()`.
+Any future driver claims a vector the same way during its own `init()`.
 
 **Why not read APIC ISR?**
 - ISR scanning is O(8 MMIO reads) on every interrupt — unacceptable on a hot path.

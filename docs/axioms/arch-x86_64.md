@@ -87,8 +87,11 @@ This design:
 
 Implements / evidence:
 - `kernel/src/interrupts/handlers.rs` — `global_asm!` stubs, `IRQ_STUB_TABLE`, `irq_dispatch_common`, `irq_timer`, `irq_serial_rx`, `irq_usb_xhci`
-- `kernel/src/interrupts/mod.rs` — IDT setup loop (`set_handler_addr`), built-in `register_irq_handler` calls
+- `kernel/src/interrupts/mod.rs` — IDT setup loop (`set_handler_addr`)
 - `kernel/src/interrupts/irq_registry.rs` — `dispatch_irq`, `register_irq_handler`, `list_irq_handlers`
+- `kernel/src/interrupts/timer.rs` (`lapic_timer_configure`) — registers `irq_timer`
+- `kernel/src/drivers/serial.rs` (`init_serial`) — registers `irq_serial_rx`
+- `kernel/src/drivers/usb/mod.rs` (`init`) — registers `irq_usb_xhci`
 
 Related plans:
 - `../plans/interrupts-and-platform.md#irq-dispatch-architecture`
