@@ -25,7 +25,7 @@
 //! This module contains the LAPIC accessors plus the early interrupt-masking path
 //! used during kernel bring-up.
 
-use crate::log_info;
+use crate::{log_error, log_info};
 use spin::Once;
 use x86_64::instructions::port::Port;
 use x86_64::registers::model_specific::Msr;
@@ -136,6 +136,34 @@ pub(super) unsafe fn get_apic_base() -> u64 {
 
 /// Cached APIC access mode, initialized once during early LAPIC setup.
 static APIC_MODE: Once<ApicAccessMode> = Once::new();
+
+/// Enable x2APIC mode if CPUID reports support and it is not already active.
+///
+/// Must be called BEFORE `init_apic_mode()` so that `init_apic_mode` caches
+/// x2APIC rather than xAPIC.
+pub unsafe fn try_enable_x2apic() {
+    if !crate::cpu_features::CpuFeatures::get().x2apic {
+        log_info!("x2APIC not supported by CPU; staying in xAPIC mode");
+        return;
+    }
+
+    let val = Msr::new(IA32_APIC_BASE_MSR).read();
+
+    if val & IA32_APIC_BASE_X2APIC_ENABLE_BIT != 0 {
+        log_info!("x2APIC already enabled");
+        return;
+    }
+
+    let new_val = val | IA32_APIC_BASE_X2APIC_ENABLE_BIT | IA32_APIC_BASE_GLOBAL_ENABLE_BIT;
+    Msr::new(IA32_APIC_BASE_MSR).write(new_val);
+
+    let readback = Msr::new(IA32_APIC_BASE_MSR).read();
+    if readback & IA32_APIC_BASE_X2APIC_ENABLE_BIT != 0 {
+        log_info!("x2APIC enabled");
+    } else {
+        log_error!("x2APIC enable failed");
+    }
+}
 
 /// Detect and cache the APIC access mode. Call once before first LAPIC access.
 pub unsafe fn init_apic_mode() {

@@ -40,7 +40,8 @@ mod timer;
 // Re-export commonly used items from submodules
 pub use apic::{
     apic_base_info, disable_all_interrupts, enable_interrupts, init_apic_mode, local_apic_eoi,
-    local_apic_id, local_apic_read, local_apic_write, ApicAccessMode, ApicBaseInfo,
+    local_apic_id, local_apic_read, local_apic_write, try_enable_x2apic, ApicAccessMode,
+    ApicBaseInfo,
 };
 pub use debug::{print_gdt_summary_basic, print_idt_summary_compact};
 pub use irq_registry::{dispatch_irq, list_irq_handlers, register_irq_handler, unregister_irq_handler};
