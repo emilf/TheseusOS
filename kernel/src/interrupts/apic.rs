@@ -111,10 +111,7 @@ unsafe fn mask_pic_interrupts() {
 /// Return whether CPUID reports APIC support.
 #[allow(dead_code)]
 unsafe fn has_apic() -> bool {
-    if let Some(fi) = raw_cpuid::CpuId::new().get_feature_info() {
-        return fi.has_apic();
-    }
-    false
+    crate::cpu_features::CpuFeatures::get().apic
 }
 
 /// Read and decode `IA32_APIC_BASE`.

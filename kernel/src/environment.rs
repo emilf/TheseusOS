@@ -293,6 +293,13 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
             .expect("failed to initialise persistent physical memory manager");
         log_info!("Persistent physical allocator ready");
 
+        // Initialize runtime page‑table mapper
+        unsafe {
+            let mapper = OffsetPageTable::new(l4, VirtAddr::new(crate::memory::PHYS_OFFSET));
+            crate::memory::runtime_mapper::init_kernel_mapper(mapper);
+        }
+        log_info!("Runtime page‑table mapper ready");
+
         // With the allocator live, hand runtime services their virtual map
         match unsafe { set_virtual_address_map_runtime(handoff_phys_ptr()) } {
             Ok(()) => {
