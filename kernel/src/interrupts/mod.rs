@@ -31,16 +31,19 @@
 
 // Submodules
 mod apic;
+pub mod calibration;
 mod debug;
 mod handlers;
+mod irq_registry;
 mod timer;
 
 // Re-export commonly used items from submodules
 pub use apic::{
-    apic_base_info, disable_all_interrupts, enable_interrupts, local_apic_eoi, local_apic_id,
-    local_apic_read, local_apic_write, ApicAccessMode, ApicBaseInfo,
+    apic_base_info, disable_all_interrupts, enable_interrupts, init_apic_mode, local_apic_eoi,
+    local_apic_id, local_apic_read, local_apic_write, ApicAccessMode, ApicBaseInfo,
 };
 pub use debug::{print_gdt_summary_basic, print_idt_summary_compact};
+pub use irq_registry::{dispatch_irq, list_irq_handlers, register_irq_handler, unregister_irq_handler};
 pub use timer::{
     install_timer_vector_runtime, lapic_timer_configure, lapic_timer_mask,
     lapic_timer_start_oneshot, lapic_timer_start_periodic, timer_tick_count,
@@ -52,7 +55,7 @@ use debug::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9};
 // Make handlers available to submodules and IDT setup
 use handlers::{
     handler_bp, handler_de, handler_df, handler_gp, handler_mc, handler_nmi, handler_pf,
-    handler_serial_rx, handler_spurious, handler_timer, handler_ud, handler_usb_xhci,
+    handler_general, handler_serial_rx, handler_spurious, handler_timer, handler_ud, handler_usb_xhci,
 };
 
 use core::sync::atomic::AtomicU32;
@@ -194,6 +197,18 @@ pub unsafe fn setup_idt() {
         idt[XHCI_MSI_VECTOR as usize].set_handler_fn(handler_usb_xhci);
         idt[0xFF].set_handler_fn(handler_spurious);
         idt[APIC_ERROR_VECTOR as usize].set_handler_fn(handler_spurious);
+
+        // Install general IRQ handler for vectors 0x20‑0xFF (excluding those already set)
+        for vector in 0x20..=0xFF {
+            if vector != APIC_TIMER_VECTOR
+                && vector != SERIAL_RX_VECTOR
+                && vector != XHCI_MSI_VECTOR
+                && vector != 0xFF
+                && vector != APIC_ERROR_VECTOR
+            {
+                idt[vector as usize].set_handler_fn(handler_general);
+            }
+        }
 
         // Assign IST indices for critical exceptions
         // These use dedicated stacks to prevent recursive faults

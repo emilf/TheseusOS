@@ -535,6 +535,13 @@ where
         reserve_region(&mut manager, *region);
     }
 
+    // Debug assertion: verify no overlap between consumed regions and free frames
+    #[cfg(debug_assertions)]
+    {
+        log_debug!("Physical memory init: validating no overlap with free frames");
+        validate_no_overlap_with_free_frames(&manager, consumed);
+    }
+
     // Install the manager as the global singleton
     let mut guard = PHYS_MANAGER.lock();
     *guard = Some(manager);
@@ -552,6 +559,8 @@ fn reserve_boot_consumed(manager: &mut PhysicalMemoryManager) {
     }
 
     let len = boot.len;
+    log_debug!("Reserving {} boot-consumed regions", len);
+    
     // Merge overlapping/adjacent regions to reduce reservation overhead
     let merged = merge_regions_in_place(&mut boot.regions, len);
 
@@ -566,6 +575,42 @@ fn reserve_boot_consumed(manager: &mut PhysicalMemoryManager) {
     for region in merged {
         reserve_region(manager, region);
     }
+}
+
+/// Validate that consumed regions don't overlap with free frames.
+/// This is a debug assertion to catch handoff bugs early.
+#[cfg(debug_assertions)]
+fn validate_no_overlap_with_free_frames(
+    manager: &PhysicalMemoryManager,
+    consumed: &[ConsumedRegion],
+) {
+    use crate::log_error;
+    
+    for region in consumed {
+        if region.size == 0 {
+            continue;
+        }
+        
+        let start_pfn = Pfn::containing(region.base);
+        let end_pfn = Pfn::containing(region.base + region.size - 1);
+        
+        // Check each frame in the region
+        for pfn in start_pfn.0..=end_pfn.0 {
+            if manager.is_free(Pfn(pfn)) {
+                log_error!(
+                    "BUG: Consumed region {:#x}-{:#x} overlaps with free frame at PFN {} ({:#x})",
+                    region.base,
+                    region.base + region.size,
+                    pfn,
+                    pfn * FRAME_SIZE
+                );
+                // In debug builds, we panic to catch the bug immediately
+                panic!("Consumed region overlaps with free frame");
+            }
+        }
+    }
+    
+    log_debug!("Physical memory validation passed: no overlap with free frames");
 }
 
 /// Merge overlapping or adjacent consumed regions before reservation.
@@ -656,7 +701,9 @@ pub fn drain_boot_consumed() -> Vec<ConsumedRegion> {
         return Vec::new();
     }
 
+    log_debug!("Draining boot consumed regions: {} raw entries", len);
     let merged = merge_regions_in_place(&mut boot.regions, len);
+    log_debug!("Boot consumed regions after merge: {} entries", merged.len());
 
     // Clear the log
     for entry in boot.regions.iter_mut().take(len) {

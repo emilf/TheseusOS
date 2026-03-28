@@ -57,11 +57,13 @@ Everything here is merged and working. This is what the vibe coding experiment h
 
 Before we can do multi-process work, the CPU foundations need to be solid.
 
-- [ ] **APIC timer calibration** — measure ticks/ms against HPET or PIT; needed for real preemption
+- [x] **APIC timer calibration** — measure ticks/ms against HPET or PIT; needed for real preemption (implemented in `interrupts/calibration.rs`)
 - [ ] **x2APIC support** — plan exists (`x2apic-prep.md`), just needs implementation
 - [ ] **TSS + IST stacks** — separate stacks for NMI/DF/MCE; required for safe exception handling
-- [ ] **CPUID feature abstraction** — centralized feature detection (SSE, AVX, TSC-Deadline, x2APIC, etc.)
+- [x] **CPUID feature abstraction** — centralized feature detection (SSE, AVX, TSC-Deadline, x2APIC, etc.) (implemented in `cpu_features.rs`)
 - [ ] **SMP bring-up** — wake APs via INIT/SIPI, per-CPU GDT/IDT/TSS, IPI infrastructure
+
+**Status:** Partially complete. See `docs/plans/cpu-platform-hardening.md` for detailed status.
 
 ---
 

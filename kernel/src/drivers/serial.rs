@@ -112,6 +112,86 @@ pub fn init_serial() {
     register_serial_driver();
 }
 
+/// Interrupt handler for serial RX interrupts.
+/// This function is registered with the IRQ registry.
+fn serial_interrupt_handler() {
+    use crate::interrupts;
+    
+    // Call the existing serial interrupt handling logic
+    // Note: This is a simplified version that doesn't go through the driver manager
+    if !crate::config::ENABLE_SERIAL_OUTPUT {
+        return;
+    }
+    
+    // Process received data
+    let mut handled = false;
+    let mut collected = Vec::new();
+    
+    if let Some(state) = SERIAL_STATE.lock().as_ref() {
+        // Read all available bytes from UART
+        while let Some(byte) = state.port.read_byte() {
+            collected.push(byte);
+            handled = true;
+        }
+        
+        // Store received bytes in circular buffer
+        if !collected.is_empty() {
+            let mut buffer = state.rx_buffer.lock();
+            let head = state.head.load(core::sync::atomic::Ordering::Acquire);
+            let mut new_head = head;
+            
+            // Store in buffer and forward to monitor
+            for byte in &collected {
+                buffer[new_head % RX_BUFFER_SIZE] = *byte;
+                new_head = new_head.wrapping_add(1);
+                crate::monitor::push_serial_byte(*byte);
+            }
+            
+            state.head.store(new_head, core::sync::atomic::Ordering::Release);
+        }
+    }
+    
+    // Send EOI to LAPIC
+    unsafe {
+        interrupts::local_apic_eoi();
+    }
+    
+    // Log if interrupt was unhandled (debugging)
+    #[allow(unused_unsafe)]
+    if !handled {
+        // Use the debug output function directly
+        use x86_64::instructions::port::Port;
+        let mut port = Port::<u8>::new(0xe9);
+        unsafe {
+            port.write(b'[');
+            port.write(b's');
+            port.write(b'e');
+            port.write(b'r');
+            port.write(b'i');
+            port.write(b'a');
+            port.write(b'l');
+            port.write(b']');
+            port.write(b' ');
+            port.write(b'i');
+            port.write(b'r');
+            port.write(b'q');
+            port.write(b' ');
+            port.write(b'b');
+            port.write(b'u');
+            port.write(b't');
+            port.write(b' ');
+            port.write(b'n');
+            port.write(b'o');
+            port.write(b' ');
+            port.write(b'd');
+            port.write(b'a');
+            port.write(b't');
+            port.write(b'a');
+            port.write(b'\n');
+        }
+    }
+}
+
 /// Write bytes directly to the serial port, bypassing the driver manager.
 /// This is useful from interrupt context to avoid re-entrant locking.
 pub fn write_bytes_direct(buf: &[u8]) -> Result<usize, &'static str> {
@@ -357,10 +437,25 @@ impl Driver for SerialDriver {
         {
             let mut guard = SERIAL_STATE.lock();
             *guard = Some(state);
-            if let Some(stored) = guard.as_ref() {
-                dev.driver_data = Some(stored as *const SerialDriverState as usize);
+            if guard.is_some() {
+                // Store a marker to indicate the serial driver is bound
+                dev.set_driver_state(true);
             }
         }
+        
+        // Register interrupt handler with IRQ registry
+        // Note: SERIAL_RX_VECTOR is defined in interrupts module as 0x41
+        if let Err(err) = crate::interrupts::register_irq_handler(
+            crate::interrupts::SERIAL_RX_VECTOR,
+            "serial_rx",
+            serial_interrupt_handler,
+        ) {
+            log_error!("Serial: failed to register IRQ handler: {}", err);
+        } else {
+            log_debug!("Serial: IRQ handler registered for vector 0x{:02x}", 
+                crate::interrupts::SERIAL_RX_VECTOR);
+        }
+        
         log_debug!("Serial initialized");
         Ok(())
     }
@@ -380,8 +475,8 @@ impl Driver for SerialDriver {
             (handled, collected)
         }) {
             Ok((handled, collected)) => {
-                for byte in collected {
-                    crate::monitor::push_serial_byte(byte);
+                for byte in &collected {
+                    crate::monitor::push_serial_byte(*byte);
                 }
                 handled
             }

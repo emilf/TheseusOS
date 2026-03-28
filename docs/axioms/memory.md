@@ -66,7 +66,97 @@ Affected modules:
 - `kernel/src/environment.rs`
 - `kernel/src/memory.rs`
 
+## A3.5: The kernel VA allocator manages a dedicated dynamic region
+
+**REQUIRED**
+
+Runtime kernel subsystems that need virtual address space (runtime mappings,
+kernel stacks, device MMIO windows) allocate from the VA allocator region
+`0xFFFF_9000_0000_0000 .. 0xFFFF_B000_0000_0000`.
+
+This region is well clear of all statically-assigned VA windows:
+
+| Region | VA range |
+|--------|----------|
+| PHYS_OFFSET | `0xFFFF_8000_0000_0000` |
+| **VA allocator** | `0xFFFF_9000_0000_0000 .. 0xFFFF_B000_0000_0000` |
+| ACPI window | `0xFFFF_FF80_0000_0000` |
+| TemporaryWindow | `0xFFFF_FFFE_0000_0000` |
+| KERNEL_VIRTUAL_BASE | `0xFFFF_FFFF_8000_0000` |
+| Framebuffer | `0xFFFF_FFFF_9000_0000` |
+| TEMP_HEAP | `0xFFFF_FFFF_A000_0000` |
+| KERNEL_HEAP | `0xFFFF_FFFF_B000_0000` |
+
+Implements / evidence:
+- `kernel/src/memory/va_alloc.rs`
+
+Related plans:
+- `../plans/memory.md`
+
+Affected modules:
+- `kernel/src/memory/va_alloc.rs`
+- `kernel/src/memory/runtime_mapper.rs` (future consumer)
+- `kernel/src/memory/stack_alloc.rs` (future consumer)
+
 ## A4: The persistent physical allocator is initialized from the UEFI memory map after the permanent heap exists
+
+**REQUIRED**
+
+The kernel's persistent physical frame allocator (`PhysicalMemoryManager`) is
+initialized by `init_from_handoff()` after the permanent kernel heap is ready.
+It consumes the UEFI memory map, marks all `Reserved` regions as unavailable,
+and then reserves any memory consumed during early boot (before the allocator
+existed).
+
+### Boot‑time consumed‑region tracking
+
+Early boot code (identity mapping, GDT/TSS, early page tables, etc.) consumes
+physical frames before the persistent allocator exists. These frames are
+recorded via `record_boot_consumed_region()` into a static log
+(`BOOT_CONSUMED`).
+
+During `init_from_handoff()`:
+
+1. The UEFI memory map is processed; `Reserved` regions are marked unavailable.
+2. `reserve_boot_consumed()` calls `drain_boot_consumed()` to obtain the merged
+   list of boot‑time consumed regions.
+3. Each merged region is reserved in the allocator bitmap.
+4. In debug builds, `validate_no_overlap_with_free_frames()` walks the bitmap
+   to ensure no consumed region overlaps a frame still marked free — a bug
+   would indicate a missed `record_boot_consumed_region()` call.
+
+### Timeline
+
+| Stage | Allocator state | Frame consumption |
+|-------|----------------|-------------------|
+| Early boot (pre‑heap) | Not yet initialized | Frames consumed via `record_boot_consumed_region()` |
+| Heap ready | Not yet initialized | — |
+| `init_from_handoff()` | Constructed, UEFI `Reserved` marked | Boot‑time consumed regions drained and reserved |
+| Post‑handoff | Live (`PersistentFrameAllocator`) | All future allocations via `allocate_frame()` |
+
+### What happens if a region is missed?
+
+If early boot code consumes a frame but fails to call `record_boot_consumed_region()`,
+the frame will remain marked free in the allocator bitmap. Later, `allocate_frame()`
+may return that frame, causing double‑use and memory corruption.
+
+The debug assertion in `init_from_handoff()` catches this by walking the bitmap
+and panicking if any consumed‑region PFN is still free.
+
+Implements / evidence:
+- `kernel/src/physical_memory.rs`:
+  - `record_boot_consumed_region()`
+  - `drain_boot_consumed()`
+  - `init_from_handoff()` with `#[cfg(debug_assertions)]` validation
+  - `validate_no_overlap_with_free_frames()`
+
+Related plans:
+- `../plans/memory.md`
+
+Affected modules:
+- `kernel/src/physical_memory.rs`
+- `kernel/src/environment.rs` (calls `init_from_handoff()`)
+- Early boot code that consumes frames (mapping, GDT, etc.)
 
 **REQUIRED**
 
@@ -85,3 +175,42 @@ Affected modules:
 - `kernel/src/environment.rs`
 - `kernel/src/memory/frame_allocator.rs`
 - `kernel/src/handoff.rs`
+
+## A5: Allocator Handoff
+
+**REQUIRED**
+
+The transition from early-boot memory consumption to the runtime physical allocator follows a strict timeline:
+
+1. **Early boot**: Before `init_from_handoff` is called, any physical memory consumption (page tables, stacks, temporary structures) must be recorded via `record_boot_consumed_region`.
+
+2. **Handoff initialization**: `init_from_handoff` is called with:
+   - The UEFI memory map (conventional memory marked as free, all other types as reserved)
+   - A list of additional consumed regions (e.g., framebuffer, ACPI tables)
+   - A callback to allocate bitmap storage from the permanent heap
+
+3. **Region reservation**: During initialization:
+   - All UEFI-reserved regions are marked as reserved in the bitmap
+   - Boot-consumed regions (from `BOOT_CONSUMED` log) are drained and reserved
+   - Explicitly provided consumed regions are reserved
+   - Debug builds validate no overlap between consumed regions and free frames
+
+4. **Post-initialization**: After `init_from_handoff` succeeds:
+   - `record_boot_consumed_region` directly reserves regions in the live bitmap
+   - The `BOOT_CONSUMED` log is empty and unused
+
+**Critical invariant**: If a region is missed during handoff (not recorded via `record_boot_consumed_region` and not in the consumed list), it may be allocated later, causing memory corruption or aliasing.
+
+Implements / evidence:
+- `kernel/src/physical_memory.rs#record_boot_consumed_region`
+- `kernel/src/physical_memory.rs#init_from_handoff`
+- `kernel/src/physical_memory.rs#reserve_boot_consumed`
+- `kernel/src/physical_memory.rs#validate_no_overlap_with_free_frames` (debug)
+
+Related plans:
+- `../plans/memory.md#physical-memory-allocator`
+
+Affected modules:
+- `kernel/src/physical_memory.rs`
+- `kernel/src/environment.rs`
+- All early-boot code that consumes physical memory before the allocator is ready

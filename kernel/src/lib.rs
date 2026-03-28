@@ -41,6 +41,7 @@ pub mod acpi;
 pub mod boot;
 pub mod bootlogo;
 pub mod cpu;
+pub mod cpu_features;
 pub mod display;
 pub mod drivers;
 pub mod environment;

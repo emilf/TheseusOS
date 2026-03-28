@@ -301,10 +301,31 @@ fn classify_pci_device(info: &pci::PciDeviceInfo) -> DeviceClass {
             _ => DeviceClass::Storage,
         },
         0x02 => DeviceClass::Network,
+        0x03 => match info.subclass {
+            0x00 => DeviceClass::Display, // VGA
+            0x01 => DeviceClass::Display, // XGA
+            0x02 => DeviceClass::Display, // 3D
+            _ => DeviceClass::Display,
+        },
+        0x04 => match info.subclass {
+            0x00 => DeviceClass::Audio, // Audio
+            0x01 => DeviceClass::Audio, // Modem
+            0x03 => DeviceClass::Audio, // HDA
+            _ => DeviceClass::Audio,
+        },
         0x06 => match info.subclass {
             0x00 | 0x04 => DeviceClass::Bridge,
             _ => DeviceClass::Unknown,
         },
+        0x0D => match info.subclass {
+            0x00 => DeviceClass::Input, // Keyboard
+            0x01 => DeviceClass::Input, // Pen
+            0x02 => DeviceClass::Input, // Mouse
+            0x03 => DeviceClass::Input, // Scanner
+            0x10 => DeviceClass::Input, // Gameport
+            _ => DeviceClass::Input,
+        },
+        0x0E => DeviceClass::Wireless,
         _ => DeviceClass::Unknown,
     }
 }

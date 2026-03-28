@@ -331,6 +331,9 @@ impl Monitor {
             "ptwalk" | "pt" => self.cmd_ptwalk(&parts[1..]),
             "ptdump" => self.cmd_ptdump(&parts[1..]),
             "devices" | "dev" => self.cmd_devices(),
+            "irq" => {
+                self.writeln("IRQ command not yet implemented");
+            }
             "pci" => self.cmd_pci(&parts[1..]),
             "acpi" => self.cmd_acpi(),
             "phys" | "physmem" => self.cmd_phys(),
@@ -339,6 +342,17 @@ impl Monitor {
             "gdt" => self.cmd_gdt(&parts[1..]),
             "mmap" => self.cmd_memory_map(&parts[1..]),
             "cpuid" => self.cmd_cpuid(),
+            "cpu" => {
+                if parts.len() > 1 {
+                    match parts[1] {
+                        "features" => self.cmd_cpu_features(),
+                        "timer" => self.cmd_cpu_timer(),
+                        _ => self.writeln("Usage: cpu features|timer"),
+                    }
+                } else {
+                    self.writeln("Usage: cpu features|timer");
+                }
+            }
             "msr" => self.cmd_msr(&parts[1..]),
             "io" => self.cmd_io(&parts[1..]),
             "int" => self.cmd_int(&parts[1..]),

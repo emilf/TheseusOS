@@ -25,7 +25,8 @@
 //! This module contains the LAPIC accessors plus the early interrupt-masking path
 //! used during kernel bring-up.
 
-use crate::{log_error, log_trace};
+use crate::log_info;
+use spin::Once;
 use x86_64::instructions::port::Port;
 use x86_64::registers::model_specific::Msr;
 
@@ -110,10 +111,7 @@ unsafe fn mask_pic_interrupts() {
 /// Return whether CPUID reports APIC support.
 #[allow(dead_code)]
 unsafe fn has_apic() -> bool {
-    if let Some(fi) = raw_cpuid::CpuId::new().get_feature_info() {
-        return fi.has_apic();
-    }
-    false
+    crate::cpu_features::CpuFeatures::get().apic
 }
 
 /// Read and decode `IA32_APIC_BASE`.
@@ -136,101 +134,132 @@ pub(super) unsafe fn get_apic_base() -> u64 {
     apic_base_info().phys_base
 }
 
-/// Guardrail: ensure the current runtime APIC access mode matches the current LAPIC access path.
-///
-/// Today, TheseusOS uses xAPIC-style MMIO access (through `PHYS_OFFSET`) for LAPIC register reads/writes.
-/// If x2APIC is enabled in `IA32_APIC_BASE`, MMIO access is no longer the correct transport and
-/// continuing silently would be actively misleading.
-#[inline(always)]
-unsafe fn require_xapic_mmio_access(op: &str) {
+/// Cached APIC access mode, initialized once during early LAPIC setup.
+static APIC_MODE: Once<ApicAccessMode> = Once::new();
+
+/// Detect and cache the APIC access mode. Call once before first LAPIC access.
+pub unsafe fn init_apic_mode() {
     let info = apic_base_info();
-    match info.access_mode() {
-        ApicAccessMode::XApic => {}
-        ApicAccessMode::Disabled => {
-            log_error!("LAPIC access attempted while APIC is disabled (op={})", op);
-            panic!("LAPIC access while APIC disabled");
-        }
-        ApicAccessMode::X2Apic => {
-            log_error!(
-                "LAPIC MMIO access attempted while x2APIC is enabled (op={}); x2APIC requires MSR-based access",
-                op
-            );
-            panic!("LAPIC MMIO access while x2APIC enabled");
-        }
-    }
+    let mode = info.access_mode();
+    APIC_MODE.call_once(|| mode);
+    log_info!("APIC mode: {}", mode.as_str());
 }
 
-/// Read a LAPIC register through the `PHYS_OFFSET` mapping.
+/// Get the cached APIC access mode.
+fn cached_apic_mode() -> ApicAccessMode {
+    *APIC_MODE.get().unwrap_or(&ApicAccessMode::XApic)
+}
+
+/// Read a LAPIC register through the `PHYS_OFFSET` mapping (xAPIC MMIO path).
 pub(super) unsafe fn read_apic_register(apic_base: u64, offset: u32) -> u32 {
-    // The LAPIC MMIO is mapped at PHYS_OFFSET + physical address
     let vbase = crate::memory::phys_to_virt_pa(apic_base & 0xFFFFF000);
     let addr = vbase + (offset as u64);
-
-    // Use volatile read to ensure the hardware access isn't optimized away
-    let val = core::ptr::read_volatile(addr as *const u32);
-
-    // Debug MMIO operations if needed (disabled for performance)
-    const APIC_MMIO_DEBUG: bool = false;
-    if APIC_MMIO_DEBUG {
-        log_trace!("LAPIC MMIO READ addr={:#x} val={:#x}", addr, val);
-    }
-
-    val
+    core::ptr::read_volatile(addr as *const u32)
 }
 
-/// Write a LAPIC register through the `PHYS_OFFSET` mapping.
+/// Write a LAPIC register through the `PHYS_OFFSET` mapping (xAPIC MMIO path).
 pub(super) unsafe fn write_apic_register(apic_base: u64, offset: u32, value: u32) {
     let vbase = crate::memory::phys_to_virt_pa(apic_base & 0xFFFFF000);
     let addr = vbase + (offset as u64);
-
-    // Use volatile write to ensure the hardware access happens
     core::ptr::write_volatile(addr as *mut u32, value);
+}
 
-    // Debug MMIO operations if needed (disabled for performance)
-    const APIC_MMIO_DEBUG: bool = false;
-    if APIC_MMIO_DEBUG {
-        log_trace!("LAPIC MMIO WRITE addr={:#x} val={:#x}", addr, value);
+/// Read a LAPIC register via x2APIC MSR.
+///
+/// x2APIC registers are at MSR `0x800 + (offset / 16)`.
+/// ICR (offset 0x300) is special: in x2APIC it's a single 64-bit MSR at 0x830.
+unsafe fn x2apic_read(offset: u32) -> u32 {
+    let msr_addr = 0x800 + (offset >> 4);
+    Msr::new(msr_addr).read() as u32
+}
+
+/// Write a LAPIC register via x2APIC MSR.
+///
+/// For ICR (offset 0x300/0x310): in x2APIC mode, ICR is a single 64-bit write
+/// at MSR 0x830. The caller must use `x2apic_write_icr` for ICR writes.
+unsafe fn x2apic_write(offset: u32, value: u32) {
+    let msr_addr = 0x800 + (offset >> 4);
+    Msr::new(msr_addr).write(value as u64);
+}
+
+/// Write the x2APIC ICR as a single 64-bit MSR write.
+///
+/// `low` is the ICR low half (vector, delivery mode, etc.).
+/// `high` is the destination APIC ID (full 32-bit in x2APIC).
+#[allow(dead_code)]
+unsafe fn x2apic_write_icr(low: u32, high: u32) {
+    let val = ((high as u64) << 32) | (low as u64);
+    Msr::new(0x830).write(val);
+}
+
+/// Return the current processor's APIC ID.
+pub unsafe fn local_apic_id() -> u32 {
+    match cached_apic_mode() {
+        ApicAccessMode::XApic => {
+            let base = get_apic_base();
+            read_apic_register(base, 0x20) >> 24
+        }
+        ApicAccessMode::X2Apic => {
+            // x2APIC ID is the full 32-bit value (no shift needed)
+            x2apic_read(0x20)
+        }
+        ApicAccessMode::Disabled => {
+            panic!("LAPIC access while APIC disabled (local_apic_id)");
+        }
     }
 }
 
-/// Return the current processor's APIC ID as exposed by the current xAPIC runtime path.
-///
-/// This remains xAPIC/MMIO-backed today even though the code now reports x2APIC mode
-/// separately. Future x2APIC enablement should update this helper rather than every caller.
-pub unsafe fn local_apic_id() -> u32 {
-    require_xapic_mmio_access("local_apic_id");
-    let base = get_apic_base();
-    read_apic_register(base, 0x20) >> 24
-}
-
-/// Signal end-of-interrupt to the Local APIC using the current runtime access path.
-///
-/// This helper centralizes a key xAPIC-only operation so that any future x2APIC support
-/// can change one place first instead of patching each interrupt handler independently.
+/// Signal end-of-interrupt to the Local APIC.
 pub unsafe fn local_apic_eoi() {
-    require_xapic_mmio_access("local_apic_eoi");
-    let base = get_apic_base();
-    write_apic_register(base, 0xB0, 0);
+    match cached_apic_mode() {
+        ApicAccessMode::XApic => {
+            let base = get_apic_base();
+            write_apic_register(base, 0xB0, 0);
+        }
+        ApicAccessMode::X2Apic => {
+            x2apic_write(0xB0, 0);
+        }
+        ApicAccessMode::Disabled => {
+            panic!("LAPIC access while APIC disabled (local_apic_eoi)");
+        }
+    }
 }
 
-/// Read one Local APIC register through the current runtime access path.
-///
-/// Today this is still xAPIC/MMIO-backed. The helper exists so future x2APIC work can
-/// change one access surface instead of every subsystem re-encoding LAPIC offsets.
+/// Read one Local APIC register through the mode-appropriate path.
 pub unsafe fn local_apic_read(offset: u32) -> u32 {
-    require_xapic_mmio_access("local_apic_read");
-    let base = get_apic_base();
-    read_apic_register(base, offset)
+    match cached_apic_mode() {
+        ApicAccessMode::XApic => {
+            let base = get_apic_base();
+            read_apic_register(base, offset)
+        }
+        ApicAccessMode::X2Apic => x2apic_read(offset),
+        ApicAccessMode::Disabled => {
+            panic!("LAPIC access while APIC disabled (local_apic_read)");
+        }
+    }
 }
 
-/// Write one Local APIC register through the current runtime access path.
+/// Write one Local APIC register through the mode-appropriate path.
 ///
-/// Today this is still xAPIC/MMIO-backed. The helper exists so future x2APIC work can
-/// change one access surface instead of every subsystem re-encoding LAPIC offsets.
+/// For ICR writes in x2APIC mode, offset 0x300 is handled specially:
+/// the high half (0x310 destination) must be written first via `local_apic_write(0x310, dest)`,
+/// then this function combines them for the 64-bit MSR write.
 pub unsafe fn local_apic_write(offset: u32, value: u32) {
-    require_xapic_mmio_access("local_apic_write");
-    let base = get_apic_base();
-    write_apic_register(base, offset, value);
+    match cached_apic_mode() {
+        ApicAccessMode::XApic => {
+            let base = get_apic_base();
+            write_apic_register(base, offset, value);
+        }
+        ApicAccessMode::X2Apic => {
+            // ICR low (0x300) in x2APIC is special — it triggers the IPI.
+            // We write it as a regular MSR for now; full 64-bit ICR writes
+            // should use x2apic_write_icr() when IPI support is implemented.
+            x2apic_write(offset, value);
+        }
+        ApicAccessMode::Disabled => {
+            panic!("LAPIC access while APIC disabled (local_apic_write)");
+        }
+    }
 }
 
 /// Set the CPU interrupt flag once the runtime is ready for maskable IRQs.

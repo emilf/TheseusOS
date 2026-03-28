@@ -891,13 +891,13 @@ impl XhciDriver {
 
             {
                 let list = CONTROLLERS.lock();
-                if let Some(existing) = list.iter().find(|ctrl| ctrl.phys_base == phys_base) {
+                if let Some(_existing) = list.iter().find(|ctrl| ctrl.phys_base == phys_base) {
                     log_debug!(
                         "xHCI {} shares phys base {:#x}; reusing existing mapping",
                         ident,
                         phys_base
                     );
-                    dev.driver_data = Some(existing as *const XhciController as usize);
+                    dev.set_driver_state(phys_base);
                     return Ok(false);
                 }
             }
@@ -1048,8 +1048,7 @@ impl XhciDriver {
             if let Err(err) = self.submit_noop(controller_ref, &ident) {
                 log_warn!("xHCI {}: noop command submission failed: {}", ident, err);
             }
-            let stored = controller_ref as *const XhciController;
-            dev.driver_data = Some(stored as usize);
+            dev.set_driver_state(phys_base);
         }
 
         Ok(true)
@@ -1127,11 +1126,9 @@ impl XhciDriver {
 
         let mut controllers = CONTROLLERS.lock();
         let mut controller_match: Option<&mut XhciController> = None;
-        if let Some(raw) = dev.driver_data {
-            let target = raw as *const XhciController;
+        if let Some(&target_phys) = dev.driver_state::<u64>() {
             for ctrl in controllers.iter_mut() {
-                let ctrl_ptr = ctrl as *mut XhciController as *const XhciController;
-                if ctrl_ptr == target {
+                if ctrl.phys_base == target_phys {
                     controller_match = Some(ctrl);
                     break;
                 }
