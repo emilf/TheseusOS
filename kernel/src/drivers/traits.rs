@@ -24,7 +24,9 @@
 //!
 //! This module defines the stable vocabulary used by the kernel driver framework.
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::any::Any;
 use core::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -76,7 +78,7 @@ impl fmt::Display for DeviceId {
 }
 
 /// Device descriptor tracked by the driver manager.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Device {
     /// Device identity (ACPI, PCI or raw)
     pub id: DeviceId,
@@ -88,8 +90,8 @@ pub struct Device {
     pub irq: Option<u32>,
     /// Hardware resources associated with the device (BARs, I/O ports, etc.)
     pub resources: Vec<DeviceResource>,
-    /// Opaque driver-defined binding state stored as usize
-    pub driver_data: Option<usize>,
+    /// Opaque driver-defined binding state (type-safe via `Any`).
+    pub driver_data: Option<Box<dyn Any + Send>>,
 }
 
 impl Device {
@@ -119,9 +121,8 @@ impl Device {
         if self.irq.is_none() {
             self.irq = other.irq;
         }
-        if self.driver_data.is_none() {
-            self.driver_data = other.driver_data;
-        }
+        // driver_data is not merged — binding state is per-device and
+        // owned by the bound driver.
         for res in other.resources.iter() {
             if !self.resources.iter().any(|existing| existing == res) {
                 self.resources.push(*res);
@@ -173,16 +174,21 @@ impl Device {
         self.io_resources().next()
     }
 
-    pub fn set_driver_state<T>(&mut self, state: &T) {
-        self.driver_data = Some(state as *const T as usize);
+    /// Store typed driver state (replaces any previous state).
+    pub fn set_driver_state<T: Any + Send + 'static>(&mut self, state: T) {
+        self.driver_data = Some(Box::new(state));
     }
 
-    pub fn driver_state<T>(&self) -> Option<&T> {
-        self.driver_data.map(|ptr| unsafe { &*(ptr as *const T) })
+    /// Borrow the driver state as the requested type, or `None` if not set or wrong type.
+    pub fn driver_state<T: Any>(&self) -> Option<&T> {
+        self.driver_data.as_ref().and_then(|b| b.downcast_ref::<T>())
     }
 
-    pub fn driver_state_mut<T>(&mut self) -> Option<&mut T> {
-        self.driver_data.map(|ptr| unsafe { &mut *(ptr as *mut T) })
+    /// Mutably borrow the driver state as the requested type.
+    pub fn driver_state_mut<T: Any>(&mut self) -> Option<&mut T> {
+        self.driver_data
+            .as_mut()
+            .and_then(|b| b.downcast_mut::<T>())
     }
 }
 

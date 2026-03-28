@@ -357,8 +357,9 @@ impl Driver for SerialDriver {
         {
             let mut guard = SERIAL_STATE.lock();
             *guard = Some(state);
-            if let Some(stored) = guard.as_ref() {
-                dev.driver_data = Some(stored as *const SerialDriverState as usize);
+            if guard.is_some() {
+                // Store a marker to indicate the serial driver is bound
+                dev.set_driver_state(true);
             }
         }
         log_debug!("Serial initialized");
