@@ -160,10 +160,6 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
             }
         }
     }
-    // Ensure timer vector (0x40) has a full 64-bit handler address
-    unsafe {
-        crate::interrupts::install_timer_vector_runtime();
-    }
     // Detect CPU features and apply CR4 hardening (SMEP/SMAP/FSGSBASE)
     crate::cpu_features::CpuFeatures::init();
     log_debug!("CPU features detected and CR4 hardened");

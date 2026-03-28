@@ -33,7 +33,7 @@
 mod apic;
 pub mod calibration;
 mod debug;
-mod handlers;
+pub(crate) mod handlers;
 mod irq_registry;
 mod timer;
 
@@ -45,7 +45,7 @@ pub use apic::{
 pub use debug::{print_gdt_summary_basic, print_idt_summary_compact};
 pub use irq_registry::{dispatch_irq, list_irq_handlers, register_irq_handler, unregister_irq_handler};
 pub use timer::{
-    install_timer_vector_runtime, lapic_timer_configure, lapic_timer_mask,
+    lapic_timer_configure, lapic_timer_mask,
     lapic_timer_start_oneshot, lapic_timer_start_periodic, timer_tick_count,
 };
 
@@ -55,7 +55,8 @@ use debug::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9};
 // Make handlers available to submodules and IDT setup
 use handlers::{
     handler_bp, handler_de, handler_df, handler_gp, handler_mc, handler_nmi, handler_pf,
-    handler_general, handler_serial_rx, handler_spurious, handler_timer, handler_ud, handler_usb_xhci,
+    handler_spurious, handler_ud,
+    IRQ_STUB_TABLE,
 };
 
 use core::sync::atomic::AtomicU32;
@@ -191,24 +192,25 @@ pub unsafe fn setup_idt() {
         idt.general_protection_fault.set_handler_fn(handler_gp);
         idt.page_fault.set_handler_fn(handler_pf);
 
-        // Install hardware interrupt handlers
-        idt[APIC_TIMER_VECTOR as usize].set_handler_fn(handler_timer);
-        idt[SERIAL_RX_VECTOR as usize].set_handler_fn(handler_serial_rx);
-        idt[XHCI_MSI_VECTOR as usize].set_handler_fn(handler_usb_xhci);
+        // Spurious and APIC error keep dedicated handlers: the Intel SDM
+        // requires that spurious interrupts (0xFF) do NOT receive an EOI.
         idt[0xFF].set_handler_fn(handler_spurious);
         idt[APIC_ERROR_VECTOR as usize].set_handler_fn(handler_spurious);
 
-        // Install general IRQ handler for vectors 0x20‑0xFF (excluding those already set)
-        for vector in 0x20..=0xFF {
-            if vector != APIC_TIMER_VECTOR
-                && vector != SERIAL_RX_VECTOR
-                && vector != XHCI_MSI_VECTOR
-                && vector != 0xFF
-                && vector != APIC_ERROR_VECTOR
-            {
-                idt[vector as usize].set_handler_fn(handler_general);
+        // All other hardware IRQs (0x20–0xFD) — including timer (0x40),
+        // serial (0x41), and xHCI (0x50) — go through the uniform stub system.
+        // Handlers for those vectors are registered in the IRQ registry below.
+        for (vector, stub_opt) in IRQ_STUB_TABLE.iter().enumerate() {
+            if let Some(stub) = stub_opt {
+                unsafe {
+                    idt[vector]
+                        .set_handler_addr(x86_64::VirtAddr::new(*stub as u64));
+                }
             }
         }
+
+        // IRQ handler registrations are done by each driver/subsystem during
+        // their own init — not here. init_idt only sets up the IDT structure.
 
         // Assign IST indices for critical exceptions
         // These use dedicated stacks to prevent recursive faults

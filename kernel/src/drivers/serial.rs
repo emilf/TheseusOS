@@ -109,6 +109,8 @@ pub fn init_serial() {
     if !crate::config::ENABLE_SERIAL_OUTPUT {
         return;
     }
+    // Registration of the serial RX IRQ handler happens inside
+    // SerialDriver::init() when the driver manager binds the device.
     register_serial_driver();
 }
 

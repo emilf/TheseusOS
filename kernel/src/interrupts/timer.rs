@@ -32,7 +32,7 @@ use crate::{log_debug, log_trace};
 use core::sync::atomic::Ordering;
 // Debug output functions kept for potential low-level debugging
 use super::apic::APIC_ERROR_VECTOR;
-use super::handler_timer;
+
 #[allow(unused_imports)]
 use super::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9};
 use super::{APIC_TIMER_VECTOR, TIMER_TICKS};
@@ -43,6 +43,19 @@ use super::{APIC_TIMER_VECTOR, TIMER_TICKS};
 /// installs the masked timer vector, masks LINT0/LINT1, and sets the APIC error
 /// vector.
 pub unsafe fn lapic_timer_configure() {
+    // Register the timer IRQ handler in the kernel IRQ registry.
+    // This must happen before the LAPIC unmasked the timer vector.
+    if let Err(e) = super::irq_registry::register_irq_handler(
+        APIC_TIMER_VECTOR,
+        "apic-timer",
+        super::handlers::irq_timer,
+    ) {
+        // "already registered" is fine on re-init; anything else is a bug.
+        if e != "already registered" {
+            panic!("lapic_timer_configure: failed to register IRQ handler: {}", e);
+        }
+    }
+
     log_debug!("LAPIC TPR=0");
     // Set Task Priority Register to 0 (allow all interrupt priorities)
     local_apic_write(0x80, 0x00);
@@ -163,33 +176,6 @@ pub fn timer_tick_count() -> u32 {
     TIMER_TICKS.load(Ordering::Relaxed)
 }
 
-/// Rewrite the timer-vector IDT entry after the high-half transition.
-pub unsafe fn install_timer_vector_runtime() {
-    use x86_64::instructions::tables::sidt;
-
-    // Get IDT base address
-    let idtr = sidt();
-    let base = idtr.base.as_u64();
-
-    // Calculate address of timer vector entry (16 bytes per entry)
-    let ent = base + ((APIC_TIMER_VECTOR as u64) * 16);
-
-    // Get handler address and code segment selector
-    let handler = handler_timer as *const () as usize as u64;
-    let selector = crate::gdt::KERNEL_CS as u64;
-
-    // Build IDT entry low 64 bits
-    let mut low: u64 = 0;
-    low |= (handler & 0xFFFF) as u64; // Bits 0-15: offset_low
-    low |= selector << 16; // Bits 16-31: selector
-    low |= (0u64) << 32; // Bits 32-39: ist=0, reserved
-    low |= (0x8Eu64) << 40; // Bits 40-47: type_attr (present, interrupt gate)
-    low |= ((handler >> 16) & 0xFFFF) << 48; // Bits 48-63: offset_mid
-
-    // Build IDT entry high 64 bits
-    let high: u64 = (handler >> 32) & 0xFFFF_FFFF; // Bits 0-31: offset_high, 32-63: reserved
-
-    // Write the 16-byte IDT entry
-    core::ptr::write_unaligned(ent as *mut u64, low);
-    core::ptr::write_unaligned((ent + 8) as *mut u64, high);
-}
+// install_timer_vector_runtime() removed — the IDT stub for the timer vector
+// is installed via IRQ_STUB_TABLE during init_idt(), so no runtime patching
+// is needed. The timer handler is registered in the IRQ registry instead.

@@ -266,3 +266,5 @@ pub unsafe fn local_apic_write(offset: u32, value: u32) {
 pub unsafe fn enable_interrupts() {
     x86_64::instructions::interrupts::enable();
 }
+
+
