@@ -199,6 +199,11 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
     log_debug!("MSRs configured");
 
     // Verify LAPIC timer delivery (later test)
+    // Detect and cache the APIC access mode (xAPIC vs x2APIC) before any LAPIC access
+    unsafe {
+        crate::interrupts::init_apic_mode();
+    }
+
     const ENABLE_LAPIC_TIMER_TEST: bool = true;
     if ENABLE_LAPIC_TIMER_TEST {
         use x86_64::instructions::interrupts;
