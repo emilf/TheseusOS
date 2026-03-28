@@ -129,13 +129,9 @@ fn serial_interrupt_handler() {
     
     if let Some(state) = SERIAL_STATE.lock().as_ref() {
         // Read all available bytes from UART
-        while state.port.has_data() {
-            if let Some(byte) = state.port.read_byte() {
-                collected.push(byte);
-                handled = true;
-            } else {
-                break;
-            }
+        while let Some(byte) = state.port.read_byte() {
+            collected.push(byte);
+            handled = true;
         }
         
         // Store received bytes in circular buffer
@@ -144,9 +140,11 @@ fn serial_interrupt_handler() {
             let head = state.head.load(core::sync::atomic::Ordering::Acquire);
             let mut new_head = head;
             
-            for byte in collected {
-                buffer[new_head % RX_BUFFER_SIZE] = byte;
+            // Store in buffer and forward to monitor
+            for byte in &collected {
+                buffer[new_head % RX_BUFFER_SIZE] = *byte;
                 new_head = new_head.wrapping_add(1);
+                crate::monitor::push_serial_byte(*byte);
             }
             
             state.head.store(new_head, core::sync::atomic::Ordering::Release);
@@ -159,9 +157,37 @@ fn serial_interrupt_handler() {
     }
     
     // Log if interrupt was unhandled (debugging)
+    #[allow(unused_unsafe)]
     if !handled {
+        // Use the debug output function directly
+        use x86_64::instructions::port::Port;
+        let mut port = Port::<u8>::new(0xe9);
         unsafe {
-            crate::interrupts::debug::print_str_0xe9("[serial] irq but no data\n");
+            port.write(b'[');
+            port.write(b's');
+            port.write(b'e');
+            port.write(b'r');
+            port.write(b'i');
+            port.write(b'a');
+            port.write(b'l');
+            port.write(b']');
+            port.write(b' ');
+            port.write(b'i');
+            port.write(b'r');
+            port.write(b'q');
+            port.write(b' ');
+            port.write(b'b');
+            port.write(b'u');
+            port.write(b't');
+            port.write(b' ');
+            port.write(b'n');
+            port.write(b'o');
+            port.write(b' ');
+            port.write(b'd');
+            port.write(b'a');
+            port.write(b't');
+            port.write(b'a');
+            port.write(b'\n');
         }
     }
 }
@@ -449,8 +475,8 @@ impl Driver for SerialDriver {
             (handled, collected)
         }) {
             Ok((handled, collected)) => {
-                for byte in collected {
-                    crate::monitor::push_serial_byte(byte);
+                for byte in &collected {
+                    crate::monitor::push_serial_byte(*byte);
                 }
                 handled
             }

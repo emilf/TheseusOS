@@ -25,7 +25,6 @@ pub mod control;
 pub mod cpu;
 pub mod devices;
 pub mod io;
-pub mod irq;
 pub mod memory;
 pub mod pci;
 pub mod system;

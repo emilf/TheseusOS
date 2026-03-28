@@ -50,7 +50,7 @@ pub fn register_irq_handler(
     name: &'static str,
     handler: fn(),
 ) -> Result<(), &'static str> {
-    if vector < 0x20 || vector > 0xFF {
+    if vector < 0x20 {
         return Err("vector out of range (must be 0x20‑0xFF)");
     }
 
@@ -70,7 +70,7 @@ pub fn register_irq_handler(
 /// # Safety
 /// Interrupts for this vector must be disabled before calling.
 pub unsafe fn unregister_irq_handler(vector: u8) -> Result<(), &'static str> {
-    if vector < 0x20 || vector > 0xFF {
+    if vector < 0x20 {
         return Err("vector out of range");
     }
 

@@ -701,7 +701,9 @@ pub fn drain_boot_consumed() -> Vec<ConsumedRegion> {
         return Vec::new();
     }
 
+    log_debug!("Draining boot consumed regions: {} raw entries", len);
     let merged = merge_regions_in_place(&mut boot.regions, len);
+    log_debug!("Boot consumed regions after merge: {} entries", merged.len());
 
     // Clear the log
     for entry in boot.regions.iter_mut().take(len) {

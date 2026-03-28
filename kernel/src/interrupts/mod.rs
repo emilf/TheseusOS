@@ -43,7 +43,7 @@ pub use apic::{
     local_apic_id, local_apic_read, local_apic_write, ApicAccessMode, ApicBaseInfo,
 };
 pub use debug::{print_gdt_summary_basic, print_idt_summary_compact};
-pub use irq_registry::{dispatch_irq, get_irq_handler, list_irq_handlers, register_irq_handler, unregister_irq_handler};
+pub use irq_registry::{dispatch_irq, list_irq_handlers, register_irq_handler, unregister_irq_handler};
 pub use timer::{
     install_timer_vector_runtime, lapic_timer_configure, lapic_timer_mask,
     lapic_timer_start_oneshot, lapic_timer_start_periodic, timer_tick_count,
@@ -55,7 +55,7 @@ use debug::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9};
 // Make handlers available to submodules and IDT setup
 use handlers::{
     handler_bp, handler_de, handler_df, handler_gp, handler_mc, handler_nmi, handler_pf,
-    handler_serial_rx, handler_spurious, handler_timer, handler_ud, handler_usb_xhci,
+    handler_general, handler_serial_rx, handler_spurious, handler_timer, handler_ud, handler_usb_xhci,
 };
 
 use core::sync::atomic::AtomicU32;

@@ -102,6 +102,64 @@ Affected modules:
 
 **REQUIRED**
 
+The kernel's persistent physical frame allocator (`PhysicalMemoryManager`) is
+initialized by `init_from_handoff()` after the permanent kernel heap is ready.
+It consumes the UEFI memory map, marks all `Reserved` regions as unavailable,
+and then reserves any memory consumed during early boot (before the allocator
+existed).
+
+### Boot‑time consumed‑region tracking
+
+Early boot code (identity mapping, GDT/TSS, early page tables, etc.) consumes
+physical frames before the persistent allocator exists. These frames are
+recorded via `record_boot_consumed_region()` into a static log
+(`BOOT_CONSUMED`).
+
+During `init_from_handoff()`:
+
+1. The UEFI memory map is processed; `Reserved` regions are marked unavailable.
+2. `reserve_boot_consumed()` calls `drain_boot_consumed()` to obtain the merged
+   list of boot‑time consumed regions.
+3. Each merged region is reserved in the allocator bitmap.
+4. In debug builds, `validate_no_overlap_with_free_frames()` walks the bitmap
+   to ensure no consumed region overlaps a frame still marked free — a bug
+   would indicate a missed `record_boot_consumed_region()` call.
+
+### Timeline
+
+| Stage | Allocator state | Frame consumption |
+|-------|----------------|-------------------|
+| Early boot (pre‑heap) | Not yet initialized | Frames consumed via `record_boot_consumed_region()` |
+| Heap ready | Not yet initialized | — |
+| `init_from_handoff()` | Constructed, UEFI `Reserved` marked | Boot‑time consumed regions drained and reserved |
+| Post‑handoff | Live (`PersistentFrameAllocator`) | All future allocations via `allocate_frame()` |
+
+### What happens if a region is missed?
+
+If early boot code consumes a frame but fails to call `record_boot_consumed_region()`,
+the frame will remain marked free in the allocator bitmap. Later, `allocate_frame()`
+may return that frame, causing double‑use and memory corruption.
+
+The debug assertion in `init_from_handoff()` catches this by walking the bitmap
+and panicking if any consumed‑region PFN is still free.
+
+Implements / evidence:
+- `kernel/src/physical_memory.rs`:
+  - `record_boot_consumed_region()`
+  - `drain_boot_consumed()`
+  - `init_from_handoff()` with `#[cfg(debug_assertions)]` validation
+  - `validate_no_overlap_with_free_frames()`
+
+Related plans:
+- `../plans/memory.md`
+
+Affected modules:
+- `kernel/src/physical_memory.rs`
+- `kernel/src/environment.rs` (calls `init_from_handoff()`)
+- Early boot code that consumes frames (mapping, GDT, etc.)
+
+**REQUIRED**
+
 The runtime physical-memory allocator is a bitmap allocator initialized from the handoff memory map only after the permanent heap is available.
 
 Implements / evidence:

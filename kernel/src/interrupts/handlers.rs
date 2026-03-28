@@ -283,7 +283,7 @@ pub(super) extern "x86-interrupt" fn handler_usb_xhci(_stack: InterruptStackFram
 /// General IRQ handler for vectors 0x20‑0xFF (excluding timer/serial/xHCI/spurious).
 ///
 /// Looks up the registered handler in the IRQ registry and dispatches.
-pub(super) extern "x86-interrupt" fn handler_general(stack: InterruptStackFrame) {
+pub(super) extern "x86-interrupt" fn handler_general(_stack: InterruptStackFrame) {
     // The vector is passed as an argument to x86-interrupt handlers
     // We need to get it from the interrupt number.
     // For now, we'll need to figure out which vector triggered this.
@@ -293,6 +293,8 @@ pub(super) extern "x86-interrupt" fn handler_general(stack: InterruptStackFrame)
         crate::log_warn!("General IRQ handler called (vector unknown)");
     }
 }
+
+
 
 /// Spurious interrupt handler (vector `0xFF` and APIC error vector `0xFE`).
 pub(super) extern "x86-interrupt" fn handler_spurious(_stack: InterruptStackFrame) {
