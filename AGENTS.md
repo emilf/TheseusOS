@@ -358,3 +358,57 @@ Your job is to preserve and improve the clarity of:
 - and how the next person can verify all of it
 
 Scoped `AGENTS.md` files may add stricter local rules, but they must not contradict this file.
+
+---
+
+## 14. Gotchas — Known Agent Failure Points
+
+This section captures real failure modes that have happened working on TheseusOS. Read before starting any significant change.
+
+### Build system
+
+- **Debug builds crash at runtime.** `cargo build` (no profile) produces a debug binary that fails during the bootloader-to-kernel jump due to relocation issues masked by optimizations. Always use `cargo run -p theseus-qemu -- --headless` or a release profile. Do not assume debug builds are testable.
+- **The toolchain is pinned.** `rust-toolchain.toml` specifies an exact nightly. Do not `rustup update` or change the channel without understanding the implication. Nightly features and unstable ABI details are load-bearing.
+- **`x86_64-theseus.json`** is a custom target spec. Do not replace it with `x86_64-unknown-none` or similar — the linker script, relocation model, and code model differ.
+
+### Memory and paging
+
+- **All VA regions are currently hardcoded constants.** There is no runtime VA allocator. Do not invent dynamic mappings — hardcode a new constant and document it in `docs/axioms/memory.md` if you must add one, pending 1.1.2 (VA allocator).
+- **`mapping.rs` helpers are boot-time only.** They take `&mut impl FrameSource`. Calling them post-boot means using the boot frame allocator after it should be retired. Do not call mapping helpers after `PhysicalMemoryManager` is initialized.
+- **The identity mapping is intentionally kept alive.** Do not remove the low-memory identity map entries in the PML4 during or after boot — early CPU bringup code still needs them.
+- **PHYS_OFFSET must be active before `phys_to_virt_pa` is used.** Call `set_phys_offset_active()` after the mapping is live. Using `phys_to_virt_pa` before this silently returns a wrong address.
+
+### Interrupts and APIC
+
+- **The APIC timer initial count is hardcoded and uncalibrated.** It is not a real wall-clock time source. Do not use timer ticks for timing without first implementing calibration (1.4.1).
+- **Legacy PIC must remain masked.** The kernel runs entirely on APIC. Unmasking PIC IRQs (port 0x21 / 0xA1) will cause spurious interrupt storms on vectors that have no handlers.
+- **All current LAPIC access is MMIO (xAPIC mode only).** The kernel will GPF if booted in x2APIC mode. Until 1.5.2 is implemented, don't test with `-cpu host` or CPUs that boot into x2APIC mode.
+- **Vectors 0x00–0x1F are reserved for CPU exceptions.** Don't assign driver or timer vectors below 0x20. Current reserved kernel vectors: 0x40 (APIC timer), 0x41 (serial RX), 0x50 (xHCI MSI), 0xFE (APIC error).
+
+### Drivers and PCI
+
+- **The PCI enumeration and DriverManager are not connected.** PCI enumerates devices correctly, but `DriverManager::add_device` is never called from PCI. The xHCI driver is wired by a hardcoded init call, not probe. Do not assume DriverManager reflects all discovered hardware.
+- **`driver_data` casts are unsound and unused.** `Device::set_driver_state` / `driver_state` use raw pointer casts with no type safety. No production driver uses them yet. Do not introduce new uses until 1.2.1 (fix driver_data) is implemented.
+- **xHCI MSI vector is hardcoded in `handlers.rs`.** The interrupt path goes directly to `usb::handle_xhci_interrupt()`, not through DriverManager. Do not add new drivers by copying this pattern — the IRQ ownership refactor (1.2.3) will replace it.
+
+### Logging and serial
+
+- **Logspam burns AI context fast.** TheseusOS boot is very log-heavy in DEBUG/TRACE mode. Default runs use filtered output. If you turn up verbosity for debugging, turn it back down before committing.
+- **Serial output is synchronous and blocking.** Logging inside interrupt handlers (especially the timer ISR or USB event ring) can perturb timing enough to mask the bug you're hunting. Add a `log_trace!` in an interrupt path only when you understand the cost.
+- **`log_debug!` vs `log_trace!`** — debug is always compiled in but filtered at runtime; trace can be compiled out. Don't use `eprintln!` or `println!` — they don't exist in `no_std`.
+
+### QEMU and debugging
+
+- **QEMU relay sockets live at `/tmp/qemu-*-host`.** Serial: `/tmp/qemu-serial-host`, monitor: `/tmp/qemu-monitor-host`, debugcon: `/tmp/qemu-debugcon-host`, QMP: `/tmp/qemu-qmp-host.sock`. These are PTY relay files — use `cat` or `stdbuf -o0 cat`, not `tail -f`.
+- **The preferred runner is `theseus-qemu`**, not `startQemu.sh`. The Rust runner handles build-before-run, timeout, relay setup, and success detection. `startQemu.sh` still works but is not the front door.
+- **GDB requires section delta computation.** The kernel is relocated to higher-half. GDB symbols need offset adjustment. Use `gdb-auto.py` / `make debug-auto` rather than raw GDB — the automation handles section deltas from `BOOTX64.SYM`.
+- **`make run` is headless.** `make run-headed` opens a QEMU window. Use headless for CI/automated runs, headed when you need to see framebuffer output.
+
+### Verify your work
+
+Before opening a PR on any non-trivial change:
+1. `cargo run -p theseus-qemu -- --headless` boots cleanly with no new ERRORs or WARNs in the log.
+2. If you changed interrupt paths: confirm the APIC timer ISR still fires (heart blinks in headed mode, or tick counter increments via monitor).
+3. If you changed memory/paging: confirm no page faults at boot and `memory` monitor command shows sane state.
+4. If you changed USB/input: confirm keyboard events still arrive via the monitor `usb` command.
+5. Update the relevant `docs/plans/` checklist item to reflect the new state.
