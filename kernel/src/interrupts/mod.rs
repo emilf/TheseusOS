@@ -45,7 +45,7 @@ pub use apic::{
 pub use debug::{print_gdt_summary_basic, print_idt_summary_compact};
 pub use irq_registry::{dispatch_irq, list_irq_handlers, register_irq_handler, unregister_irq_handler};
 pub use timer::{
-    install_timer_vector_runtime, lapic_timer_configure, lapic_timer_mask,
+    lapic_timer_configure, lapic_timer_mask,
     lapic_timer_start_oneshot, lapic_timer_start_periodic, timer_tick_count,
 };
 
@@ -55,7 +55,8 @@ use debug::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9};
 // Make handlers available to submodules and IDT setup
 use handlers::{
     handler_bp, handler_de, handler_df, handler_gp, handler_mc, handler_nmi, handler_pf,
-    handler_serial_rx, handler_spurious, handler_timer, handler_ud, handler_usb_xhci,
+    handler_spurious, handler_ud,
+    irq_timer, irq_serial_rx, irq_usb_xhci,
     IRQ_STUB_TABLE,
 };
 
@@ -192,36 +193,31 @@ pub unsafe fn setup_idt() {
         idt.general_protection_fault.set_handler_fn(handler_gp);
         idt.page_fault.set_handler_fn(handler_pf);
 
-        // Install hardware interrupt handlers
-        idt[APIC_TIMER_VECTOR as usize].set_handler_fn(handler_timer);
-        idt[SERIAL_RX_VECTOR as usize].set_handler_fn(handler_serial_rx);
-        idt[XHCI_MSI_VECTOR as usize].set_handler_fn(handler_usb_xhci);
+        // Spurious and APIC error keep dedicated handlers: the Intel SDM
+        // requires that spurious interrupts (0xFF) do NOT receive an EOI.
         idt[0xFF].set_handler_fn(handler_spurious);
         idt[APIC_ERROR_VECTOR as usize].set_handler_fn(handler_spurious);
 
-        // Install per-vector assembly stubs for vectors 0x20–0xFD.
-        // Each stub is a tiny naked function that pushes the literal vector number
-        // and jumps to irq_stub_common → irq_dispatch_common. This is the
-        // canonical approach (Linux, FreeBSD, OSDev standard) and is SMP-safe:
-        // the vector is baked into the code, no shared state is needed to
-        // identify which interrupt fired.
+        // All other hardware IRQs (0x20–0xFD) — including timer (0x40),
+        // serial (0x41), and xHCI (0x50) — go through the uniform stub system.
+        // Handlers for those vectors are registered in the IRQ registry below.
         for (vector, stub_opt) in IRQ_STUB_TABLE.iter().enumerate() {
             if let Some(stub) = stub_opt {
-                // Skip vectors that already have dedicated Rust handlers.
-                if vector == APIC_TIMER_VECTOR as usize
-                    || vector == SERIAL_RX_VECTOR as usize
-                    || vector == XHCI_MSI_VECTOR as usize
-                    || vector == APIC_ERROR_VECTOR as usize
-                    || vector == 0xFF
-                {
-                    continue;
-                }
                 unsafe {
                     idt[vector]
                         .set_handler_addr(x86_64::VirtAddr::new(*stub as u64));
                 }
             }
         }
+
+        // Register built-in IRQ handlers in the registry so the stub dispatcher
+        // can call them. Drivers register their own handlers similarly during init.
+        irq_registry::register_irq_handler(APIC_TIMER_VECTOR, "apic-timer", irq_timer)
+            .expect("timer IRQ already registered");
+        irq_registry::register_irq_handler(SERIAL_RX_VECTOR, "serial-rx", irq_serial_rx)
+            .expect("serial IRQ already registered");
+        irq_registry::register_irq_handler(XHCI_MSI_VECTOR, "xhci-msi", irq_usb_xhci)
+            .expect("xhci IRQ already registered");
 
         // Assign IST indices for critical exceptions
         // These use dedicated stacks to prevent recursive faults

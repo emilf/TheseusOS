@@ -222,17 +222,22 @@ pub(super) extern "x86-interrupt" fn handler_mc(_stack: InterruptStackFrame) -> 
 // ============================================================================
 
 /// APIC timer interrupt handler (vector `0x40`).
-pub(super) extern "x86-interrupt" fn handler_timer(_stack: InterruptStackFrame) {
-    // Acknowledge LAPIC EOI first to avoid stuck-in-service.
-    unsafe {
-        local_apic_eoi();
-    }
+// ============================================================================
+// IRQ handler functions — registered with IRQ_REGISTRY, called via stubs
+// ============================================================================
+//
+// These are plain `fn()` functions, not `extern "x86-interrupt"`. They are
+// called by irq_dispatch_common after the stub has already handled the
+// interrupt-frame mechanics. Each handler is responsible for its own EOI.
 
-    // Record the tick atomically (legacy counter + calibration counter)
+/// APIC timer IRQ handler (vector 0x40). Registered during interrupt init.
+pub(super) fn irq_timer() {
+    // Acknowledge LAPIC EOI first to avoid stuck-in-service.
+    unsafe { local_apic_eoi(); }
+
     TIMER_TICKS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     super::calibration::tick();
 
-    // Update the simple framebuffer animation if the transitional handoff pointer is available.
     unsafe {
         if let Some(handoff) = get_handoff_for_timer() {
             crate::framebuffer::update_heart_animation(handoff);
@@ -240,39 +245,28 @@ pub(super) extern "x86-interrupt" fn handler_timer(_stack: InterruptStackFrame) 
     }
 }
 
-/// Serial RX interrupt handler (vector `0x41`).
-pub(super) extern "x86-interrupt" fn handler_serial_rx(_stack: InterruptStackFrame) {
+/// Serial RX IRQ handler (vector 0x41). Registered during interrupt init.
+pub(super) fn irq_serial_rx() {
     let mut handled = false;
 
-    // Ask the driver manager to handle the IRQ
     if let Some(irq) = crate::drivers::serial::current_irq_number() {
         let mut mgr = crate::drivers::manager::driver_manager().lock();
         handled = mgr.handle_irq(irq);
     }
 
-    // Send EOI to LAPIC
-    unsafe {
-        local_apic_eoi();
-    }
+    unsafe { local_apic_eoi(); }
 
-    // Log if interrupt was unhandled (debugging)
     if !handled {
-        unsafe {
-            print_str_0xe9("[serial] irq but no handler\n");
-        }
+        unsafe { print_str_0xe9("[serial] irq but no handler\n"); }
     }
 }
 
-/// xHCI MSI interrupt handler (vector `0x50`).
-pub(super) extern "x86-interrupt" fn handler_usb_xhci(_stack: InterruptStackFrame) {
-    unsafe {
-        local_apic_eoi();
-    }
+/// xHCI MSI IRQ handler (vector 0x50). Registered during interrupt init.
+pub(super) fn irq_usb_xhci() {
+    unsafe { local_apic_eoi(); }
 
     static FIRST_XHCI_MSI: AtomicBool = AtomicBool::new(true);
     if FIRST_XHCI_MSI.swap(false, core::sync::atomic::Ordering::AcqRel) {
-        // This is intentionally INFO-level and one-shot so it's visible even
-        // when TRACE output is noisy or filtered.
         crate::log_info!("xHCI MSI handler invoked (first delivery)");
     } else {
         log_trace!("xHCI MSI handler invoked");
@@ -375,7 +369,12 @@ global_asm!(
     "    jmp  irq_stub_common",
     ".endm",
 
-    // Emit stubs 0x20–0x3F
+    // Emit stubs 0x20–0xFF (all hardware IRQ vectors)
+    // Exceptions 0x00-0x1F stay as dedicated extern "x86-interrupt" handlers.
+    // Spurious (0xFF) and APIC error (0xFE) are special: spurious must NOT
+    // send EOI per Intel SDM; they keep dedicated Rust handlers.
+    // Everything else — including timer (0x40), serial (0x41), xHCI (0x50)
+    // — goes through the stub system and is registered in the IRQ registry.
     "irq_stub 0x20", "irq_stub 0x21", "irq_stub 0x22", "irq_stub 0x23",
     "irq_stub 0x24", "irq_stub 0x25", "irq_stub 0x26", "irq_stub 0x27",
     "irq_stub 0x28", "irq_stub 0x29", "irq_stub 0x2a", "irq_stub 0x2b",
@@ -384,13 +383,13 @@ global_asm!(
     "irq_stub 0x34", "irq_stub 0x35", "irq_stub 0x36", "irq_stub 0x37",
     "irq_stub 0x38", "irq_stub 0x39", "irq_stub 0x3a", "irq_stub 0x3b",
     "irq_stub 0x3c", "irq_stub 0x3d", "irq_stub 0x3e", "irq_stub 0x3f",
-    // 0x40 = timer — dedicated handler
-    "irq_stub 0x41", "irq_stub 0x42", "irq_stub 0x43", "irq_stub 0x44",
+    // 0x40 (timer), 0x41 (serial), 0x50 (xHCI) now go through the stub
+    // system too — their handlers are registered in the IRQ registry at init.
+    "irq_stub 0x40", "irq_stub 0x41", "irq_stub 0x42", "irq_stub 0x43", "irq_stub 0x44",
     "irq_stub 0x45", "irq_stub 0x46", "irq_stub 0x47", "irq_stub 0x48",
     "irq_stub 0x49", "irq_stub 0x4a", "irq_stub 0x4b", "irq_stub 0x4c",
     "irq_stub 0x4d", "irq_stub 0x4e", "irq_stub 0x4f",
-    // 0x50 = xHCI MSI — dedicated handler
-    "irq_stub 0x51", "irq_stub 0x52", "irq_stub 0x53", "irq_stub 0x54",
+    "irq_stub 0x50", "irq_stub 0x51", "irq_stub 0x52", "irq_stub 0x53", "irq_stub 0x54",
     "irq_stub 0x55", "irq_stub 0x56", "irq_stub 0x57", "irq_stub 0x58",
     "irq_stub 0x59", "irq_stub 0x5a", "irq_stub 0x5b", "irq_stub 0x5c",
     "irq_stub 0x5d", "irq_stub 0x5e", "irq_stub 0x5f",
@@ -447,11 +446,11 @@ extern "C" {
     fn irq_stub_0x34(); fn irq_stub_0x35(); fn irq_stub_0x36(); fn irq_stub_0x37();
     fn irq_stub_0x38(); fn irq_stub_0x39(); fn irq_stub_0x3a(); fn irq_stub_0x3b();
     fn irq_stub_0x3c(); fn irq_stub_0x3d(); fn irq_stub_0x3e(); fn irq_stub_0x3f();
-    fn irq_stub_0x41(); fn irq_stub_0x42(); fn irq_stub_0x43(); fn irq_stub_0x44();
+    fn irq_stub_0x40(); fn irq_stub_0x41(); fn irq_stub_0x42(); fn irq_stub_0x43(); fn irq_stub_0x44();
     fn irq_stub_0x45(); fn irq_stub_0x46(); fn irq_stub_0x47(); fn irq_stub_0x48();
     fn irq_stub_0x49(); fn irq_stub_0x4a(); fn irq_stub_0x4b(); fn irq_stub_0x4c();
     fn irq_stub_0x4d(); fn irq_stub_0x4e(); fn irq_stub_0x4f();
-    fn irq_stub_0x51(); fn irq_stub_0x52(); fn irq_stub_0x53(); fn irq_stub_0x54();
+    fn irq_stub_0x50(); fn irq_stub_0x51(); fn irq_stub_0x52(); fn irq_stub_0x53(); fn irq_stub_0x54();
     fn irq_stub_0x55(); fn irq_stub_0x56(); fn irq_stub_0x57(); fn irq_stub_0x58();
     fn irq_stub_0x59(); fn irq_stub_0x5a(); fn irq_stub_0x5b(); fn irq_stub_0x5c();
     fn irq_stub_0x5d(); fn irq_stub_0x5e(); fn irq_stub_0x5f();
@@ -520,8 +519,7 @@ pub(super) static IRQ_STUB_TABLE: [Option<unsafe extern "C" fn()>; 256] = {
     table[0x3a] = Some(irq_stub_0x3a); table[0x3b] = Some(irq_stub_0x3b);
     table[0x3c] = Some(irq_stub_0x3c); table[0x3d] = Some(irq_stub_0x3d);
     table[0x3e] = Some(irq_stub_0x3e); table[0x3f] = Some(irq_stub_0x3f);
-    // 0x40 = timer, 0x41 = serial — dedicated
-    table[0x41] = Some(irq_stub_0x41);
+    table[0x40] = Some(irq_stub_0x40); table[0x41] = Some(irq_stub_0x41);
     table[0x42] = Some(irq_stub_0x42); table[0x43] = Some(irq_stub_0x43);
     table[0x44] = Some(irq_stub_0x44); table[0x45] = Some(irq_stub_0x45);
     table[0x46] = Some(irq_stub_0x46); table[0x47] = Some(irq_stub_0x47);
@@ -529,8 +527,7 @@ pub(super) static IRQ_STUB_TABLE: [Option<unsafe extern "C" fn()>; 256] = {
     table[0x4a] = Some(irq_stub_0x4a); table[0x4b] = Some(irq_stub_0x4b);
     table[0x4c] = Some(irq_stub_0x4c); table[0x4d] = Some(irq_stub_0x4d);
     table[0x4e] = Some(irq_stub_0x4e); table[0x4f] = Some(irq_stub_0x4f);
-    // 0x50 = xHCI — dedicated
-    table[0x51] = Some(irq_stub_0x51); table[0x52] = Some(irq_stub_0x52);
+    table[0x50] = Some(irq_stub_0x50); table[0x51] = Some(irq_stub_0x51); table[0x52] = Some(irq_stub_0x52);
     table[0x53] = Some(irq_stub_0x53); table[0x54] = Some(irq_stub_0x54);
     table[0x55] = Some(irq_stub_0x55); table[0x56] = Some(irq_stub_0x56);
     table[0x57] = Some(irq_stub_0x57); table[0x58] = Some(irq_stub_0x58);
