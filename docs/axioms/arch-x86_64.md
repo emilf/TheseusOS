@@ -56,6 +56,30 @@ Affected modules:
 - `kernel/src/drivers/serial.rs`
 - `kernel/src/environment.rs`
 
+## A3.1: General hardware IRQs dispatch via per-vector assembly stubs
+
+**REQUIRED**
+
+Hardware interrupt vectors 0x20–0xFD (excluding dedicated entries for timer, serial RX, xHCI MSI, APIC error, and spurious) are handled by per-vector assembly stubs generated in `handlers.rs`. Each stub pushes a literal vector byte and tail-calls `irq_stub_common`, which passes the vector to `irq_dispatch_common` (Rust). The IRQ registry is then consulted and the registered handler called, or an EOI + warning is issued if no handler is registered.
+
+This design:
+- Bakes the vector into the code path — no APIC ISR scanning, no MMIO on the hot path.
+- Is SMP-safe: stubs are pure read-only code shared across CPUs; dispatch uses a `Mutex`-protected registry.
+- Matches the canonical OS pattern (Linux `irq_entries_start`, FreeBSD `IDTVEC`).
+
+Implements / evidence:
+- `kernel/src/interrupts/handlers.rs` — `global_asm!` stubs, `IRQ_STUB_TABLE`, `irq_dispatch_common`
+- `kernel/src/interrupts/mod.rs` — IDT setup loop (`set_handler_addr`)
+- `kernel/src/interrupts/irq_registry.rs` — `dispatch_irq`, `register_irq_handler`
+
+Related plans:
+- `../plans/interrupts-and-platform.md#irq-dispatch-architecture`
+
+Affected modules:
+- `kernel/src/interrupts/handlers.rs`
+- `kernel/src/interrupts/mod.rs`
+- `kernel/src/interrupts/irq_registry.rs`
+
 ## A4: SMP discovery exists, but AP startup is not yet a documented implemented invariant
 
 **REQUIRED**

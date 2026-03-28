@@ -55,7 +55,8 @@ use debug::{out_char_0xe9, print_hex_u64_0xe9, print_str_0xe9};
 // Make handlers available to submodules and IDT setup
 use handlers::{
     handler_bp, handler_de, handler_df, handler_gp, handler_mc, handler_nmi, handler_pf,
-    handler_general, handler_serial_rx, handler_spurious, handler_timer, handler_ud, handler_usb_xhci,
+    handler_serial_rx, handler_spurious, handler_timer, handler_ud, handler_usb_xhci,
+    IRQ_STUB_TABLE,
 };
 
 use core::sync::atomic::AtomicU32;
@@ -198,15 +199,27 @@ pub unsafe fn setup_idt() {
         idt[0xFF].set_handler_fn(handler_spurious);
         idt[APIC_ERROR_VECTOR as usize].set_handler_fn(handler_spurious);
 
-        // Install general IRQ handler for vectors 0x20‑0xFF (excluding those already set)
-        for vector in 0x20..=0xFF {
-            if vector != APIC_TIMER_VECTOR
-                && vector != SERIAL_RX_VECTOR
-                && vector != XHCI_MSI_VECTOR
-                && vector != 0xFF
-                && vector != APIC_ERROR_VECTOR
-            {
-                idt[vector as usize].set_handler_fn(handler_general);
+        // Install per-vector assembly stubs for vectors 0x20–0xFD.
+        // Each stub is a tiny naked function that pushes the literal vector number
+        // and jumps to irq_stub_common → irq_dispatch_common. This is the
+        // canonical approach (Linux, FreeBSD, OSDev standard) and is SMP-safe:
+        // the vector is baked into the code, no shared state is needed to
+        // identify which interrupt fired.
+        for (vector, stub_opt) in IRQ_STUB_TABLE.iter().enumerate() {
+            if let Some(stub) = stub_opt {
+                // Skip vectors that already have dedicated Rust handlers.
+                if vector == APIC_TIMER_VECTOR as usize
+                    || vector == SERIAL_RX_VECTOR as usize
+                    || vector == XHCI_MSI_VECTOR as usize
+                    || vector == APIC_ERROR_VECTOR as usize
+                    || vector == 0xFF
+                {
+                    continue;
+                }
+                unsafe {
+                    idt[vector]
+                        .set_handler_addr(x86_64::VirtAddr::new(*stub as u64));
+                }
             }
         }
 
