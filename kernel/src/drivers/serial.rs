@@ -109,20 +109,9 @@ pub fn init_serial() {
     if !crate::config::ENABLE_SERIAL_OUTPUT {
         return;
     }
+    // Registration of the serial RX IRQ handler happens inside
+    // SerialDriver::init() when the driver manager binds the device.
     register_serial_driver();
-
-    // Register the serial RX IRQ handler. The vector is programmed into the
-    // IOAPIC by register_serial_driver; we register the handler here so it
-    // is looked up via the uniform IRQ registry when the interrupt fires.
-    if let Err(e) = crate::interrupts::register_irq_handler(
-        crate::interrupts::SERIAL_RX_VECTOR,
-        "serial-rx",
-        crate::interrupts::handlers::irq_serial_rx,
-    ) {
-        if e != "already registered" {
-            panic!("init_serial: failed to register IRQ handler: {}", e);
-        }
-    }
 }
 
 /// Interrupt handler for serial RX interrupts.

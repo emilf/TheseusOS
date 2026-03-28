@@ -245,21 +245,9 @@ pub(crate) fn irq_timer() {
     }
 }
 
-/// Serial RX IRQ handler (vector 0x41). Registered by `init_serial`.
-pub(crate) fn irq_serial_rx() {
-    let mut handled = false;
-
-    if let Some(irq) = crate::drivers::serial::current_irq_number() {
-        let mut mgr = crate::drivers::manager::driver_manager().lock();
-        handled = mgr.handle_irq(irq);
-    }
-
-    unsafe { local_apic_eoi(); }
-
-    if !handled {
-        unsafe { print_str_0xe9("[serial] irq but no handler\n"); }
-    }
-}
+// irq_serial_rx removed: SerialDriver::init() registers its own handler
+// (serial_interrupt_handler) directly in the IRQ registry. No kernel-side
+// wrapper needed.
 
 /// xHCI MSI IRQ handler (vector 0x50). Registered by `usb::init`.
 pub(crate) fn irq_usb_xhci() {
@@ -350,11 +338,15 @@ pub extern "C" fn irq_dispatch_common(vector: u8) {
 //
 // We're kernel-only for now, so no privilege change → no RSP/SS on stack.
 
+// NOTE: The kernel is compiled as a UEFI PE binary, so the calling convention
+// used for extern "C" functions is the Microsoft x64 ABI, not System V AMD64.
+// Microsoft x64 ABI passes the first integer argument in RCX, not RDI.
+// The stub therefore pops the vector into RCX before calling irq_dispatch_common.
 global_asm!(
     // Shared thunk: vector byte is on top of stack.
     ".global irq_stub_common",
     "irq_stub_common:",
-    "    pop  rdi",          // vector → first C argument
+    "    pop  rcx",          // vector → first arg (Microsoft x64 ABI: RCX)
     "    call irq_dispatch_common",
     "    iretq",
 
