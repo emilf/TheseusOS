@@ -363,12 +363,12 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
         }
     }
 
-    // Configure and start the APIC timer for heart animation
-    log_debug!("Configuring APIC timer for heart animation...");
+    // Calibrate LAPIC timer using PIT, then start 100 Hz periodic tick
+    log_debug!("Calibrating LAPIC timer...");
     unsafe {
         crate::interrupts::lapic_timer_configure();
-        // Set timer to fire every ~5ms (50Hz) for smooth animation
-        crate::interrupts::lapic_timer_start_periodic(50_000);
+        crate::interrupts::calibration::calibrate_apic_timer();
+        crate::interrupts::calibration::start_periodic_tick();
     }
 
     // Enable interrupts to start the timer

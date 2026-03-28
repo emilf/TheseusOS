@@ -31,6 +31,7 @@
 
 // Submodules
 mod apic;
+pub mod calibration;
 mod debug;
 mod handlers;
 mod timer;

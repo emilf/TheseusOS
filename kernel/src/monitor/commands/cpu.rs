@@ -366,6 +366,17 @@ impl Monitor {
         }
     }
 
+    /// Display LAPIC timer calibration and tick info.
+    pub(in crate::monitor) fn cmd_cpu_timer(&self) {
+        let tpm = crate::interrupts::calibration::apic_ticks_per_ms();
+        let ticks = crate::interrupts::calibration::current_tick();
+        let ms = crate::interrupts::calibration::ticks_to_ms(ticks);
+        self.writeln("LAPIC Timer:");
+        self.writeln(&format!("  Calibrated ticks/ms: {}", tpm));
+        self.writeln(&format!("  Tick count:          {}", ticks));
+        self.writeln(&format!("  Uptime (approx):     {} ms", ms));
+    }
+
     /// Display cached CPU feature flags from `CpuFeatures::get()`.
     pub(in crate::monitor) fn cmd_cpu_features(&self) {
         let f = crate::cpu_features::CpuFeatures::get();

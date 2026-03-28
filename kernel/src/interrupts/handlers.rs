@@ -228,8 +228,9 @@ pub(super) extern "x86-interrupt" fn handler_timer(_stack: InterruptStackFrame) 
         local_apic_eoi();
     }
 
-    // Record the tick atomically
+    // Record the tick atomically (legacy counter + calibration counter)
     TIMER_TICKS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    super::calibration::tick();
 
     // Update the simple framebuffer animation if the transitional handoff pointer is available.
     unsafe {

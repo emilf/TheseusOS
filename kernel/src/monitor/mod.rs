@@ -340,10 +340,14 @@ impl Monitor {
             "mmap" => self.cmd_memory_map(&parts[1..]),
             "cpuid" => self.cmd_cpuid(),
             "cpu" => {
-                if parts.len() > 1 && parts[1] == "features" {
-                    self.cmd_cpu_features()
+                if parts.len() > 1 {
+                    match parts[1] {
+                        "features" => self.cmd_cpu_features(),
+                        "timer" => self.cmd_cpu_timer(),
+                        _ => self.writeln("Usage: cpu features|timer"),
+                    }
                 } else {
-                    self.writeln("Usage: cpu features");
+                    self.writeln("Usage: cpu features|timer");
                 }
             }
             "msr" => self.cmd_msr(&parts[1..]),
