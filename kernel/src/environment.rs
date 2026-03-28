@@ -182,13 +182,8 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
     // Enable SSE using detected features
     {
         let features = crate::cpu_features::CpuFeatures::get();
-        let mut f = crate::cpu::CpuFeatures::new();
-        f.sse = features.sse;
-        f.sse2 = features.sse2;
-        f.avx = features.avx;
-        f.xsave = features.xsave;
         unsafe {
-            setup_floating_point(&f);
+            setup_floating_point(features);
         }
         log_debug!("SSE enabled");
     }

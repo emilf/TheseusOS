@@ -170,14 +170,14 @@ pub unsafe fn detect_cpu_features() -> CpuFeatures {
 }
 
 /// Enable the floating-point/SIMD state the current feature set supports.
-pub unsafe fn setup_floating_point(features: &CpuFeatures) {
+pub unsafe fn setup_floating_point(features: &crate::cpu_features::CpuFeatures) {
     // Enable SSE
     if features.sse {
         enable_sse();
     }
 
-    // Enable AVX if available
-    if features.avx && features.osxsave {
+    // Enable AVX if available (xsave indicates XSAVE/XRSTOR support, which includes AVX)
+    if features.avx && features.xsave {
         enable_avx();
     }
 }
@@ -223,10 +223,7 @@ unsafe fn enable_avx() {
 
 /// Return whether the CPU reports FSGSBASE support.
 pub unsafe fn has_fsgsbase() -> bool {
-    if let Some(efi) = CpuId::new().get_extended_feature_info() {
-        return efi.has_fsgsbase();
-    }
-    false
+    crate::cpu_features::CpuFeatures::get().fsgsbase
 }
 
 /// Apply the current boot-time MSR configuration.
