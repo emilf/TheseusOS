@@ -66,6 +66,38 @@ Affected modules:
 - `kernel/src/environment.rs`
 - `kernel/src/memory.rs`
 
+## A3.5: The kernel VA allocator manages a dedicated dynamic region
+
+**REQUIRED**
+
+Runtime kernel subsystems that need virtual address space (runtime mappings,
+kernel stacks, device MMIO windows) allocate from the VA allocator region
+`0xFFFF_9000_0000_0000 .. 0xFFFF_B000_0000_0000`.
+
+This region is well clear of all statically-assigned VA windows:
+
+| Region | VA range |
+|--------|----------|
+| PHYS_OFFSET | `0xFFFF_8000_0000_0000` |
+| **VA allocator** | `0xFFFF_9000_0000_0000 .. 0xFFFF_B000_0000_0000` |
+| ACPI window | `0xFFFF_FF80_0000_0000` |
+| TemporaryWindow | `0xFFFF_FFFE_0000_0000` |
+| KERNEL_VIRTUAL_BASE | `0xFFFF_FFFF_8000_0000` |
+| Framebuffer | `0xFFFF_FFFF_9000_0000` |
+| TEMP_HEAP | `0xFFFF_FFFF_A000_0000` |
+| KERNEL_HEAP | `0xFFFF_FFFF_B000_0000` |
+
+Implements / evidence:
+- `kernel/src/memory/va_alloc.rs`
+
+Related plans:
+- `../plans/memory.md`
+
+Affected modules:
+- `kernel/src/memory/va_alloc.rs`
+- `kernel/src/memory/runtime_mapper.rs` (future consumer)
+- `kernel/src/memory/stack_alloc.rs` (future consumer)
+
 ## A4: The persistent physical allocator is initialized from the UEFI memory map after the permanent heap exists
 
 **REQUIRED**

@@ -754,6 +754,8 @@ pub fn virt_range_has_flags(mut va: u64, size: usize, flags_mask: u64) -> bool {
     true
 }
 
+pub mod va_alloc;
+
 mod mapping;
 pub use mapping::identity_map_first_1gb_2mb_alloc;
 pub use mapping::map_2mb_page_alloc;
