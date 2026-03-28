@@ -89,6 +89,41 @@ core::arch::global_asm!(".globl __chkstk", "__chkstk:", "    jmp ___chkstk_ms",)
 /// direct `ExitBootServices` → `kernel_entry` transfer.
 #[entry]
 fn efi_main() -> Status {
+    // -----------------------------------------------------------------------
+    // GDB debug mailbox — write runtime efi_main address to a fixed physical
+    // location so automated GDB tooling can discover it via a watchpoint.
+    //
+    // Must happen before any UEFI call so the address is visible as early as
+    // possible. The page is allocated via UEFI AllocateType::Address so the
+    // firmware records our ownership in the memory map.
+    //
+    // Layout at DEBUG_MAILBOX_PHYS:
+    //   +0x00  u64  runtime efi_main address   (written first)
+    //   +0x08  u64  magic sentinel              (written second → GDB trigger)
+    //
+    // See: shared/src/constants.rs :: debug_mailbox
+    //      debug.gdb                :: theseus-auto command
+    // -----------------------------------------------------------------------
+    use theseus_shared::constants::debug_mailbox;
+    use uefi::boot::{self as uefi_boot, AllocateType};
+    use uefi::mem::memory_map::MemoryType as UefiMemType;
+
+    // Allocate the mailbox page via UEFI so firmware records our ownership.
+    // Ignore errors — if the page is already allocated (e.g. by firmware) we
+    // fall back to a direct write; in QEMU/OVMF this range is always free.
+    let _ = uefi_boot::allocate_pages(
+        AllocateType::Address(debug_mailbox::PHYS),
+        UefiMemType::LOADER_DATA,
+        1,
+    );
+
+    unsafe {
+        let base = debug_mailbox::PHYS as *mut u64;
+        // Write address first, then magic — GDB watches the magic location.
+        base.add(0).write_volatile(efi_main as *const () as u64);
+        base.add(1).write_volatile(debug_mailbox::MAGIC);
+    }
+
     // Install pre-exit allocators that forward to UEFI Boot Services
     theseus_shared::allocator::install_pre_exit_allocators(pre_exit_alloc, pre_exit_dealloc);
     // Initialize UEFI environment and global output driver

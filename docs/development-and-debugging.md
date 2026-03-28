@@ -59,13 +59,77 @@ For one-shot QMP control against the host-side relay socket, use:
 ```
 
 ## Debugging with GDB
-- Launch QEMU with `QEMU_OPTS="-S -s"` to pause CPU 0 and listen on TCP 1234.
-- Use the provided script `debug.gdb` as a starting point:
-  ```bash
-  gdb -x debug.gdb
-  ```
-- Useful breakpoints: `kernel_entry`, `environment::continue_after_stack_switch`, `interrupts::handler_timer`.
-- Inspect the bootloader-to-kernel handoff by examining the pointer in `RDI` right before `kernel_entry` runs.
+
+### Automated session (recommended)
+
+```bash
+make debug-auto
+```
+
+That's it. The script (`scripts/gdb-auto.py`) will:
+
+1. Start QEMU with a GDB stub on TCP :1251, kept alive in a tmux pane.
+2. Spawn GDB via pexpect (drives it as a real interactive TTY — no batch-mode races).
+3. Run `theseus-auto` — a GDB Python command that sets a hardware watchpoint on
+   the **debug mailbox** at physical `0x7008`. When `efi_main` starts it writes
+   its own runtime address to `0x7000` then the magic sentinel to `0x7008`;
+   the watchpoint fires and `theseus-auto` loads DWARF symbols automatically.
+4. Drop you into interactive GDB, stopped inside `efi_main` with full Rust
+   source-level symbols. No address copying, no probe run, works every boot.
+
+Requires `pexpect` and a `tmux` session named `theseus` (created automatically):
+
+```bash
+pip install --break-system-packages pexpect
+```
+
+Non-interactive CI mode (exits after verifying breakpoint + printing backtrace):
+
+```bash
+make debug-auto-ci
+```
+
+### Manual session
+
+If you want direct GDB control, or are debugging something before `efi_main`:
+
+```bash
+make debug          # QEMU paused on :1234 with GDB stub
+gdb -x debug.gdb    # in a separate terminal
+```
+
+Then at the GDB prompt:
+
+```
+(gdb) target remote localhost:1234
+(gdb) theseus-auto          # watchpoint → symbols → stop at efi_main automatically
+```
+
+Or, if you need to load symbols at a specific address manually:
+
+```
+(gdb) continue              # let UEFI run; read "efi_main @ 0x..." from debugcon
+(gdb) theseus-load 0x<addr> # load symbols at runtime address
+```
+
+`debug.gdb` provides three commands:
+
+| Command | What it does |
+|---------|-------------|
+| `theseus-auto` | Fully automated: watchpoint on mailbox → capture address → load symbols. No argument. |
+| `theseus-load <addr>` | Load DWARF at given runtime `efi_main` address; arms breakpoints at entry, +0x200, +0x300. |
+| `theseus-go <addr>` | Like `theseus-load` but also issues `continue`. |
+
+Section deltas are computed dynamically from `build/BOOTX64.SYM` on every GDB
+startup — no hardcoded offsets that go stale after rebuilds.
+
+### Useful breakpoints
+
+- `kernel_entry` — first kernel code after ExitBootServices
+- `environment::continue_after_stack_switch` — post-stack-switch environment init
+- `interrupts::handler_timer` — LAPIC timer interrupt path
+
+Inspect the bootloader-to-kernel handoff by examining `RDI` just before `kernel_entry` runs (it holds the `*const Handoff` pointer).
 
 ## Logging
 - Macros (`log_error!`, `log_warn!`, `log_info!`, `log_debug!`, `log_trace!`) live in `kernel/src/logging`.
