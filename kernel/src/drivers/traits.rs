@@ -36,6 +36,10 @@ pub enum DeviceClass {
     Storage,
     Network,
     Bridge,
+    Display,
+    Audio,
+    Input,
+    Wireless,
     Unknown,
 }
 
