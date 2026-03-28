@@ -365,4 +365,22 @@ impl Monitor {
             }
         }
     }
+
+    /// Display cached CPU feature flags from `CpuFeatures::get()`.
+    pub(in crate::monitor) fn cmd_cpu_features(&self) {
+        let f = crate::cpu_features::CpuFeatures::get();
+        self.writeln("CPU Features (cached):");
+        self.writeln(&format!("  x2apic:       {}", f.x2apic));
+        self.writeln(&format!("  tsc_deadline: {}", f.tsc_deadline));
+        self.writeln(&format!("  rdtscp:       {}", f.rdtscp));
+        self.writeln(&format!("  fsgsbase:     {}", f.fsgsbase));
+        self.writeln(&format!("  smep:         {}", f.smep));
+        self.writeln(&format!("  smap:         {}", f.smap));
+        self.writeln(&format!("  xsave:        {}", f.xsave));
+        self.writeln(&format!("  avx:          {}", f.avx));
+        self.writeln(&format!("  avx2:         {}", f.avx2));
+        self.writeln(&format!("  apic:         {}", f.apic));
+        self.writeln(&format!("  sse:          {}", f.sse));
+        self.writeln(&format!("  sse2:         {}", f.sse2));
+    }
 }

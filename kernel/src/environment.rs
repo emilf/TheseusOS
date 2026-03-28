@@ -164,7 +164,10 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
     unsafe {
         crate::interrupts::install_timer_vector_runtime();
     }
-    // Skip CPU feature detection and SSE for now to keep high-half path stable
+    // Detect CPU features and apply CR4 hardening (SMEP/SMAP/FSGSBASE)
+    crate::cpu_features::CpuFeatures::init();
+    log_debug!("CPU features detected and CR4 hardened");
+
     // Re-enable safe CR4 bits now that paging is active
     {
         use x86_64::registers::control::{Cr4, Cr4Flags};
@@ -176,10 +179,14 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
         log_debug!("CR4: re-enabled OSFXSR, OSXMMEXCPT, PAGE_GLOBAL");
     }
 
-    // Enable SSE unconditionally (AVX/MSRs remain disabled for now)
+    // Enable SSE using detected features
     {
+        let features = crate::cpu_features::CpuFeatures::get();
         let mut f = crate::cpu::CpuFeatures::new();
-        f.sse = true;
+        f.sse = features.sse;
+        f.sse2 = features.sse2;
+        f.avx = features.avx;
+        f.xsave = features.xsave;
         unsafe {
             setup_floating_point(&f);
         }

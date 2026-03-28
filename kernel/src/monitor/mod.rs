@@ -339,6 +339,13 @@ impl Monitor {
             "gdt" => self.cmd_gdt(&parts[1..]),
             "mmap" => self.cmd_memory_map(&parts[1..]),
             "cpuid" => self.cmd_cpuid(),
+            "cpu" => {
+                if parts.len() > 1 && parts[1] == "features" {
+                    self.cmd_cpu_features()
+                } else {
+                    self.writeln("Usage: cpu features");
+                }
+            }
             "msr" => self.cmd_msr(&parts[1..]),
             "io" => self.cmd_io(&parts[1..]),
             "int" => self.cmd_int(&parts[1..]),
