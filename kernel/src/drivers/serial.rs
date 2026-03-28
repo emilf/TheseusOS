@@ -112,6 +112,60 @@ pub fn init_serial() {
     register_serial_driver();
 }
 
+/// Interrupt handler for serial RX interrupts.
+/// This function is registered with the IRQ registry.
+fn serial_interrupt_handler() {
+    use crate::interrupts;
+    
+    // Call the existing serial interrupt handling logic
+    // Note: This is a simplified version that doesn't go through the driver manager
+    if !crate::config::ENABLE_SERIAL_OUTPUT {
+        return;
+    }
+    
+    // Process received data
+    let mut handled = false;
+    let mut collected = Vec::new();
+    
+    if let Some(state) = SERIAL_STATE.lock().as_ref() {
+        // Read all available bytes from UART
+        while state.port.has_data() {
+            if let Some(byte) = state.port.read_byte() {
+                collected.push(byte);
+                handled = true;
+            } else {
+                break;
+            }
+        }
+        
+        // Store received bytes in circular buffer
+        if !collected.is_empty() {
+            let mut buffer = state.rx_buffer.lock();
+            let head = state.head.load(core::sync::atomic::Ordering::Acquire);
+            let mut new_head = head;
+            
+            for byte in collected {
+                buffer[new_head % RX_BUFFER_SIZE] = byte;
+                new_head = new_head.wrapping_add(1);
+            }
+            
+            state.head.store(new_head, core::sync::atomic::Ordering::Release);
+        }
+    }
+    
+    // Send EOI to LAPIC
+    unsafe {
+        interrupts::local_apic_eoi();
+    }
+    
+    // Log if interrupt was unhandled (debugging)
+    if !handled {
+        unsafe {
+            crate::interrupts::debug::print_str_0xe9("[serial] irq but no data\n");
+        }
+    }
+}
+
 /// Write bytes directly to the serial port, bypassing the driver manager.
 /// This is useful from interrupt context to avoid re-entrant locking.
 pub fn write_bytes_direct(buf: &[u8]) -> Result<usize, &'static str> {
@@ -362,6 +416,20 @@ impl Driver for SerialDriver {
                 dev.set_driver_state(true);
             }
         }
+        
+        // Register interrupt handler with IRQ registry
+        // Note: SERIAL_RX_VECTOR is defined in interrupts module as 0x41
+        if let Err(err) = crate::interrupts::register_irq_handler(
+            crate::interrupts::SERIAL_RX_VECTOR,
+            "serial_rx",
+            serial_interrupt_handler,
+        ) {
+            log_error!("Serial: failed to register IRQ handler: {}", err);
+        } else {
+            log_debug!("Serial: IRQ handler registered for vector 0x{:02x}", 
+                crate::interrupts::SERIAL_RX_VECTOR);
+        }
+        
         log_debug!("Serial initialized");
         Ok(())
     }

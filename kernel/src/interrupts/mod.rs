@@ -34,6 +34,7 @@ mod apic;
 pub mod calibration;
 mod debug;
 mod handlers;
+mod irq_registry;
 mod timer;
 
 // Re-export commonly used items from submodules
@@ -42,6 +43,7 @@ pub use apic::{
     local_apic_id, local_apic_read, local_apic_write, ApicAccessMode, ApicBaseInfo,
 };
 pub use debug::{print_gdt_summary_basic, print_idt_summary_compact};
+pub use irq_registry::{dispatch_irq, get_irq_handler, list_irq_handlers, register_irq_handler, unregister_irq_handler};
 pub use timer::{
     install_timer_vector_runtime, lapic_timer_configure, lapic_timer_mask,
     lapic_timer_start_oneshot, lapic_timer_start_periodic, timer_tick_count,
@@ -195,6 +197,18 @@ pub unsafe fn setup_idt() {
         idt[XHCI_MSI_VECTOR as usize].set_handler_fn(handler_usb_xhci);
         idt[0xFF].set_handler_fn(handler_spurious);
         idt[APIC_ERROR_VECTOR as usize].set_handler_fn(handler_spurious);
+
+        // Install general IRQ handler for vectors 0x20‑0xFF (excluding those already set)
+        for vector in 0x20..=0xFF {
+            if vector != APIC_TIMER_VECTOR
+                && vector != SERIAL_RX_VECTOR
+                && vector != XHCI_MSI_VECTOR
+                && vector != 0xFF
+                && vector != APIC_ERROR_VECTOR
+            {
+                idt[vector as usize].set_handler_fn(handler_general);
+            }
+        }
 
         // Assign IST indices for critical exceptions
         // These use dedicated stacks to prevent recursive faults

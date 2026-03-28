@@ -331,6 +331,9 @@ impl Monitor {
             "ptwalk" | "pt" => self.cmd_ptwalk(&parts[1..]),
             "ptdump" => self.cmd_ptdump(&parts[1..]),
             "devices" | "dev" => self.cmd_devices(),
+            "irq" => {
+                self.writeln("IRQ command not yet implemented");
+            }
             "pci" => self.cmd_pci(&parts[1..]),
             "acpi" => self.cmd_acpi(),
             "phys" | "physmem" => self.cmd_phys(),

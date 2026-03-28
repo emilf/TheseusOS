@@ -117,3 +117,42 @@ Affected modules:
 - `kernel/src/environment.rs`
 - `kernel/src/memory/frame_allocator.rs`
 - `kernel/src/handoff.rs`
+
+## A5: Allocator Handoff
+
+**REQUIRED**
+
+The transition from early-boot memory consumption to the runtime physical allocator follows a strict timeline:
+
+1. **Early boot**: Before `init_from_handoff` is called, any physical memory consumption (page tables, stacks, temporary structures) must be recorded via `record_boot_consumed_region`.
+
+2. **Handoff initialization**: `init_from_handoff` is called with:
+   - The UEFI memory map (conventional memory marked as free, all other types as reserved)
+   - A list of additional consumed regions (e.g., framebuffer, ACPI tables)
+   - A callback to allocate bitmap storage from the permanent heap
+
+3. **Region reservation**: During initialization:
+   - All UEFI-reserved regions are marked as reserved in the bitmap
+   - Boot-consumed regions (from `BOOT_CONSUMED` log) are drained and reserved
+   - Explicitly provided consumed regions are reserved
+   - Debug builds validate no overlap between consumed regions and free frames
+
+4. **Post-initialization**: After `init_from_handoff` succeeds:
+   - `record_boot_consumed_region` directly reserves regions in the live bitmap
+   - The `BOOT_CONSUMED` log is empty and unused
+
+**Critical invariant**: If a region is missed during handoff (not recorded via `record_boot_consumed_region` and not in the consumed list), it may be allocated later, causing memory corruption or aliasing.
+
+Implements / evidence:
+- `kernel/src/physical_memory.rs#record_boot_consumed_region`
+- `kernel/src/physical_memory.rs#init_from_handoff`
+- `kernel/src/physical_memory.rs#reserve_boot_consumed`
+- `kernel/src/physical_memory.rs#validate_no_overlap_with_free_frames` (debug)
+
+Related plans:
+- `../plans/memory.md#physical-memory-allocator`
+
+Affected modules:
+- `kernel/src/physical_memory.rs`
+- `kernel/src/environment.rs`
+- All early-boot code that consumes physical memory before the allocator is ready
