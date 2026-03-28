@@ -11,12 +11,8 @@ This document tracks TODOs, FIXMEs, and incomplete features found in the Theseus
 ## 🔴 High Priority (Blocking Core Functionality)
 
 ### 1. Interrupt Vector Extraction
-**File:** `kernel/src/interrupts/general_handler.rs:25`  
-**Issue:** `general_interrupt_handler` cannot determine which interrupt vector triggered it.  
-**Impact:** IRQ registry cannot be used effectively; all interrupts (except hardcoded ones) go to same handler.  
-**Solution:** Implement macro-generated handlers or modify x86_64 crate usage.  
-**Status:** ❌ Not implemented  
-**See:** `/tmp/interrupt_todo.md` for detailed analysis.
+**Status:** ✅ **IMPLEMENTED** — per-vector `global_asm!` stubs  
+All hardware IRQs 0x20–0xFD (including timer/serial/xHCI) go through the uniform stub path. See axiom A3.1 and `docs/plans/interrupts-and-platform.md#irq-dispatch-architecture`.
 
 ### 2. x2APIC Implementation
 **Plan:** `docs/plans/x2apic-prep.md`  

@@ -56,21 +56,39 @@ Affected modules:
 - `kernel/src/drivers/serial.rs`
 - `kernel/src/environment.rs`
 
-## A3.1: General hardware IRQs dispatch via per-vector assembly stubs
+## A3.1: All hardware IRQs 0x20–0xFD dispatch through uniform per-vector stubs
 
 **REQUIRED**
 
-Hardware interrupt vectors 0x20–0xFD (excluding dedicated entries for timer, serial RX, xHCI MSI, APIC error, and spurious) are handled by per-vector assembly stubs generated in `handlers.rs`. Each stub pushes a literal vector byte and tail-calls `irq_stub_common`, which passes the vector to `irq_dispatch_common` (Rust). The IRQ registry is then consulted and the registered handler called, or an EOI + warning is issued if no handler is registered.
+Every hardware interrupt vector in the range 0x20–0xFD — including the APIC
+timer (0x40), serial RX (0x41), and xHCI MSI (0x50) — is handled by a
+per-vector assembly stub. No vector in this range has a special-cased
+`extern "x86-interrupt"` IDT entry. Handlers are registered in the IRQ
+registry and called uniformly through `irq_dispatch_common`.
+
+The only deliberate exceptions are 0xFE (APIC error) and 0xFF (spurious),
+which keep dedicated Rust handlers because the Intel SDM requires that
+spurious interrupts (0xFF) must **not** receive an EOI.
+
+Stub dispatch path:
+
+```
+CPU → IDT[N] → irq_stub_N (push N; jmp irq_stub_common)
+             → irq_dispatch_common(vector: u8)
+             → IRQ_REGISTRY[N] → fn() handler  (sends EOI, does work)
+                               → EOI + warn    (no handler registered)
+```
 
 This design:
-- Bakes the vector into the code path — no APIC ISR scanning, no MMIO on the hot path.
-- Is SMP-safe: stubs are pure read-only code shared across CPUs; dispatch uses a `Mutex`-protected registry.
+- Bakes the vector into the code — no APIC ISR scanning, no MMIO on the hot path.
+- Is SMP-safe: stubs are pure read-only code shared across all CPUs; the registry is `Mutex`-guarded.
 - Matches the canonical OS pattern (Linux `irq_entries_start`, FreeBSD `IDTVEC`).
+- Allows any driver to claim a vector uniformly via `register_irq_handler`.
 
 Implements / evidence:
-- `kernel/src/interrupts/handlers.rs` — `global_asm!` stubs, `IRQ_STUB_TABLE`, `irq_dispatch_common`
-- `kernel/src/interrupts/mod.rs` — IDT setup loop (`set_handler_addr`)
-- `kernel/src/interrupts/irq_registry.rs` — `dispatch_irq`, `register_irq_handler`
+- `kernel/src/interrupts/handlers.rs` — `global_asm!` stubs, `IRQ_STUB_TABLE`, `irq_dispatch_common`, `irq_timer`, `irq_serial_rx`, `irq_usb_xhci`
+- `kernel/src/interrupts/mod.rs` — IDT setup loop (`set_handler_addr`), built-in `register_irq_handler` calls
+- `kernel/src/interrupts/irq_registry.rs` — `dispatch_irq`, `register_irq_handler`, `list_irq_handlers`
 
 Related plans:
 - `../plans/interrupts-and-platform.md#irq-dispatch-architecture`
