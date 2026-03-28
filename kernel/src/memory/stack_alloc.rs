@@ -19,9 +19,11 @@
 //! Kernel stack allocator.
 
 use crate::memory::{
-    runtime_mapper::MapError,
+    runtime_mapper::{kernel_mapper, MapError},
     va_alloc::kernel_va_alloc,
 };
+use x86_64::structures::paging::PageTableFlags;
+use crate::log_warn;
 
 /// Size of a guard page (4 KiB).
 const GUARD_PAGE_SIZE: u64 = 4096;
@@ -74,13 +76,39 @@ pub fn alloc_kernel_stack(size: u64) -> Result<StackRegion, AllocError> {
     let top = bottom + size;
 
     // Align top to 16 bytes (x86_64 ABI requirement)
-    let _top = (top + 15) & !15;
+    let top = (top + 15) & !15;
 
-    // TODO: map stack frames with physical frame allocation
-    // This requires integrating with the physical frame allocator.
-    // For now, return an error; implementation will be completed
-    // after physical allocator integration.
-    Err(AllocError::MapFailed(MapError::FrameAllocFailed))
+    // Get kernel mapper
+    let mut mapper_guard = kernel_mapper().lock();
+    let mapper = mapper_guard.as_mut().ok_or(AllocError::MapFailed(MapError::FrameAllocFailed))?;
+    
+    // Map each stack page
+    let mut current_va = bottom;
+    for _ in 0..(size / 4096) {
+        // Allocate a physical frame
+        let pa = match crate::physical_memory::alloc_frame() {
+            Ok(pa) => pa,
+            Err(_) => return Err(AllocError::MapFailed(MapError::FrameAllocFailed)),
+        };
+        
+        // Map the page with read/write permissions (no execute for W^X)
+        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+        if let Err(e) = mapper.map_page(current_va, pa, flags) {
+            // Clean up: free the frame we just allocated
+            let _ = crate::physical_memory::free_frame(pa);
+            return Err(AllocError::MapFailed(e));
+        }
+        
+        current_va += 4096;
+    }
+    
+    Ok(StackRegion {
+        top,
+        bottom,
+        guard,
+        va_base,
+        size,
+    })
 }
 
 /// Free a kernel stack region.
@@ -88,9 +116,27 @@ pub fn alloc_kernel_stack(size: u64) -> Result<StackRegion, AllocError> {
 /// Unmaps all stack pages, frees the physical frames, and returns the VA
 /// to the allocator.
 pub fn free_kernel_stack(region: StackRegion) -> Result<(), AllocError> {
-    // TODO: unmap stack pages and free physical frames
-    // Implementation pending physical allocator integration.
-
+    // Get kernel mapper
+    let mut mapper_guard = kernel_mapper().lock();
+    let mapper = mapper_guard.as_mut().ok_or(AllocError::MapFailed(MapError::FrameAllocFailed))?;
+    
+    // Unmap each stack page and free the physical frame
+    let mut current_va = region.bottom;
+    for _ in 0..(region.size / 4096) {
+        match mapper.unmap_page(current_va) {
+            Ok(pa) => {
+                // Free the physical frame
+                if let Err(e) = crate::physical_memory::free_frame(pa) {
+                    log_warn!("Failed to free physical frame {:#x} from stack: {:?}", pa, e);
+                }
+            }
+            Err(e) => {
+                log_warn!("Failed to unmap stack page {:#x}: {:?}", current_va, e);
+            }
+        }
+        current_va += 4096;
+    }
+    
     // Return VA to allocator
     let mut va_alloc = kernel_va_alloc().lock();
     va_alloc.free_va(region.va_base, region.size + GUARD_PAGE_SIZE);

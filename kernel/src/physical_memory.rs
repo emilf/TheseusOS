@@ -591,21 +591,29 @@ fn validate_no_overlap_with_free_frames(
             continue;
         }
         
-        let start_pfn = Pfn::containing(region.base);
-        let end_pfn = Pfn::containing(region.base + region.size - 1);
+        let start_pfn = Pfn::containing(region.start);
+        let end_pfn = Pfn::containing(region.start + region.size - 1);
         
         // Check each frame in the region
         for pfn in start_pfn.0..=end_pfn.0 {
-            if manager.is_free(Pfn(pfn)) {
-                log_error!(
-                    "BUG: Consumed region {:#x}-{:#x} overlaps with free frame at PFN {} ({:#x})",
-                    region.base,
-                    region.base + region.size,
-                    pfn,
-                    pfn * FRAME_SIZE
-                );
-                // In debug builds, we panic to catch the bug immediately
-                panic!("Consumed region overlaps with free frame");
+            // Check if this specific frame is free
+            let frame_start = pfn * FRAME_SIZE;
+            let frame_end = frame_start + FRAME_SIZE - 1;
+            
+            // Check if any part of this frame overlaps with the region
+            if frame_start < region.start + region.size && frame_end >= region.start {
+                // This frame overlaps with the region, check if it's marked free
+                if manager.range_is_free(pfn as usize, 1) {
+                    log_error!(
+                        "BUG: Consumed region {:#x}-{:#x} overlaps with free frame at PFN {} ({:#x})",
+                        region.start,
+                        region.start + region.size,
+                        pfn,
+                        pfn * FRAME_SIZE
+                    );
+                    // In debug builds, we panic to catch the bug immediately
+                    panic!("Consumed region overlaps with free frame");
+                }
             }
         }
     }
