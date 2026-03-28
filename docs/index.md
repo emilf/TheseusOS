@@ -38,6 +38,7 @@ TheseusOS currently boots as a single UEFI executable. The bootloader gathers fi
 - [`plans/x2apic-prep.md`](plans/x2apic-prep.md)
 - [`plans/observability.md`](plans/observability.md)
 - [`plans/drivers-and-io.md`](plans/drivers-and-io.md)
+- [`plans/cpu-platform-hardening.md`](plans/cpu-platform-hardening.md) — Phase 1 CPU & platform hardening status
 
 ### Existing Narrative Docs
 
