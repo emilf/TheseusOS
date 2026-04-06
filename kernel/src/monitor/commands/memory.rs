@@ -29,6 +29,7 @@ use crate::memory::{
     PAGE_SIZE_2MB, PTE_ACCESSED, PTE_DIRTY, PTE_GLOBAL, PTE_NO_EXEC, PTE_PCD, PTE_PRESENT, PTE_PS,
     PTE_PWT, PTE_USER, PTE_WRITABLE,
 };
+// use crate::serial_debug::hexdump; // Removed - using memory_inspect instead
 use crate::monitor::parsing::parse_number;
 use crate::monitor::Monitor;
 use alloc::format;
@@ -71,25 +72,34 @@ impl Monitor {
             }
         }
 
-        // Display 16 bytes in hex + ASCII
-        unsafe {
-            let ptr = self.last_addr as *const u8;
+        // Display 16 bytes in hex + ASCII using memory_inspect API
+        use crate::memory_inspect::access::read_byte;
+        
+        // Try to use hexdump_virtual for consistent output
+        use crate::memory_inspect::hexdump_virtual;
+        if let Err(e) = hexdump_virtual(self.last_addr, 16, Some(self.last_addr)) {
+            // Fall back to manual display if hexdump fails
+            self.writeln(&format!("Hexdump failed: {}. Falling back to manual display.", e));
+            
             self.write(&format!("{:016X}: ", self.last_addr));
-
+            
             // Hex values
             for i in 0..16 {
-                let byte = core::ptr::read_volatile(ptr.add(i));
-                self.write(&format!("{:02X} ", byte));
+                match read_byte(self.last_addr + i) {
+                    Ok(byte) => self.write(&format!("{:02X} ", byte)),
+                    Err(_) => self.write("?? "),
+                }
             }
-
+            
             // ASCII representation
             self.write(" |");
             for i in 0..16 {
-                let byte = core::ptr::read_volatile(ptr.add(i));
-                if byte >= 0x20 && byte < 0x7F {
-                    self.write(&format!("{}", byte as char));
-                } else {
-                    self.write(".");
+                match read_byte(self.last_addr + i) {
+                    Ok(byte) if byte >= 0x20 && byte < 0x7F => {
+                        self.write(&format!("{}", byte as char));
+                    }
+                    Ok(_) => self.write("."),
+                    Err(_) => self.write("?"),
                 }
             }
             self.writeln("|");
@@ -101,6 +111,7 @@ impl Monitor {
     /// Dump memory region
     ///
     /// Displays a larger memory region in hex + ASCII format with multiple lines.
+    /// Uses the serial_debug::hexdump utility for consistent output.
     ///
     /// # Arguments
     /// * `args` - Command arguments: ADDRESS [LENGTH]
@@ -136,37 +147,27 @@ impl Monitor {
 
         self.writeln(&format!("Memory dump at 0x{:X}, {} bytes:", addr, len));
 
-        unsafe {
-            for offset in (0..len).step_by(16) {
-                let line_addr = addr + offset;
-                let ptr = line_addr as *const u8;
-
-                self.write(&format!("{:016X}: ", line_addr));
-
-                // Hex values
-                for i in 0..16usize {
-                    if offset + (i as u64) < len {
-                        let byte = core::ptr::read_volatile(ptr.add(i));
-                        self.write(&format!("{:02X} ", byte));
-                    } else {
-                        self.write("   ");
-                    }
-                }
-
-                // ASCII representation
-                self.write(" |");
-                for i in 0..16usize {
-                    if offset + (i as u64) < len {
-                        let byte = core::ptr::read_volatile(ptr.add(i));
-                        if byte >= 0x20 && byte < 0x7F {
-                            self.write(&format!("{}", byte as char));
-                        } else {
-                            self.write(".");
-                        }
-                    }
-                }
-                self.writeln("|");
+        // Use the memory_inspect hexdump utility for consistent output
+        // Note: Monitor addresses are virtual addresses
+        
+        // Create a writer that writes to the monitor
+        struct MonitorWriter<'a> {
+            monitor: &'a Monitor,
+        }
+        
+        impl<'a> core::fmt::Write for MonitorWriter<'a> {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                self.monitor.write(s);
+                Ok(())
             }
+        }
+        
+        let mut writer = MonitorWriter { monitor: self };
+        
+        if let Err(e) = crate::memory_inspect::hexdump::hexdump_to_writer(
+            &mut writer, addr, len as usize, Some(addr)
+        ) {
+            self.writeln(&format!("Hexdump failed: {}", e));
         }
     }
 
@@ -212,9 +213,15 @@ impl Monitor {
             }
         };
 
-        unsafe {
-            core::ptr::write_volatile(addr as *mut u8, value);
-            self.writeln(&format!("Wrote 0x{:02X} to 0x{:016X}", value, addr));
+        use crate::memory_inspect::write_byte;
+        
+        match write_byte(addr, value) {
+            Ok(()) => {
+                self.writeln(&format!("Wrote 0x{:02X} to 0x{:016X}", value, addr));
+            }
+            Err(e) => {
+                self.writeln(&format!("Failed to write 0x{:02X} to 0x{:016X}: {}", value, addr, e));
+            }
         }
     }
 
@@ -270,15 +277,21 @@ impl Monitor {
             }
         };
 
-        unsafe {
-            let ptr = addr as *mut u8;
-            for i in 0..len {
-                core::ptr::write_volatile(ptr.add(i), value);
+        use crate::memory_inspect::fill_bytes;
+        
+        match fill_bytes(addr, len, value) {
+            Ok(()) => {
+                self.writeln(&format!(
+                    "Filled {} bytes at 0x{:016X} with 0x{:02X}",
+                    len, addr, value
+                ));
             }
-            self.writeln(&format!(
-                "Filled {} bytes at 0x{:016X} with 0x{:02X}",
-                len, addr, value
-            ));
+            Err(e) => {
+                self.writeln(&format!(
+                    "Failed to fill {} bytes at 0x{:016X}: {}",
+                    len, addr, e
+                ));
+            }
         }
     }
 

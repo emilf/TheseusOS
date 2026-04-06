@@ -58,6 +58,7 @@ pub mod physical_memory;
 pub mod serial_debug;
 pub mod stack;
 pub mod util;
+pub mod memory_inspect;
 
 // Config must come after logging since it references logging types
 pub mod config;

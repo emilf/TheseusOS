@@ -8,30 +8,30 @@ pub fn test_hexdump_basic() {
     let test_data = b"Hello, TheseusOS! This is a test buffer for hexdump.";
     
     unsafe {
-        util::hexdump(test_data.as_ptr(), test_data.len(), None);
+        hexdump(test_data.as_ptr(), test_data.len(), None);
     }
     
     // Test safe wrapper
-    let result = util::hexdump_safe(test_data.as_ptr(), test_data.len(), None);
+    let result = hexdump_safe(test_data.as_ptr(), test_data.len(), None);
     assert!(result.is_ok(), "hexdump_safe should succeed for valid pointer");
     
     // Test labeled version
     unsafe {
-        util::hexdump_labeled("Test Buffer", test_data.as_ptr(), test_data.len(), None);
+        hexdump_labeled("Test Buffer", test_data.as_ptr(), test_data.len(), None);
     }
     
     // Test zero-length region
-    let result = util::hexdump_safe(test_data.as_ptr(), 0, None);
+    let result = hexdump_safe(test_data.as_ptr(), 0, None);
     assert!(result.is_ok(), "hexdump_safe should handle zero length");
     
     // Test null pointer (should fail)
-    let result = util::hexdump_safe(core::ptr::null(), 100, None);
+    let result = hexdump_safe(core::ptr::null(), 100, None);
     assert!(result.is_err(), "hexdump_safe should fail for null pointer");
     
     // Test ptr_likely_valid
-    assert!(util::ptr_likely_valid(test_data.as_ptr(), test_data.len()));
-    assert!(!util::ptr_likely_valid(core::ptr::null(), 100));
-    assert!(!util::ptr_likely_valid(0xFFFFFFFF as *const u8, usize::MAX)); // Overflow
+    assert!(ptr_likely_valid(test_data.as_ptr(), test_data.len()));
+    assert!(!ptr_likely_valid(core::ptr::null(), 100));
+    assert!(!ptr_likely_valid(0xFFFFFFFF as *const u8, usize::MAX)); // Overflow
 }
 
 /// Test hexdump with specific base address
@@ -40,10 +40,10 @@ pub fn test_hexdump_with_base() {
     
     unsafe {
         // Test with explicit base address
-        util::hexdump(test_data.as_ptr(), test_data.len(), Some(0x1000));
+        hexdump(test_data.as_ptr(), test_data.len(), Some(0x1000));
         
         // Test with pointer value as base (default)
-        util::hexdump(test_data.as_ptr(), test_data.len(), None);
+        hexdump(test_data.as_ptr(), test_data.len(), None);
     }
 }
 
@@ -52,13 +52,13 @@ pub fn test_hexdump_various_sizes() {
     // Test small buffer (less than 16 bytes)
     let small = b"Short";
     unsafe {
-        util::hexdump(small.as_ptr(), small.len(), None);
+        hexdump(small.as_ptr(), small.len(), None);
     }
     
     // Test exact 16-byte buffer
     let exact = [0u8; 16];
     unsafe {
-        util::hexdump(exact.as_ptr(), exact.len(), None);
+        hexdump(exact.as_ptr(), exact.len(), None);
     }
     
     // Test larger buffer (multiple lines)
@@ -67,7 +67,7 @@ pub fn test_hexdump_various_sizes() {
         large[i] = i as u8;
     }
     unsafe {
-        util::hexdump(large.as_ptr(), large.len(), None);
+        hexdump(large.as_ptr(), large.len(), None);
     }
 }
 

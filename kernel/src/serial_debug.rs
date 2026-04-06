@@ -31,7 +31,62 @@ use crate::drivers::manager::driver_manager;
 use crate::drivers::traits::DeviceClass;
 use crate::log_info;
 
+/// Writes a formatted string directly to the serial port without going through
+/// kernel logging. This is intended for low-level debugging output where
+/// performance and direct visibility are important.
+///
+/// # Format
+/// ```ignore
+/// serial_print!("User: {}", user);
+/// serial_print!("Count: {}", num);
+/// serial_print!("Binary: {:08b}", val);
+/// ```
+///
+/// # Safety
+/// This function bypasses the normal kernel logging infrastructure and writes
+/// directly to the serial driver. Ensure the serial driver is active and
+/// properly configured before using this macro.
+///
+/// # Examples
+/// ```ignore
+/// let name = "Alice";
+/// serial_print!("Hello {}", name);
+/// serial_println!("Hello {}", name);
+/// ```
+#[macro_export]
+macro_rules! serial_print {
+    ($($arg:tt)*) => {{
+        let _fmt = alloc::format!($($arg)*);
+        let bytes = _fmt.as_bytes();
+        let _ = $crate::drivers::manager::driver_manager().lock().write_class($crate::drivers::traits::DeviceClass::Serial, bytes);
+    }};
+}
+
+/// Like `serial_print!` but appends a newline character (`\r\n`)
+/// after the formatted output, ensuring proper line termination for
+/// terminal/console display.
+///
+/// # Safety
+/// Same as `serial_print!` - this bypasses kernel logging.
+///
+/// # Examples
+/// ```ignore
+/// serial_println!("Starting boot sequence...");
+/// serial_println!("Error: {}", error_msg);
+/// ```
+#[macro_export]
+macro_rules! serial_println {
+    ($($arg:tt)*) => {{
+        let _fmt = alloc::format!($($arg)*);
+        let bytes = _fmt.as_bytes();
+        let _ = $crate::drivers::manager::driver_manager().lock().write_class($crate::drivers::traits::DeviceClass::Serial, bytes);
+        let _ = $crate::drivers::manager::driver_manager().lock().write_class($crate::drivers::traits::DeviceClass::Serial, b"\r\n");
+    }};
+}
+
 const MAX_LINE: usize = 256;
+
+
 
 /// Run the reverse-echo serial-debug session.
 ///
