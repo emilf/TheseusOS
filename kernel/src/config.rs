@@ -87,6 +87,11 @@ pub const USB_XHCI_EVENT_RING_DIAGNOSTICS: bool = false;
 /// of PCI/MSI delivery.
 pub const USB_RUN_SW_INT_SELF_TEST: bool = false;
 
+/// When `true`, run the ring 3 syscall self-test (maps user pages, iretqs into
+/// an embedded user binary that calls SYS_NULL, SYS_GET_TICKS, and SYS_WRITE_SERIAL).
+/// The kernel does not reach the idle loop while this is enabled.
+pub const RUN_SYSCALL_TEST: bool = false;
+
 // ============================================================================
 // Logging Configuration
 // ============================================================================
