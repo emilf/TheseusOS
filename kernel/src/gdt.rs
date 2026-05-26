@@ -37,10 +37,13 @@ use x86_64::{
     VirtAddr,
 };
 
+#[allow(dead_code)]
 struct GdtState {
     gdt: GlobalDescriptorTable,
     code_sel: SegmentSelector,
     data_sel: SegmentSelector,
+    user_data_sel: SegmentSelector,
+    user_code_sel: SegmentSelector,
     tss_sel: SegmentSelector,
 }
 
@@ -84,6 +87,12 @@ unsafe fn build_gdt_state() -> GdtState {
     let mut gdt = GlobalDescriptorTable::new();
     let code_sel = gdt.add_entry(Descriptor::kernel_code_segment());
     let data_sel = gdt.add_entry(Descriptor::kernel_data_segment());
+    // User segments for ring 3 (required by syscall/sysretq).
+    // Layout: null, kcode(0x08), kdata(0x10), udata(0x18), ucode(0x20), TSS(0x28+0x30).
+    // STAR[47:32] = 0x0008 (kernel CS; kernel SS = 0x0008+8 = 0x0010).
+    // STAR[63:48] = 0x0010 (sysretq CS = 0x0010+16 = 0x0020; SS = 0x0010+8 = 0x0018).
+    let user_data_sel = gdt.add_entry(Descriptor::user_data_segment());
+    let user_code_sel = gdt.add_entry(Descriptor::user_code_segment());
     TSS_STATIC = tss;
     let tss_ref: &'static TaskStateSegment = core::mem::transmute::<
         *const TaskStateSegment,
@@ -94,6 +103,8 @@ unsafe fn build_gdt_state() -> GdtState {
         gdt,
         code_sel,
         data_sel,
+        user_data_sel,
+        user_code_sel,
         tss_sel,
     }
 }
@@ -113,6 +124,12 @@ pub fn ist_stack_ranges() -> [(u64, u64); 4] {
 
 /// Kernel code-segment selector used by the runtime GDT.
 pub const KERNEL_CS: u16 = 0x08;
+/// Kernel data-segment selector.
+pub const KERNEL_SS: u16 = 0x10;
+/// User data-segment selector (ring 3). Loaded by sysretq as SS with RPL=3.
+pub const USER_DS: u16 = 0x18;
+/// User code-segment selector (ring 3, L=1). Loaded by sysretq as CS with RPL=3.
+pub const USER_CS: u16 = 0x20;
 
 /// Build and load the runtime GDT/TSS state.
 pub unsafe fn setup_gdt() {
