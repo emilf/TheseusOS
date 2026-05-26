@@ -33,7 +33,7 @@ Goal: enumerate exactly where the current runtime assumes xAPIC/MMIO semantics.
 ### Checklist
 
 - [x] IMPLEMENTED: `IA32_APIC_BASE` handling has been surfaced explicitly so current APIC mode/base state is observable.
-- [~] IN PROGRESS: Audit every APIC-facing call site for xAPIC-only assumptions, especially:
+- [x] IMPLEMENTED: Audit every APIC-facing call site for xAPIC-only assumptions, especially:
   - LAPIC timer configuration/start/mask helpers
   - EOI writes in interrupt handlers
   - APIC ID reads used by serial/USB IRQ routing
@@ -42,41 +42,46 @@ Goal: enumerate exactly where the current runtime assumes xAPIC/MMIO semantics.
   - EOI writes in `kernel/src/interrupts/handlers.rs` now flow through `kernel/src/interrupts/apic.rs::local_apic_eoi`
   - APIC ID reads in `kernel/src/drivers/serial.rs` and `kernel/src/drivers/usb/xhci/mod.rs` now flow through `kernel/src/interrupts/apic.rs::local_apic_id`
   - LAPIC timer register access in `kernel/src/interrupts/timer.rs` now flows through `kernel/src/interrupts/apic.rs::{local_apic_read, local_apic_write}` instead of open-coding the xAPIC access path at each call site
-- [ ] TODO: Confirm whether any current helper already assumes x2APIC-style semantics implicitly or would become wrong immediately after an x2APIC mode switch.
+- [x] IMPLEMENTED: All LAPIC helpers (`local_apic_read/write/eoi/id`) dispatch through `cached_apic_mode()` — confirmed safe for x2APIC mode switch.
 
-## Phase 2 — Structural Cleanup
+## Phase 2 — Structural Cleanup ✅
 
 Goal: isolate APIC access policy from APIC users so later behavior changes are localized.
 
 ### Checklist
 
-- [ ] TODO: Refactor APIC access so call sites depend on a smaller helper surface instead of open-coding xAPIC assumptions.
-- [ ] TODO: Separate "what APIC mode are we in?" from "how do we read/write a LAPIC register in that mode?"
-- [ ] TODO: Reduce duplication around APIC ID reads and EOI writes so any future mode-aware access path has fewer call sites to update.
-- [ ] TODO: Keep this phase behavior-preserving unless a tiny guardrail change is clearly safer than preserving a silent bad assumption.
+- [x] IMPLEMENTED: APIC access centralized in `local_apic_read/write/eoi/id` — no open-coded xAPIC assumptions at call sites.
+- [x] IMPLEMENTED: `ApicAccessMode` separates "what mode" from "how to access"; `cached_apic_mode()` is the single policy point.
+- [x] IMPLEMENTED: APIC ID reads and EOI writes unified through `local_apic_id()` and `local_apic_eoi()`.
+- [x] IMPLEMENTED: Phase was behavior-preserving; no silent bad assumptions remain.
 
-## Phase 3 — Observability + Guardrails
+## Phase 3 — Observability + Guardrails ✅
 
 Goal: make unsupported APIC-mode combinations obvious instead of silently dangerous.
 
 ### Checklist
 
-- [ ] TODO: Add explicit runtime reporting for APIC access support, not just APIC capability/mode.
-- [x] IMPLEMENTED: The shared LAPIC access helpers (`local_apic_read/write`, `local_apic_eoi`, `local_apic_id`) now hard-fail if `IA32_APIC_BASE` reports x2APIC enabled, so we never silently perform xAPIC/MMIO accesses in an incompatible mode.
-- [ ] TODO: Extend monitor/debugging surfaces if needed so APIC mode transitions can be inspected without adding default boot logspam.
+- [x] IMPLEMENTED: Boot log reports `APIC mode: x2apic` (or xapic/disabled) via `init_apic_mode()`.
+- [x] IMPLEMENTED: LAPIC helpers panic on `ApicAccessMode::Disabled` — never silently misfire.
+- [x] IMPLEMENTED: Monitor `cpu` and `status` commands expose APIC mode, base, x2apic flag, and BSP bit.
+- [x] IMPLEMENTED: x2APIC enable attempt is logged: success → `"x2APIC enabled"`, failure → `"x2APIC enable failed"`, unsupported → `"x2APIC not supported"`, already-on → `"x2APIC already enabled"`.
 
-## Phase 4 — First Narrow Functional x2APIC Step
+## Phase 4 — First Narrow Functional x2APIC Step ✅
 
 Goal: if earlier phases leave the code in a clean state, land one very small functional increment.
 
-### Candidate first increments
+### Checklist
 
-- [ ] TODO: x2APIC-safe APIC ID retrieval path
-- [ ] TODO: x2APIC-safe EOI path
-- [ ] TODO: one or two mode-aware LAPIC register helpers needed for timer bring-up
+- [x] IMPLEMENTED: `try_enable_x2apic()` — enables x2APIC mode if CPUID reports support, verifies via readback, logs result. Called before `init_apic_mode()` in `environment.rs`.
+- [x] IMPLEMENTED: x2APIC-safe APIC ID retrieval via `local_apic_id()` (MSR 0x820, no 24-bit shift).
+- [x] IMPLEMENTED: x2APIC-safe EOI via `local_apic_eoi()` (MSR write to 0x80B offset).
+- [x] IMPLEMENTED: x2APIC-safe timer bring-up — `lapic_timer_configure()` and all timer helpers use `local_apic_read/write()` which dispatches through mode cache.
+- [x] VERIFIED: Full boot in QEMU with `-cpu max` (x2APIC advertised): `x2APIC enabled` → `APIC mode: x2apic` → `LAPIC timer interrupt received successfully` — complete boot including ACPI, USB/xHCI enumeration.
 
-**Non-goal for the first functional step:**
-- full x2APIC conversion of every APIC/IOAPIC/MSI-related path in one patch
+**Confirmed non-goals kept out of scope:**
+- IOAPIC / MSI-X mode-switching (separate concern)
+- IPI support via 64-bit ICR MSR (noted in `local_apic_write` comment, deferred to SMP bringup)
+- Full IOAPIC/MSI path conversion
 
 ## Risks
 

@@ -192,6 +192,7 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
     // Verify LAPIC timer delivery (later test)
     // Detect and cache the APIC access mode (xAPIC vs x2APIC) before any LAPIC access
     unsafe {
+        crate::interrupts::try_enable_x2apic();
         crate::interrupts::init_apic_mode();
     }
 
