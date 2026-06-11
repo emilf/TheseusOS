@@ -404,6 +404,13 @@ This section captures real failure modes that have happened working on TheseusOS
 - **GDB requires section delta computation.** The kernel is relocated to higher-half. GDB symbols need offset adjustment. Use `gdb-auto.py` / `make debug-auto` rather than raw GDB — the automation handles section deltas from `BOOTX64.SYM`.
 - **`make run` is headless.** `make run-headed` opens a QEMU window. Use headless for CI/automated runs, headed when you need to see framebuffer output.
 
+### Test automation
+
+- **`theseus-qemu test`** runs all kernel tests and returns a structured exit code: 0=PASS, 1=FAIL, 2=PANIC, 3=TIMEOUT. No output parsing needed.
+- **TDD workflow is mandatory:** baseline (confirm existing tests PASS) → write test → confirm test FAILS on clean build → implement → confirm test PASSES + no regressions.
+- **The test is the truth.** Once a test is written and confirmed-failing, it is frozen. Do not redefine success criteria or stub the test — report blockers honestly.
+- **`.test-output.log`** is saved on any non-PASS exit for inspection.
+
 ### Verify your work
 
 Before opening a PR on any non-trivial change:

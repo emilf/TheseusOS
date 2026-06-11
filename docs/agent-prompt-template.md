@@ -29,6 +29,20 @@ CONSTRAINTS:
 - Do not add driver_data raw pointer casts — they are being replaced (see AGENTS.md §14)
 - All VA regions are hardcoded constants — do not invent dynamic mappings
 
+TESTING (Mandatory TDD Workflow):
+1. **Baseline:** `theseus-qemu test --headless` → exit 0 (PASS)
+2. **Define:** Write test(s) asserting the feature's success criteria
+3. **RED:** `theseus-qemu test --headless` → exit 1 (FAIL) — confirm the new test fails on clean code
+4. **Implement:** Write the feature code. Do NOT change the test.
+5. **GREEN:** `theseus-qemu test --headless` → exit 0 (PASS) — all tests pass
+6. **Report:** `Verdict: PASS (exit code 0)`
+
+Guarails:
+- If a test PASSES at step 3, the test is too loose or the feature already exists.
+- If a test FAILS after implementation, do NOT redefine the test's success criteria.
+  The test is the truth. Fix the implementation.
+- Tests are committed before implementation code. Always.
+
 VERIFICATION — do all of these before declaring done:
 1. `cargo run -p theseus-qemu -- --headless` boots cleanly with no new ERRORs or WARNs
 2. [task-specific check, e.g. "APIC timer still fires", "keyboard events still arrive", "memory monitor shows sane state"]
