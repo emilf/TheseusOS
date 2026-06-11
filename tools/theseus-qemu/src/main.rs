@@ -31,6 +31,8 @@ pub enum Cmd {
     Print(Args),
     /// Emit a JSON artifact containing the resolved configuration + argv (implies --dry).
     Artifact(ArtifactArgs),
+    /// Run kernel tests: build with --features kernel-tests, run QEMU headless, report verdict.
+    Test(TestArgs),
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -41,6 +43,26 @@ pub struct ArtifactArgs {
     /// Where to write the JSON artifact
     #[arg(long, default_value = "build/qemu-argv.json")]
     pub out: PathBuf,
+}
+
+#[derive(Parser, Debug, Clone)]
+pub struct TestArgs {
+    /// Timeout in seconds before QEMU is killed (default: 60).
+    #[arg(long, default_value_t = 60)]
+    pub timeout: u64,
+
+    /// Skip building before running tests.
+    #[arg(long)]
+    pub no_build: bool,
+
+    /// Also print QEMU output to stdout after the run.
+    #[arg(long)]
+    pub print: bool,
+
+    /// Extra cargo features beyond `kernel-tests` (comma-separated).
+    /// E.g. `--features kernel-test-scenario-fail` to test FAIL verdict.
+    #[arg(long, default_value = "")]
+    pub features: String,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -197,6 +219,17 @@ fn main() -> Result<()> {
                 .with_context(|| format!("write artifact {}", artifact.out.display()))?;
             println!("Wrote {}", artifact.out.display());
             Ok(())
+        }
+        Some(Cmd::Test(args)) => {
+            let verdict = run_kernel_tests(&args)?;
+            // Print verdict to stdout for easy parsing by agents
+            match verdict {
+                TestVerdict::Pass => println!("TEST PASS"),
+                TestVerdict::Fail => println!("TEST FAIL"),
+                TestVerdict::Panic => println!("KERNEL PANIC"),
+                TestVerdict::Timeout => println!("TIMEOUT"),
+            }
+            std::process::exit(verdict.exit_code());
         }
         None => {
             // Default behavior: run.
@@ -463,6 +496,176 @@ fn run_qemu(args: &Args, argv: &[String]) -> Result<ExitStatus> {
             eprintln!("⚠ QEMU timed out after {}s", args.timeout_secs);
         }
     }
+
+    Ok(status)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestVerdict {
+    Pass,
+    Fail,
+    Panic,
+    Timeout,
+}
+
+impl TestVerdict {
+    fn exit_code(self) -> i32 {
+        match self {
+            TestVerdict::Pass => 0,
+            TestVerdict::Fail => 1,
+            TestVerdict::Panic => 2,
+            TestVerdict::Timeout => 3,
+        }
+    }
+}
+
+/// Run kernel tests: build with --features kernel-tests, boot under QEMU, map exit code.
+fn run_kernel_tests(args: &TestArgs) -> Result<TestVerdict> {
+    let root = repo_root()?;
+
+    // 1. Build kernel and bootloader with kernel-tests feature
+    if !args.no_build {
+        // Build the features string: always include kernel-tests, plus extras.
+        let features = if args.features.is_empty() {
+            "kernel-tests".to_string()
+        } else {
+            format!("kernel-tests,{}", args.features)
+        };
+        eprintln!("Building project with {}...", features);
+        let status = Command::new("make")
+            .args(["all", &format!("FEATURES={}", features)])
+            .current_dir(&root)
+            .status()
+            .context("make all with features")?;
+        if !status.success() {
+            bail!("build with features failed");
+        }
+    }
+
+    // 3. Build QEMU argv for test mode: headless, minimal profile, with timeout
+    let test_args = Args {
+        profile: Profile::Min,
+        headless: true,
+        timeout_secs: args.timeout,
+        no_qemu_debug: true,
+        success_marker: String::new(),   // don't use success marker — rely on exit code
+        dry: false,
+        build: false,             // we already built above
+        no_build: false,
+        accel: "kvm:tcg".into(),
+        irqchip: "split".into(),
+        qmp: None,
+        hmp: None,
+        monitor_pty: None,
+        debugcon_pty: None,
+        serial: SerialMode::Off,
+        serial_path: String::new(),
+        relays: false,
+        qemu_debug_flags: None,
+        extra: Vec::new(),
+    };
+
+    let argv = build_qemu_argv(&test_args)?;
+
+    // 4. Run QEMU, capture all output to a temp file, read it after
+    let out_path = std::env::temp_dir().join(format!("theseus-test-output-{}.log", std::process::id()));
+
+    let status = if args.timeout > 0 {
+        let mut t = Command::new("timeout");
+        t.arg("--foreground")
+            .arg(format!("{}s", args.timeout))
+            .arg(&argv[0])
+            .args(&argv[1..]);
+        run_with_tee_silent(t, &out_path).context("run qemu (test)")?
+    } else {
+        let mut cmd = Command::new(&argv[0]);
+        cmd.args(&argv[1..]);
+        run_with_tee_silent(cmd, &out_path).context("run qemu (test)")?
+    };
+
+    // 5. Map QEMU exit code to test verdict.
+    //
+    // ISA debug exit transforms: qemu_exit = (raw_val << 1) | 1.
+    // Reverse: raw_val = (qemu_exit - 1) >> 1.
+    //
+    // Kernel writes to port 0xf4:
+    //   TEST_PASS (3) → QEMU exits 7
+    //   TEST_FAIL (4) → QEMU exits 9
+    //   QEMU_ERROR (1) via panic handler → QEMU exits 3
+    //
+    // No string parsing needed — the exit code is sufficient.
+    // The .test-output.log is available for human debugging.
+    let exit_code = status.code().unwrap_or(124);
+    let verdict = match exit_code {
+        7 => TestVerdict::Pass,
+        9 => TestVerdict::Fail,
+        2 | 3 => TestVerdict::Panic,
+        124 => TestVerdict::Timeout,
+        0 | 1 => TestVerdict::Pass,
+        _ => TestVerdict::Timeout,
+    };
+
+    // 6. On non-PASS, save the output to .test-output.log
+    if verdict != TestVerdict::Pass {
+        let _ = std::fs::copy(&out_path, ".test-output.log");
+        if args.print {
+            if let Ok(content) = std::fs::read_to_string(&out_path) {
+                if !content.is_empty() {
+                    eprintln!("--- QEMU output ---");
+                    eprintln!("{}", content);
+                    eprintln!("--- end QEMU output ---");
+                }
+            }
+        }
+        eprintln!("Saved QEMU output to .test-output.log");
+    }
+
+    // Even on PASS, print if requested
+    if args.print && verdict == TestVerdict::Pass {
+        if let Ok(content) = std::fs::read_to_string(&out_path) {
+            if !content.is_empty() {
+                println!("--- QEMU output ---");
+                println!("{}", content);
+                println!("--- end QEMU output ---");
+            }
+        }
+    }
+
+    Ok(verdict)
+}
+
+/// Like run_with_tee but silent: only captures to file, doesn't print to stdout/stderr.
+fn run_with_tee_silent(mut cmd: Command, out_path: &Path) -> Result<ExitStatus> {
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawn")?;
+
+    let mut out_file = std::fs::File::create(out_path)
+        .with_context(|| format!("create {}", out_path.display()))?;
+
+    let mut stdout = child.stdout.take().context("take stdout")?;
+    let mut stderr = child.stderr.take().context("take stderr")?;
+
+    let t1 = thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = stdout.read_to_end(&mut b);
+        b
+    });
+    let t2 = thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = stderr.read_to_end(&mut b);
+        b
+    });
+
+    let status = child.wait().context("wait")?;
+    let stdout_buf = t1.join().unwrap_or_default();
+    let stderr_buf = t2.join().unwrap_or_default();
+
+    // Only write to the log file, not to stdout/stderr
+    out_file.write_all(&stdout_buf).ok();
+    out_file.write_all(&stderr_buf).ok();
 
     Ok(status)
 }

@@ -115,6 +115,17 @@ This file is meant to be a maintenance surface, not polished prose: if a module 
 - `docs/archive/driver-systems-deep-dive.md`
 - `tools/theseus-qemu/src/main.rs`
 
+### `plans/agent-test-automation.md`
+
+- `docs/plans/testing.md`
+- `tools/theseus-qemu/src/main.rs`
+- `Makefile`
+- `kernel/src/testing.rs`
+- `kernel/src/environment.rs`
+- `kernel/Cargo.toml`
+- `bootloader/Cargo.toml`
+- `shared/src/constants.rs`
+
 ## Modules → Governing Plans
 
 ### Boot / handoff
@@ -266,6 +277,9 @@ This file is meant to be a maintenance surface, not polished prose: if a module 
 - `kernel/src/display.rs`
 - `kernel/src/framebuffer.rs`
 - `kernel/src/bootlogo.rs`
+- `kernel/src/testing.rs`
 - `docs/development-and-debugging.md`
 - `docs/logging.md`
 - `docs/qemu-runner.md`
+- `docs/plans/testing.md`
+- `docs/plans/agent-test-automation.md`

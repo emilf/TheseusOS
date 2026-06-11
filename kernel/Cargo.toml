@@ -23,7 +23,12 @@ raw-cpuid = { workspace = true }
 
 # Release profile defined in workspace root
 
-# features removed; new_arch is now default and unconditional
+# features
+[features]
+kernel-tests = []
+kernel-test-scenario-fail = ["kernel-tests"]
+kernel-test-scenario-panic = ["kernel-tests"]
+kernel-test-scenario-hang = ["kernel-tests"]
 
 [lints.rust]
 warnings = "deny"

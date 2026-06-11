@@ -200,3 +200,63 @@ debug-build:
 	@echo "Running debug build and creating ESP image..."
 	$(MAKE) PROFILE=debug build esp
 
+# Run kernel tests: builds with kernel-tests feature, boots QEMU headless, reports verdict.
+# Exit codes: 0=PASS, 1=FAIL, 2=PANIC, 3=TIMEOUT
+# Use --print to see full QEMU output on failure.
+# Use --timeout <secs> to override the default 60s timeout.
+.PHONY: test test-fail test-panic test-hang test-all-verdicts
+test:
+	cargo run -p theseus-qemu -- test
+
+# Test FAIL scenario: one test intentionally fails → expects exit 1
+test-fail:
+	cargo run -p theseus-qemu -- test --features kernel-test-scenario-fail
+
+# Test PANIC scenario: one test intentionally panics → expects exit 2
+test-panic:
+	cargo run -p theseus-qemu -- test --features kernel-test-scenario-panic
+
+# Test TIMEOUT scenario: kernel hangs in infinite loop → expects exit 3
+test-hang:
+	cargo run -p theseus-qemu -- test --features kernel-test-scenario-hang --timeout 5
+
+# Run all four verdict scenarios and report results.
+# Each is a separate build (the feature changes kernel compilation).
+test-all-verdicts:
+	@echo "=== Testing PASS verdict ==="
+	cargo run -p theseus-qemu -- test && \
+		echo "✓ PASS: exit code $$?" || \
+		( echo "✗ FAIL: expected PASS (exit 0)" && exit 1 )
+	@echo ""
+	@echo "=== Testing FAIL verdict ==="
+	cargo run -p theseus-qemu -- test --features kernel-test-scenario-fail; \
+		status=$$?; \
+		if [ "$$status" -eq 1 ]; then \
+			echo "✓ FAIL: exit code $$status"; \
+		else \
+			echo "✗ FAIL: expected exit 1, got $$status"; \
+			exit 1; \
+		fi
+	@echo ""
+	@echo "=== Testing PANIC verdict ==="
+	cargo run -p theseus-qemu -- test --features kernel-test-scenario-panic; \
+		status=$$?; \
+		if [ "$$status" -eq 2 ]; then \
+			echo "✓ PANIC: exit code $$status"; \
+		else \
+			echo "✗ FAIL: expected exit 2, got $$status"; \
+			exit 1; \
+		fi
+	@echo ""
+	@echo "=== Testing TIMEOUT verdict ==="
+	cargo run -p theseus-qemu -- test --features kernel-test-scenario-hang --timeout 5; \
+		status=$$?; \
+		if [ "$$status" -eq 3 ]; then \
+			echo "✓ TIMEOUT: exit code $$status"; \
+		else \
+			echo "✗ FAIL: expected exit 3, got $$status"; \
+			exit 1; \
+		fi
+	@echo ""
+	@echo "=== All 4 verdicts verified successfully ==="
+
