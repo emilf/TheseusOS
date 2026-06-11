@@ -26,6 +26,9 @@ raw-cpuid = { workspace = true }
 # features
 [features]
 kernel-tests = []
+kernel-test-scenario-fail = ["kernel-tests"]
+kernel-test-scenario-panic = ["kernel-tests"]
+kernel-test-scenario-hang = ["kernel-tests"]
 
 [lints.rust]
 warnings = "deny"

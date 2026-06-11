@@ -395,9 +395,7 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
     // The `unreachable!()` after the never-returning call satisfies CFG analysis.
     #[cfg(feature = "kernel-tests")]
     {
-        log_info!("=== KERNEL TESTS ===");
-        let test_list: &[crate::testing::Test] = &[];
-        crate::testing::run_kernel_tests(test_list);
+        crate::testing::run_kernel_tests();
     }
 
     #[cfg(not(feature = "kernel-tests"))]

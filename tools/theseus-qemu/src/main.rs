@@ -58,6 +58,11 @@ pub struct TestArgs {
     /// Also print QEMU output to stdout after the run.
     #[arg(long)]
     pub print: bool,
+
+    /// Extra cargo features beyond `kernel-tests` (comma-separated).
+    /// E.g. `--features kernel-test-scenario-fail` to test FAIL verdict.
+    #[arg(long, default_value = "")]
+    pub features: String,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -520,14 +525,20 @@ fn run_kernel_tests(args: &TestArgs) -> Result<TestVerdict> {
 
     // 1. Build kernel and bootloader with kernel-tests feature
     if !args.no_build {
-        eprintln!("Building project with kernel-tests feature...");
+        // Build the features string: always include kernel-tests, plus extras.
+        let features = if args.features.is_empty() {
+            "kernel-tests".to_string()
+        } else {
+            format!("kernel-tests,{}", args.features)
+        };
+        eprintln!("Building project with {}...", features);
         let status = Command::new("make")
-            .args(["all", "FEATURES=kernel-tests"])
+            .args(["all", &format!("FEATURES={}", features)])
             .current_dir(&root)
             .status()
-            .context("make all FEATURES=kernel-tests")?;
+            .context("make all with features")?;
         if !status.success() {
-            bail!("build with kernel-tests feature failed");
+            bail!("build with features failed");
         }
     }
 

@@ -21,5 +21,8 @@ raw-cpuid = { workspace = true }
 
 [features]
 kernel-tests = ["theseus-kernel/kernel-tests"]
+kernel-test-scenario-fail = ["theseus-kernel/kernel-test-scenario-fail"]
+kernel-test-scenario-panic = ["theseus-kernel/kernel-test-scenario-panic"]
+kernel-test-scenario-hang = ["theseus-kernel/kernel-test-scenario-hang"]
 
 # Release profile defined in workspace root
