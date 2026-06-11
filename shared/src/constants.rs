@@ -153,4 +153,7 @@ pub mod exit_codes {
     /// QEMU exit code for error
     #[allow(dead_code)]
     pub const QEMU_ERROR: u8 = 1;
+
+    /// QEMU exit code for kernel panic
+    pub const QEMU_PANIC: u8 = 2;
 }

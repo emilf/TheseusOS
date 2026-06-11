@@ -39,6 +39,7 @@ use crate::memory::{
     activate_virtual_memory, BootFrameAllocator, MemoryManager, KERNEL_VIRTUAL_BASE,
     TEMP_HEAP_VIRTUAL_BASE,
 };
+#[cfg(not(feature = "kernel-tests"))]
 use crate::serial_debug;
 use crate::{log_debug, log_error, log_info, log_warn};
 use alloc::string::String;
@@ -389,39 +390,51 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
         core::hint::spin_loop();
     }
 
-    // Choose behavior based on centralized kernel configuration
-
-    if crate::config::ENABLE_KERNEL_MONITOR {
-        crate::monitor::init();
+    // If `kernel-tests` feature is enabled, run tests and exit QEMU.
+    // The `#[cfg]` ensures the test runner only compiles when requested.
+    // The `unreachable!()` after the never-returning call satisfies CFG analysis.
+    #[cfg(feature = "kernel-tests")]
+    {
+        log_info!("=== KERNEL TESTS ===");
+        let test_list: &[crate::testing::Test] = &[];
+        crate::testing::run_kernel_tests(test_list);
     }
 
-    if crate::config::RUN_POST_BOOT_SERIAL_REVERSE_ECHO {
-        log_warn!("⚠ Kernel COM1 reverse echo enabled");
-        serial_debug::run_reverse_echo_session();
-    }
-
-    if crate::config::KERNEL_SHOULD_IDLE {
-        log_warn!("Entering idle loop - heart animation active");
-        log_warn!("Kill QEMU to stop the kernel");
-
-        // Kick a one-shot MSI/MSI-X self-test after IF is enabled so we can
-        // verify interrupt delivery without any user input.
-        crate::drivers::usb::kick_msix_self_test();
-
-        // Idle loop - the timer interrupt will handle the heart animation
-        loop {
-            crate::monitor::process_pending_serial();
-            crate::drivers::usb::service_deferred_runtime();
-            // If the full polling fallback is enabled (debug mode), keep calling it.
-            crate::drivers::usb::poll_runtime_events_fallback();
-            // Use halt instruction to reduce CPU usage while waiting for interrupts
-            x86_64::instructions::hlt();
+    #[cfg(not(feature = "kernel-tests"))]
+    {
+        // Choose behavior based on centralized kernel configuration
+        if crate::config::ENABLE_KERNEL_MONITOR {
+            crate::monitor::init();
         }
-    } else {
-        log_error!("Exiting QEMU immediately...");
-        theseus_shared::qemu_exit_ok!();
 
-        loop {}
+        if crate::config::RUN_POST_BOOT_SERIAL_REVERSE_ECHO {
+            log_warn!("⚠ Kernel COM1 reverse echo enabled");
+            serial_debug::run_reverse_echo_session();
+        }
+
+        if crate::config::KERNEL_SHOULD_IDLE {
+            log_warn!("Entering idle loop - heart animation active");
+            log_warn!("Kill QEMU to stop the kernel");
+
+            // Kick a one-shot MSI/MSI-X self-test after IF is enabled so we can
+            // verify interrupt delivery without any user input.
+            crate::drivers::usb::kick_msix_self_test();
+
+            // Idle loop - the timer interrupt will handle the heart animation
+            loop {
+                crate::monitor::process_pending_serial();
+                crate::drivers::usb::service_deferred_runtime();
+                // If the full polling fallback is enabled (debug mode), keep calling it.
+                crate::drivers::usb::poll_runtime_events_fallback();
+                // Use halt instruction to reduce CPU usage while waiting for interrupts
+                x86_64::instructions::hlt();
+            }
+        } else {
+            log_error!("Exiting QEMU immediately...");
+            theseus_shared::qemu_exit_ok!();
+
+            loop {}
+        }
     }
 }
 

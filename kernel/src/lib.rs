@@ -61,6 +61,10 @@ pub mod stack;
 // Config must come after logging since it references logging types
 pub mod config;
 
+// The testing module is only compiled when the `kernel-tests` feature is enabled.
+#[cfg(feature = "kernel-tests")]
+pub mod testing;
+
 // Re-export commonly used types and functions
 pub use environment::setup_kernel_environment;
 pub use handoff::{set_handoff_pointers, validate_handoff};

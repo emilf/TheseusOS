@@ -19,6 +19,7 @@ volatile = { workspace = true }
 linked_list_allocator = { workspace = true }
 raw-cpuid = { workspace = true }
 
-# features removed; new_arch is unconditional now
+[features]
+kernel-tests = ["theseus-kernel/kernel-tests"]
 
 # Release profile defined in workspace root
