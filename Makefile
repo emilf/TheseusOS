@@ -200,3 +200,11 @@ debug-build:
 	@echo "Running debug build and creating ESP image..."
 	$(MAKE) PROFILE=debug build esp
 
+# Run kernel tests: builds with kernel-tests feature, boots QEMU headless, reports verdict.
+# Exit codes: 0=PASS, 1=FAIL, 2=PANIC, 3=TIMEOUT
+# Use --print to see full QEMU output on failure.
+# Use --timeout <secs> to override the default 60s timeout.
+.PHONY: test
+test:
+	cargo run -p theseus-qemu -- test
+
