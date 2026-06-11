@@ -212,6 +212,20 @@ macro_rules! qemu_exit_error {
 }
 
 #[macro_export]
+macro_rules! qemu_exit_test_pass {
+    () => {{
+        $crate::qemu_exit!($crate::constants::exit_codes::QEMU_EXIT_TEST_PASS)
+    }};
+}
+
+#[macro_export]
+macro_rules! qemu_exit_test_fail {
+    () => {{
+        $crate::qemu_exit!($crate::constants::exit_codes::QEMU_EXIT_TEST_FAIL)
+    }};
+}
+
+#[macro_export]
 /// Print current RIP (Instruction Pointer) to QEMU debug port (0xE9)
 ///
 /// This macro prints the current RIP value in the format:

@@ -156,4 +156,12 @@ pub mod exit_codes {
 
     /// QEMU exit code for kernel panic
     pub const QEMU_PANIC: u8 = 2;
+
+    /// Raw value for kernel test PASS — distinct from boot flow codes.
+    /// ISA debug exit transforms: qemu_exit = (raw << 1) | 1, so this yields exit 7.
+    pub const QEMU_EXIT_TEST_PASS: u8 = 3;
+
+    /// Raw value for kernel test FAIL — distinct from boot flow codes.
+    /// ISA debug exit transforms: qemu_exit = (raw << 1) | 1, so this yields exit 9.
+    pub const QEMU_EXIT_TEST_FAIL: u8 = 4;
 }

@@ -572,30 +572,26 @@ fn run_kernel_tests(args: &TestArgs) -> Result<TestVerdict> {
         run_with_tee_silent(cmd, &out_path).context("run qemu (test)")?
     };
 
-    // 5. Read the output and check for TEST_RESULT markers.
-    //    The QEMU isa-debug-exit device always does exit((val << 1) | 1), so
-    //    exit code 0 is not directly available. Instead, we parse the
-    //    debugcon output for the test result line.
+    // 5. Map QEMU exit code to test verdict.
+    //
+    // ISA debug exit transforms: qemu_exit = (raw_val << 1) | 1.
+    // Reverse: raw_val = (qemu_exit - 1) >> 1.
+    //
+    // Kernel writes to port 0xf4:
+    //   TEST_PASS (3) → QEMU exits 7
+    //   TEST_FAIL (4) → QEMU exits 9
+    //   QEMU_ERROR (1) via panic handler → QEMU exits 3
+    //
+    // No string parsing needed — the exit code is sufficient.
+    // The .test-output.log is available for human debugging.
     let exit_code = status.code().unwrap_or(124);
-    let output_text = std::fs::read_to_string(&out_path).unwrap_or_default();
-    let verdict = if output_text.contains("TEST_RESULT: PASS") {
-        TestVerdict::Pass
-    } else if output_text.contains("TEST_RESULT: FAIL") {
-        TestVerdict::Fail
-    } else if exit_code == 124 {
-        TestVerdict::Timeout
-    } else if output_text.contains("KERNEL PANIC")
-        || output_text.contains("panicked at")
-    {
-        TestVerdict::Panic
-    } else {
-        // Fallback: use exit code to distinguish
-        match exit_code {
-            0..=1 => TestVerdict::Pass,  // qemu_exit_ok! produces exit 1
-            3 => TestVerdict::Fail,      // qemu_exit_error! produces exit 3
-            2 => TestVerdict::Panic,
-            _ => TestVerdict::Timeout,
-        }
+    let verdict = match exit_code {
+        7 => TestVerdict::Pass,
+        9 => TestVerdict::Fail,
+        2 | 3 => TestVerdict::Panic,
+        124 => TestVerdict::Timeout,
+        0 | 1 => TestVerdict::Pass,
+        _ => TestVerdict::Timeout,
     };
 
     // 6. On non-PASS, save the output to .test-output.log

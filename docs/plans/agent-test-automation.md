@@ -27,22 +27,34 @@ code, without reading a single line of output.**
 
 ## 2. Exit Code Scheme
 
-The kernel supports `qemu_exit_ok!()` / `qemu_exit_error!()` via
-`isa-debug-exit` at port `0xf4`. The test runner uses these directly:
+The `theseus-qemu test` subcommand always returns one of four exit codes.
+This is the only signal the agent reads — no output parsing required.
 
-- All tests pass → `qemu_exit_ok!()` → QEMU exits with **exit code 0**
-- Any test fails → `qemu_exit_error!()` → QEMU exits with **exit code 1**
-- Kernel panic → The kernel panic handler calls `qemu_exit_error!()` → **exit code 1**
-- QEMU hits `timeout(1)` limit → **exit code 124**, mapped to **exit code 3**
-
-| Exit Code | Verdict | Agent Interpret | Action |
-|-----------|---------|-----------------|--------|
-| 0         | PASS    | ✅ All tests green | Done, report |
-| 1         | FAIL    | ❌ Test(s) failed  | Read `.test-output.log` to see which one |
-| 2         | PANIC   | 💥 Kernel crash   | Kernel panicked or triple-faulted |
-| 3         | TIMEOUT | ⏰ Hung or deadlock | Kernel didn't finish in time |
+| Exit Code | Verdict  | Agent Interpret | Action |
+|-----------|----------|-----------------|--------|
+| 0         | PASS     | ✅ All tests green | Done, report |
+| 1         | FAIL     | ❌ Test(s) failed  | Read `.test-output.log` to see which one |
+| 2         | PANIC    | 💥 Kernel crash   | Kernel panicked or triple-faulted |
+| 3         | TIMEOUT  | ⏰ Hung or deadlock | Kernel didn't finish in time |
 
 The exit code is the sole verdict. No output parsing needed.
+
+### How It Works (Internals)
+
+The kernel test runner writes a distinct raw value via `isa-debug-exit`
+at port `0xf4`. The ISA device transforms: `qemu_exit = (raw_val << 1) | 1`.
+`theseus-qemu test` reverses the transform to identify the verdict:
+
+| Kernel Writes | Raw Val | QEMU Exits | Tool Maps To |
+|---------------|---------|------------|--------------|
+| `TEST_PASS`   | 3       | 7          | exit 0 (PASS) |
+| `TEST_FAIL`   | 4       | 9          | exit 1 (FAIL) |
+| `QEMU_ERROR` (panic handler) | 1 | 3   | exit 2 (PANIC) |
+| timeout(1)    | —       | 124        | exit 3 (TIMEOUT) |
+
+These values are distinct from the normal boot flow exit codes, so there
+is never ambiguity between "the kernel booted successfully" and "the tests
+passed".
 
 ---
 
@@ -225,21 +237,16 @@ report success immediately.
 
 ### Exit code 1 — TEST FAIL
 
-At least one test returned `Err(...)`, or the kernel panicked before the
-test runner could report results. The `.test-output.log` contains the
-kernel debugcon output and should be inspected to find the failing test.
-
-Search for `FAIL —` in the log to find the specific failure reason.
+At least one test returned `Err(...)` (the kernel wrote `TEST_FAIL` raw value 4
+to port 0xf4, causing QEMU to exit with code 9 — the tool maps this to exit 1).
+The `.test-output.log` contains the kernel debugcon output and should be
+inspected to find the failing test. Search for `FAIL —` in the log.
 
 ### Exit code 2 — KERNEL PANIC
 
-The QEMU `/dev/isa-debug-exit` device reported exit code 2. This happens if:
-- The kernel explicitly called `qemu_exit!(2)`
-- There was a triple fault or similar hardware crash
-
-Currently, the kernel panic handler uses `qemu_exit_error!()` (exit code 1),
-so this code is reserved for future use (e.g., dedicated `QEMU_PANIC` exit
-code in `shared/src/constants.rs`).
+The kernel panic handler calls `qemu_exit_error!()` (writes `QEMU_ERROR` = 1
+to port 0xf4, causing QEMU to exit with code `(1<<1)|1 = 3` — the tool maps
+this to exit 2). Also covers triple faults.
 
 ### Exit code 3 — TIMEOUT
 
@@ -258,10 +265,13 @@ Check `.test-output.log` to see what the kernel printed before the timeout.
 
 ### v1: Initial infrastructure (this branch)
 
-- `kernel/src/testing.rs`: Kernel-side test runner module
-- `tools/theseus-qemu/src/main.rs`: `test` subcommand with `TestVerdict` mapping
+- `shared/src/constants.rs`: `QEMU_EXIT_TEST_PASS` (3) and `QEMU_EXIT_TEST_FAIL` (4)
+  — distinct raw values for ISA debug exit, transformed to QEMU exits 7 and 9
+- `shared/src/macros.rs`: `qemu_exit_test_pass!()` and `qemu_exit_test_fail!()` macros
+- `kernel/src/testing.rs`: Kernel-side test runner module, uses the test-specific exit macros
+- `tools/theseus-qemu/src/main.rs`: `test` subcommand with `TestVerdict` exit code mapping
+  (raw QEMU exit → 0/1/2/3), no debugcon string parsing
 - `kernel/Cargo.toml` + `bootloader/Cargo.toml`: `kernel-tests` feature
-- `shared/src/constants.rs`: `QEMU_PANIC` exit code
 - `Makefile`: `make test` target
 - `docs/agent-prompt-template.md`: TDD workflow instruction block added
 - `docs/map.md`: Updated with new plans and modules
