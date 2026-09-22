@@ -78,7 +78,13 @@ pub extern "C" fn after_high_half_entry() -> ! {
             Some(base),
         );
     }
-    for (ist_base, ist_size) in crate::gdt::ist_stack_ranges().iter().copied() {
+    // IST stacks plus the ring 3 entry stack (TSS.RSP0) must be mapped before
+    // user code can be interrupted.
+    for (ist_base, ist_size) in crate::gdt::ist_stack_ranges()
+        .iter()
+        .copied()
+        .chain(core::iter::once(crate::gdt::user_entry_stack_range()))
+    {
         if !crate::memory::virt_range_has_flags(
             ist_base,
             ist_size as usize,
@@ -146,7 +152,27 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
             );
         }
 
-        for (base, size) in crate::gdt::ist_stack_ranges().iter().copied() {
+        for (base, size) in crate::gdt::ist_stack_ranges()
+            .iter()
+            .copied()
+            .chain(core::iter::once(crate::gdt::user_entry_stack_range()))
+        {
+            physical_memory::record_boot_consumed_region(ConsumedRegion { start: base, size });
+            unsafe {
+                map_existing_region_va_to_its_pa(
+                    pml4_pa,
+                    h,
+                    base,
+                    size,
+                    PTE_PRESENT | PTE_WRITABLE | PTE_GLOBAL | PTE_NO_EXEC,
+                    &mut BootFrameAllocator::empty(),
+                );
+            }
+        }
+
+        // Map the syscall kernel stack (needed by syscall_init later)
+        {
+            let (base, size) = crate::syscall::percpu::syscall_stack_range();
             physical_memory::record_boot_consumed_region(ConsumedRegion { start: base, size });
             unsafe {
                 map_existing_region_va_to_its_pa(
@@ -188,6 +214,12 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
         setup_msrs();
     }
     log_debug!("MSRs configured");
+
+    // Initialize syscall subsystem (STAR/LSTAR/SFMASK + per-CPU data + kernel stack).
+    // Must be after setup_msrs (EFER.SCE) and after GDT has user segments.
+    unsafe {
+        crate::syscall::syscall_init();
+    }
 
     // Verify LAPIC timer delivery (later test)
     // Detect and cache the APIC access mode (xAPIC vs x2APIC) before any LAPIC access
@@ -398,6 +430,14 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
     if crate::config::RUN_POST_BOOT_SERIAL_REVERSE_ECHO {
         log_warn!("⚠ Kernel COM1 reverse echo enabled");
         serial_debug::run_reverse_echo_session();
+    }
+
+    // Run ring 3 syscall self-test if configured.
+    // This replaces the idle loop and never returns.
+    if crate::config::RUN_SYSCALL_TEST {
+        unsafe {
+            crate::syscall::usermode::run_usermode_test();
+        }
     }
 
     if crate::config::KERNEL_SHOULD_IDLE {
