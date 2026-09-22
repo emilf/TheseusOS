@@ -1,8 +1,13 @@
 # TheseusOS Syscall System Design
 
-**Status:** Design (pre-implementation)
+**Status:** Implemented (ring 3 syscall path proven end-to-end; see §10)
 **Depends on:** A1 (x86-interrupt ABI / Microsoft x64 ABI), A2 (GDT/TSS), A3 (APIC interrupts)
 **Blocks:** User-mode processes, scheduler, IPC
+
+> **Implementation:** `kernel/src/syscall/*`, with GDT/TSS changes in `kernel/src/gdt.rs`.
+> The ring 3 self-test is gated by `config::RUN_SYSCALL_TEST` (default `false`).
+> Sections below that describe *design intent* rather than shipped code are marked
+> as such; where they disagree with the repo, the repo wins.
 
 ---
 
@@ -193,6 +198,21 @@ static mut SYSCALL_STACK: [u8; 32 * 1024] = [0; 32 * 1024];
 
 This stack must be mapped and included in `ist_stack_ranges()` or a similar
 function so `environment.rs` maps it during bring-up.
+
+### Ring 3 entry stack (TSS.RSP0)
+
+The syscall stack above is *not* what the CPU uses when an interrupt arrives
+while user code is running. On a privilege change (CPL 3 → 0) the CPU loads
+`TSS.RSP0`; if that field is zero it pushes the exception frame at
+`RSP0 - 8`, i.e. `0xFFFF_FFFF_FFFF_FFF8`, and immediately double-faults.
+
+So a separate `USER_ENTRY_STACK` (16 KiB, `.bss.stack`) is programmed into
+`tss.privilege_stack_table[0]` by `gdt.rs`, and mapped alongside the IST stacks
+by `environment.rs`. It is refreshed by `refresh_tss_ist()` after the high-half
+transition so the recorded top reflects final addresses.
+
+Constraint: this stack must stay 16-byte aligned and mapped, or ring 3 IRQ
+delivery faults instead of dequeuing the interrupt.
 
 ---
 
@@ -637,6 +657,7 @@ impl Msr {
 ```
 ... existing bring-up ...
 GDT/TSS setup (with new user segments)     ← already step 2
+  → TSS.RSP0 (ring 3 entry stack) programmed here
 ...
 CPU features detect (SMEP/SMAP/etc.)
 setup_msrs()                               ← already called, now extended
@@ -707,10 +728,15 @@ msg_len equ $ - message
 ### User Space Memory Layout (Initial)
 
 ```
-0x400000 - 0x401000   User code (1 page, R+X, user-accessible)
-0x3FF000 - 0x400000   User stack (1 page, R+W, user-accessible)
-                       Stack grows down from 0x400000
+0x1_0000_0000      - 0x1_0000_1000       User code  (1 page, R+X, user-accessible)
+0x0F_FFFF_E000     - 0x0F_FFFF_F000       User stack (1 page, R+W+NX, user-accessible)
+                                           Initial RSP = 0x0F_FFFF_F000 (exclusive top)
 ```
+
+Code sits at 4 GiB — above the identity-mapped low region and all RAM/ACPI
+ranges QEMU presents. The stack page ends exactly where the code page begins
+minus one unmapped guard page, so the first push (and any interrupt frame)
+lands inside mapped memory.
 
 For the initial test, these are **mapped in the kernel's page tables** with
 user-accessible bits (PTE_USER). There is no separate address space yet — the
@@ -719,37 +745,37 @@ ring 3.
 
 ### Jumping to Ring 3
 
+The segment clear and the frame build are **two separate `asm!` blocks**. `xor`
+writes `eax`, and the compiler may allocate one of the frame operands into `rax`;
+keeping them apart (and declaring the clobber) prevents the two from colliding.
+
+The clear block writes flags, so it must not claim `preserves_flags`.
+
 ```rust
-/// Transition from ring 0 to ring 3 using iretq.
-///
-/// Sets up a fake interrupt frame pointing at user code, loads user segments,
-/// and iretqs into ring 3.
-///
-/// # Safety
-/// Assumes user pages are mapped and user stack is set up.
 pub unsafe fn jump_to_usermode(entry: u64, stack_top: u64) -> ! {
     use crate::gdt::{USER_CS, USER_DS};
+    let user_cs: u64 = USER_CS as u64 | 0x3;
+    let user_ss: u64 = USER_DS as u64 | 0x3;
 
     core::arch::asm!(
-        // Clear all segment registers for clean user state
-        "xor ax, ax",
+        "xor eax, eax",
         "mov ds, ax",
         "mov es, ax",
         "mov fs, ax",
-        // GS is handled by swapgs in syscall path, leave as 0
+        out("eax") _,
+        options(nomem, nostack)
+    );
 
-        // Build iretq frame: SS, RSP, RFLAGS, CS, RIP
-        "push {user_ds}",       // SS  (ring 3)
-        "push {user_rsp}",      // RSP (user stack top)
-        "push 0x202",           // RFLAGS (IF=1, bit 1 always set)
-        "push {user_cs}",       // CS  (ring 3, L=1)
-        "push {entry}",         // RIP (user entry point)
-
+    core::arch::asm!(
+        "push {user_ss}",   // SS  (ring 3)
+        "push {stack_top}", // RSP (user stack top)
+        "push 0x202",       // RFLAGS (IF=1, bit 1 always set)
+        "push {user_cs}",   // CS  (ring 3, L=1)
+        "push {entry}",     // RIP (user entry point)
         "iretq",
-
-        user_ds = const USER_DS as u64 | 3,   // RPL = 3
-        user_cs = const USER_CS as u64 | 3,   // RPL = 3
-        user_rsp = in(reg) stack_top,
+        user_ss = in(reg) user_ss,
+        stack_top = in(reg) stack_top,
+        user_cs = in(reg) user_cs,
         entry = in(reg) entry,
         options(noreturn)
     );
@@ -811,10 +837,10 @@ This validates the Rust side without touching assembly or privilege levels.
 
 ### Phase 3: Ring 3 Test
 
-1. Map user code page (R+X, user-accessible) at 0x400000.
-2. Map user stack page (R+W, user-accessible) at 0x3FF000.
-3. Copy embedded binary to 0x400000.
-4. `jump_to_usermode(0x400000, 0x400000)`.
+1. Map user code page (R+X, user-accessible) at `0x1_0000_0000`.
+2. Map user stack page (R+W+NX, user-accessible) below it, ending at `0x0F_FFFF_F000`.
+3. Copy embedded binary to `0x1_0000_0000`.
+4. `jump_to_usermode(0x1_0000_0000, 0x0F_FFFF_F000)`.
 5. Test executes:
    - SYS_NULL → verify RAX=0 (via serial debug or breakpoint)
    - SYS_GET_TICKS → RAX should be > 0 if timer is running
@@ -827,6 +853,30 @@ This validates the Rust side without touching assembly or privilege levels.
 - Bad pointer in SYS_WRITE_SERIAL → should fault (#PF from user mode)
 - Verify SMAP: kernel can't accidentally dereference user pointers without
   explicit `stac`/`clac` or user-memory helpers
+
+### Verified (2026-09-22)
+
+Run with `config::RUN_SYSCALL_TEST = true` and `theseus-qemu --headless`:
+
+- Ring 3 entry succeeds; `SYS_WRITE_SERIAL` prints from user mode.
+- The test then idles in a `pause` loop at ring 3 for a 60 s soak with the
+  100 Hz LAPIC tick running. **Zero faults**: timer IRQs are delivered from
+  ring 3, serviced on `TSS.RSP0`, and `iretq` back to user code.
+
+Two defects were found and fixed to reach that state:
+
+1. `TSS.RSP0` was never programmed. The first timer tick after `iretq` faulted at
+   `CR2=0xFFFF_FFFF_FFFF_FFF8` (CPU pushed the frame at `RSP0 - 8` with `RSP0 = 0`)
+   and double-faulted. The comment in `user_test.asm` attributing this to
+   "stack page too close to the code page" was **incorrect** and has been corrected.
+2. The initial user RSP was `0x0FFF_FFF0`, which falls outside the page actually
+   mapped (`0x0FFF_E000..0x0FFF_F000`) — the stack page was mapped one page too
+   low relative to the recorded top.
+
+An incidental fix: in `jump_to_usermode`, the `xor ax, ax` segment clear was
+merged into the `iretq` frame `asm!` block, where the compiler could allocate a
+frame operand in `rax` and have it clobbered. The clear is now its own block with
+an explicit `out("eax") _` clobber.
 
 ---
 

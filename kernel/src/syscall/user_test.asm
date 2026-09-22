@@ -41,10 +41,10 @@ start:
     syscall
 
     ; --- Spin forever ---
-    ; Note: pause is fine at ring 3, but timer interrupts will PF
-    ; because the user stack page is too close to the code page.
-    ; This is a known limitation for the initial test — a proper
-    ; user-space launcher will use separate stack regions.
+    ; `pause` is fine at ring 3, and timer interrupts are delivered while we
+    ; sit here: the CPU switches to the ring 3 entry stack (TSS.RSP0), runs the
+    ; IRQ stub, and iretqs back. That path requires TSS.RSP0 to be programmed;
+    ; see `gdt.rs` (`USER_ENTRY_STACK`) and `usermode.rs`.
 .hang:
     pause
     jmp     .hang

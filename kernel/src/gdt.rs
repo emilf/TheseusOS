@@ -63,6 +63,17 @@ static mut IST_MC_STACK: [u8; 16 * 4096] = [0; 16 * 4096];
 #[link_section = ".bss.stack"]
 static mut IST_PF_STACK: [u8; 16 * 4096] = [0; 16 * 4096];
 
+/// Stack used by the CPU when an interrupt or exception arrives from ring 3.
+///
+/// The CPU loads `TSS.RSP0` on a privilege-level change (CPL 3 → 0). This is
+/// *not* the syscall path: `syscall` masks interrupts via SFMASK and switches
+/// to the per-CPU syscall stack (`gs:[0]`) instead. This stack exists so that
+/// timer and device IRQs delivered while user code runs have somewhere valid to
+/// land. Without it the CPU pushes the exception frame at `RSP0 - 8` (i.e. at
+/// `0xFFFF_FFFF_FFFF_FFF8` when `RSP0` is zero) and immediately double-faults.
+#[link_section = ".bss.stack"]
+static mut USER_ENTRY_STACK: [u8; 16 * 4096] = [0; 16 * 4096];
+
 /// Interrupt Stack Table indices.
 pub const IST_INDEX_DF: u16 = 0; // IST1 - Double Fault
 pub const IST_INDEX_NMI: u16 = 1; // IST2 - Non-Maskable Interrupt
@@ -83,6 +94,8 @@ unsafe fn build_gdt_state() -> GdtState {
     tss.interrupt_stack_table[IST_INDEX_NMI as usize] = VirtAddr::new(nmi_top & !0xFu64);
     tss.interrupt_stack_table[IST_INDEX_MC as usize] = VirtAddr::new(mc_top & !0xFu64);
     tss.interrupt_stack_table[IST_INDEX_PF as usize] = VirtAddr::new(pf_top & !0xFu64);
+    // Ring 3 → ring 0 entry stack (RSP0). See `USER_ENTRY_STACK`.
+    tss.privilege_stack_table[0] = VirtAddr::new(user_entry_stack_top());
 
     let mut gdt = GlobalDescriptorTable::new();
     let code_sel = gdt.add_entry(Descriptor::kernel_code_segment());
@@ -122,6 +135,20 @@ pub fn ist_stack_ranges() -> [(u64, u64); 4] {
     ]
 }
 
+/// Return the ring 3 entry stack base address and size for explicit mapping.
+pub fn user_entry_stack_range() -> (u64, u64) {
+    let base = core::ptr::addr_of!(USER_ENTRY_STACK) as u64;
+    let size = core::mem::size_of::<[u8; 16 * 4096]>() as u64;
+    (base, size)
+}
+
+/// Top of the ring 3 entry stack, 16-byte aligned. This is the value programmed
+/// into `TSS.RSP0`.
+pub fn user_entry_stack_top() -> u64 {
+    let (base, size) = user_entry_stack_range();
+    (base + size) & !0xFu64
+}
+
 /// Kernel code-segment selector used by the runtime GDT.
 pub const KERNEL_CS: u16 = 0x08;
 /// Kernel data-segment selector.
@@ -152,6 +179,8 @@ pub unsafe fn refresh_tss_ist() {
     TSS_STATIC.interrupt_stack_table[IST_INDEX_NMI as usize] = VirtAddr::new(nmi_top & !0xFu64);
     TSS_STATIC.interrupt_stack_table[IST_INDEX_MC as usize] = VirtAddr::new(mc_top & !0xFu64);
     TSS_STATIC.interrupt_stack_table[IST_INDEX_PF as usize] = VirtAddr::new(pf_top & !0xFu64);
+    // Recompute RSP0 now that the kernel runs at its final high-half addresses.
+    TSS_STATIC.privilege_stack_table[0] = VirtAddr::new(user_entry_stack_top());
     let _ = GDT_STATE.get();
 }
 

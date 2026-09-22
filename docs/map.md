@@ -96,6 +96,17 @@ This file is meant to be a maintenance surface, not polished prose: if a module 
 - `kernel/src/monitor/commands/system.rs`
 - `docs/_inventory.md`
 
+### `plans/syscall-system.md`
+
+- `kernel/src/syscall/mod.rs`
+- `kernel/src/syscall/entry.rs`
+- `kernel/src/syscall/dispatch.rs`
+- `kernel/src/syscall/percpu.rs`
+- `kernel/src/syscall/usermode.rs`
+- `kernel/src/syscall/user_test.asm`
+- `kernel/src/gdt.rs`
+- `kernel/src/environment.rs`
+
 ### `plans/drivers-and-io.md`
 
 - `kernel/src/drivers/mod.rs`
@@ -155,7 +166,7 @@ This file is meant to be a maintenance surface, not polished prose: if a module 
 
 ### Platform / interrupts
 
-- `kernel/src/gdt.rs` → `plans/interrupts-and-platform.md`
+- `kernel/src/gdt.rs` → `plans/interrupts-and-platform.md`, `plans/syscall-system.md`
 - `kernel/src/interrupts/mod.rs` → `plans/interrupts-and-platform.md`, `plans/x2apic-prep.md`
 - `kernel/src/interrupts/handlers.rs` → `plans/interrupts-and-platform.md`, `plans/x2apic-prep.md`
 - `kernel/src/interrupts/apic.rs` → `plans/interrupts-and-platform.md`, `plans/x2apic-prep.md`
@@ -164,7 +175,15 @@ This file is meant to be a maintenance surface, not polished prose: if a module 
 - `kernel/src/acpi/madt.rs` → `plans/interrupts-and-platform.md`
 - `kernel/src/drivers/serial.rs` → `plans/interrupts-and-platform.md`, `plans/observability.md`, `plans/drivers-and-io.md`, `plans/x2apic-prep.md`
 - `kernel/src/drivers/system.rs` → `plans/interrupts-and-platform.md`, `plans/drivers-and-io.md`
-- `kernel/src/environment.rs` → `plans/memory.md`, `plans/interrupts-and-platform.md`, `plans/x2apic-prep.md`
+- `kernel/src/environment.rs` → `plans/memory.md`, `plans/interrupts-and-platform.md`, `plans/x2apic-prep.md`, `plans/syscall-system.md`
+
+### Syscall
+
+- `kernel/src/syscall/mod.rs` → `plans/syscall-system.md`
+- `kernel/src/syscall/entry.rs` → `plans/syscall-system.md`
+- `kernel/src/syscall/dispatch.rs` → `plans/syscall-system.md`
+- `kernel/src/syscall/percpu.rs` → `plans/syscall-system.md`
+- `kernel/src/syscall/usermode.rs` → `plans/syscall-system.md`
 
 ### Drivers / I/O
 

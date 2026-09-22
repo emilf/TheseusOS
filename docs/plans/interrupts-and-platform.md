@@ -11,6 +11,7 @@ Track descriptor-table setup, APIC interrupt routing, timer bring-up, ACPI platf
 ## Implemented Invariants
 
 - [x] IMPLEMENTED: The kernel installs a GDT/TSS with dedicated IST stacks for double fault, NMI, machine check, and page fault handling.
+- [x] IMPLEMENTED: The TSS programs `privilege_stack_table[0]` (RSP0) to a dedicated ring 3 entry stack, so interrupts taken while user code runs have a valid stack to land on. The stack is mapped alongside the IST stacks during high-half bring-up and refreshed by `refresh_tss_ist()`.
 - [x] IMPLEMENTED: The kernel installs an IDT before the high-half jump and reinstalls it after the stack switch in higher-half execution.
 - [x] IMPLEMENTED: The kernel masks the legacy PIC during APIC-based interrupt bring-up.
 - [x] IMPLEMENTED: The kernel configures and tests LAPIC timer delivery during bring-up before starting a periodic timer.

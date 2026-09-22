@@ -15,12 +15,20 @@ use x86_64::structures::paging::PageTableFlags;
 /// Uses 4 GiB — above the identity-mapped low region (QEMU has 2 GiB RAM
 /// with max physical ~0x8000_0000, plus ACPI regions). 4 GiB is safely above.
 const USER_CODE_VA: u64 = 0x1_0000_0000;
-/// User stack grows down from this address (stack page at USER_CODE_VA - 0x1000).
-/// Initial RSP at top of the mapped page, aligned to 16 bytes for x86-64 ABI.
-/// (0x100000000 is the address *after* the page; the last valid byte is 0xFFFFFFFFF.)
-// Stack: page at 0x0FFFFFF000 (one below code at 0x100000000).
-// RSP starts at page top minus 16, leaving room for interrupt frames.
-const USER_STACK_TOP_VA: u64 = 0x0FFFFFFF0;
+/// Initial user RSP: the exclusive top of the mapped user stack page.
+///
+/// A page spanning `[P, P + 0x1000)` has its *top* at `P + 0x1000`, so the
+/// stack page base below is `USER_STACK_TOP_VA - 0x1000`. The stack grows down,
+/// so the first push lands at `USER_STACK_TOP_VA - 8`, inside the mapped page.
+const USER_STACK_TOP_VA: u64 = USER_CODE_VA - 0x1000;
+/// Base of the single mapped user stack page, leaving one unmapped page as a
+/// gap between the stack and the code page.
+const USER_STACK_PAGE_VA: u64 = USER_STACK_TOP_VA - 0x1000;
+
+// The stack must be exactly one page ending at `USER_STACK_TOP_VA`; if these
+// constants ever drift, the initial RSP would fall outside the mapped page and
+// the first push (or the first interrupt) would fault.
+const _: () = assert!(USER_STACK_PAGE_VA + 0x1000 == USER_STACK_TOP_VA);
 
 /// The pre-assembled user test binary (flat binary, position-dependent at USER_CODE_VA).
 static USER_TEST_BIN: &[u8] = include_bytes!("user_test.bin");
@@ -53,7 +61,7 @@ pub unsafe fn run_usermode_test() -> ! {
         stack_pa
     );
 
-    let stack_va = USER_STACK_TOP_VA - 0x1000;
+    let stack_va = USER_STACK_PAGE_VA;
 
     // Map user pages as kernel-accessible first (SMAP prevents supervisor access
     // to user pages). After copying, we switch them to user-accessible via STAC/CLAC.
@@ -154,16 +162,28 @@ unsafe fn jump_to_usermode(entry: u64, stack_top: u64) -> ! {
     let user_cs: u64 = USER_CS as u64 | 0x3;
     let user_ss: u64 = USER_DS as u64 | 0x3;
 
-    // iretq frame (pushed in reverse; CPU pops: RIP, CS, RFLAGS, RSP, SS).
-    // RFLAGS = 0x202: IF (bit 9) + reserved bit 1 always set.
+    // Clear the segment registers we do not want inherited from ring 0.
+    //
+    // This is a *separate* asm block from the iretq frame build below on
+    // purpose: `xor` writes `eax`, and the compiler is free to allocate one of
+    // the frame operands below into `rax`. Declaring the clobber here keeps the
+    // two sets of registers from colliding.
+    //
+    // `xor` also writes flags, so this block must NOT claim `preserves_flags`.
     core::arch::asm!(
-        // Clear segment registers for a clean user state.
-        "xor ax, ax",
+        "xor eax, eax",
         "mov ds, ax",
         "mov es, ax",
         "mov fs, ax",
-        // GS is left at 0 (swapgs will swap on syscall entry).
+        // GS selector is left as-is; `swapgs` exchanges the GS *base* MSRs on
+        // syscall entry, so no user TLS selector is required yet.
+        out("eax") _,
+        options(nomem, nostack)
+    );
 
+    // iretq frame (pushed in reverse; CPU pops: RIP, CS, RFLAGS, RSP, SS).
+    // RFLAGS = 0x202: IF (bit 9) + reserved bit 1 always set.
+    core::arch::asm!(
         // Build iretq frame on kernel stack.
         "push {user_ss}",        // SS  (ring 3)
         "push {stack_top}",      // RSP (user stack top)

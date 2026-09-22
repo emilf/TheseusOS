@@ -78,7 +78,13 @@ pub extern "C" fn after_high_half_entry() -> ! {
             Some(base),
         );
     }
-    for (ist_base, ist_size) in crate::gdt::ist_stack_ranges().iter().copied() {
+    // IST stacks plus the ring 3 entry stack (TSS.RSP0) must be mapped before
+    // user code can be interrupted.
+    for (ist_base, ist_size) in crate::gdt::ist_stack_ranges()
+        .iter()
+        .copied()
+        .chain(core::iter::once(crate::gdt::user_entry_stack_range()))
+    {
         if !crate::memory::virt_range_has_flags(
             ist_base,
             ist_size as usize,
@@ -146,7 +152,11 @@ pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
             );
         }
 
-        for (base, size) in crate::gdt::ist_stack_ranges().iter().copied() {
+        for (base, size) in crate::gdt::ist_stack_ranges()
+            .iter()
+            .copied()
+            .chain(core::iter::once(crate::gdt::user_entry_stack_range()))
+        {
             physical_memory::record_boot_consumed_region(ConsumedRegion { start: base, size });
             unsafe {
                 map_existing_region_va_to_its_pa(
