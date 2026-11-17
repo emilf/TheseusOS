@@ -113,6 +113,10 @@ impl DriverManager {
     /// # Thread Safety
     /// This method must be called while holding the driver manager lock.
     fn probe_pending_devices(&mut self) {
+        // Snapshot which single-instance classes are already bound before taking
+        // the mutable borrow of `self.devices` inside the loop below.
+        let serial_bound = self.has_bound_class(DeviceClass::Serial);
+
         // Iterate through all devices
         for dev in self.devices.iter_mut() {
             // Skip devices that already have a driver bound
@@ -125,6 +129,30 @@ impl DriverManager {
                 // Check if driver supports this device class
                 if !drv.supports_class(dev.class) {
                     continue;
+                }
+
+                // Single-instance classes: bind at most one device per class.
+                //
+                // The firmware inventory can report several handles for one
+                // physical device (composite device paths, duplicated protocol
+                // handles), and more than one such device may carry the same
+                // class. Binding a second one silently overwrites the first
+                // driver's global state, so whatever the first instance set up
+                // is lost. For the serial console that means the port the
+                // monitor writes through is not the port that was configured.
+                //
+                // TODO(single-instance-binding): replace this class-level guard
+                // with real identity. Deduplicate devices by physical resource
+                // (I/O base port, MMIO range, or PCI BDF) so multiple *distinct*
+                // ports can each bind, and decide the ownership rule for
+                // multi-port hardware. Until then this guard assumes a single
+                // console UART per system.
+                if Self::is_single_instance_class(dev.class) && serial_bound {
+                    log_debug!(
+                        "Skipping duplicate {:?} device: class already bound",
+                        dev.class
+                    );
+                    break;
                 }
 
                 // Attempt to probe the device
@@ -145,6 +173,22 @@ impl DriverManager {
                 }
             }
         }
+    }
+
+    /// Classes for which the driver manager binds at most one device.
+    ///
+    /// These are the classes whose drivers keep process-wide state rather than
+    /// per-device state. Binding a second device of the same class would
+    /// overwrite that state while leaving the first device unowned.
+    fn is_single_instance_class(class: DeviceClass) -> bool {
+        matches!(class, DeviceClass::Serial)
+    }
+
+    /// Whether any device of `class` already has a driver bound.
+    fn has_bound_class(&self, class: DeviceClass) -> bool {
+        self.devices
+            .iter()
+            .any(|d| d.class == class && d.driver_data.is_some())
     }
 
     /// Handle an interrupt request by dispatching it to the appropriate driver.
