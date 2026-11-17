@@ -69,6 +69,12 @@ pub use handoff::{set_handoff_pointers, validate_handoff};
 ///
 /// The bootloader calls this directly after `ExitBootServices`, passing the
 /// physical address of the copied handoff structure.
+///
+/// ABI: stays `extern "C"`. Both sides of this boundary are firmware-shaped —
+/// the target spec declares `entry-abi: win64` and the bootloader calls it as
+/// `extern "C" fn(u64)`. Internal, Rust-to-Rust or assembly-called functions use
+/// `extern "sysv64"` instead; do not change this one without changing the
+/// bootloader call site and the target spec together.
 #[no_mangle]
 pub extern "C" fn kernel_entry(handoff_addr: u64) -> ! {
     // Initialize logging subsystem first (before any log calls)

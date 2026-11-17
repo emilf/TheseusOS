@@ -170,7 +170,7 @@ impl Monitor {
         self.writeln(&format!("Calling function at 0x{:016X}...", addr));
 
         unsafe {
-            let func: extern "C" fn() = core::mem::transmute(addr);
+            let func: extern "sysv64" fn() = core::mem::transmute(addr);
             func();
         }
 

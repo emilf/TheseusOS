@@ -59,6 +59,9 @@ static mut KERNEL_STACK: [u8; 64 * 1024] = [0; 64 * 1024];
 ///
 /// This validates that the runtime kernel/IST stacks are mapped and then switches
 /// to the dedicated high-half kernel stack before continuing bring-up.
+///
+/// ABI: stays `extern "C"` — reached by a raw jump, so this declaration pairs with
+/// the `extern "C"` block in `memory.rs`, not with a Rust caller.
 #[no_mangle]
 pub extern "C" fn after_high_half_entry() -> ! {
     // Switch stack immediately to a high-half kernel stack using the
@@ -105,6 +108,9 @@ pub extern "C" fn after_high_half_entry() -> ! {
 ///
 /// This is the main post-stack-switch initialization path: refresh descriptor-table
 /// state, finish CPU setup, transition allocators/heaps, and continue platform bring-up.
+///
+/// ABI: stays `extern "C"` — reached via `crate::stack::switch_to_kernel_stack_and_jump`,
+/// and declared in the `extern "C"` block in `memory.rs`.
 #[no_mangle]
 pub unsafe extern "C" fn continue_after_stack_switch() -> ! {
     // Reinstall IDT and continue setup now that we're in high-half

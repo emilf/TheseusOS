@@ -35,6 +35,11 @@
 use crate::{config, log_debug, log_error, log_trace};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+// These two symbols are reached by a raw stack switch + jump (`jump_to_high_half` /
+// `switch_to_kernel_stack_and_jump`), not by a normal Rust call, so there is no
+// caller signature to check against — the declaration must simply match the
+// definitions in `environment.rs`. They stay `extern "C"` to keep the boot
+// boundary in one convention; the ABI string here is declarative for those two.
 extern "C" {
     fn after_high_half_entry() -> !;
     fn continue_after_stack_switch() -> !;
