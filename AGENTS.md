@@ -365,6 +365,14 @@ Scoped `AGENTS.md` files may add stricter local rules, but they must not contrad
 
 This section captures real failure modes that have happened working on TheseusOS. Read before starting any significant change.
 
+### Calling conventions
+
+- **`extern "C"` is Microsoft x64 in this tree, not System V.** The kernel builds under the UEFI target, where rustc forces `is-like-windows` (`os: "uefi"`), so `extern "C"` puts the first argument in **RCX** and uses RCX/RDX/R8/R9. Documentation and assembly snippets elsewhere assume SysV (`RDI`).
+- **Internal boundaries are `extern "sysv64"`.** Rust-to-Rust calls and functions that assembly calls into declare `extern "sysv64"`, giving the System V AMD64 ABI (first argument in **RDI**). When an `asm!` block calls such a function, use RDI — e.g. `irq_stub_common` pops the vector into RDI before calling `irq_dispatch_common`.
+- **Keep `extern "C"` only at the firmware boundary.** `kernel_entry` (bootloader call; `entry-abi: win64` in the target spec), the raw-jump high-half entry symbols, and the IRQ stub symbol declarations all stay `extern "C"` deliberately. Do not "tidy" one into `sysv64` without changing the other side in the same commit — the strings are load-bearing.
+- **Red zone must stay disabled.** SysV defines a 128-byte red zone an interrupt can clobber; both target specs set `disable-redzone: true`. Do not remove it.
+- Full detail: `docs/axioms/arch-x86_64.md#A1.1`.
+
 ### Build system
 
 - **Debug builds crash at runtime.** `cargo build` (no profile) produces a debug binary that fails during the bootloader-to-kernel jump due to relocation issues masked by optimizations. Always use `cargo run -p theseus-qemu -- --headless` or a release profile. Do not assume debug builds are testable.

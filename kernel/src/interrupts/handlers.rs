@@ -297,15 +297,16 @@ use core::arch::global_asm;
 
 /// Common Rust-side IRQ dispatcher called from all per-vector stubs.
 ///
-/// Receives the vector number in RDI (System V AMD64 ABI first integer
-/// argument). The stub has already saved no caller-saved registers —
-/// `extern "C"` calling convention means the compiler handles that.
+/// Receives the vector number in RDI: this is `extern "sysv64"`, the System V
+/// AMD64 ABI, so the first integer argument is RDI. The stub already popped the
+/// vector into RDI before calling. Caller-saved registers are the ABI's problem,
+/// not the stub's.
 ///
 /// # Safety
 /// Must only be called from the assembly stubs below, inside an interrupt
 /// context with interrupts disabled by the CPU.
 #[no_mangle]
-pub extern "C" fn irq_dispatch_common(vector: u8) {
+pub extern "sysv64" fn irq_dispatch_common(vector: u8) {
     unsafe {
         super::irq_registry::dispatch_irq(vector);
     }
@@ -338,15 +339,16 @@ pub extern "C" fn irq_dispatch_common(vector: u8) {
 //
 // We're kernel-only for now, so no privilege change → no RSP/SS on stack.
 
-// NOTE: The kernel is compiled as a UEFI PE binary, so the calling convention
-// used for extern "C" functions is the Microsoft x64 ABI, not System V AMD64.
-// Microsoft x64 ABI passes the first integer argument in RCX, not RDI.
-// The stub therefore pops the vector into RCX before calling irq_dispatch_common.
+// The kernel is compiled as a UEFI PE binary, so `extern "C"` here would mean the
+// Microsoft x64 ABI (first argument in RCX). Internal Rust functions that bare
+// assembly calls into are declared `extern "sysv64"` instead, so they follow the
+// System V AMD64 ABI (first argument in RDI) that assembly references assume.
+// The stub therefore pops the vector into RDI before calling irq_dispatch_common.
 global_asm!(
     // Shared thunk: vector byte is on top of stack.
     ".global irq_stub_common",
     "irq_stub_common:",
-    "    pop  rcx",          // vector → first arg (Microsoft x64 ABI: RCX)
+    "    pop  rdi",          // vector → first arg (SysV AMD64 ABI: RDI)
     "    call irq_dispatch_common",
     "    iretq",
 
@@ -429,6 +431,9 @@ global_asm!(
 );
 
 // Declare the stub symbols so Rust can take their addresses.
+// These are raw assembly stubs defined in the `global_asm!` above; the ABI string
+// is declarative (addresses only, never called through Rust). Left as `extern "C"`
+// so the whole interrupt entry boundary stays in one convention.
 extern "C" {
     fn irq_stub_0x20(); fn irq_stub_0x21(); fn irq_stub_0x22(); fn irq_stub_0x23();
     fn irq_stub_0x24(); fn irq_stub_0x25(); fn irq_stub_0x26(); fn irq_stub_0x27();
@@ -492,6 +497,11 @@ extern "C" {
 /// Entry is `None` for vectors that have dedicated Rust handlers (timer, serial,
 /// xHCI, APIC error, spurious). The IDT setup loop uses this to install each stub
 /// with `set_handler_addr`.
+///
+/// ABI note: the `extern "C"` on this function-pointer type is descriptive only —
+/// the compiler never emits an indirect *call* through these entries, it only takes
+/// their addresses for the IDT. They must not be given a Rust-callable ABI claim;
+/// the stubs are raw assembly entered by the CPU.
 pub(super) static IRQ_STUB_TABLE: [Option<unsafe extern "C" fn()>; 256] = {
     let mut table: [Option<unsafe extern "C" fn()>; 256] = [None; 256];
     // Vectors 0x00–0x1F are CPU exceptions — not general IRQs.

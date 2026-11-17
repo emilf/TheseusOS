@@ -299,4 +299,4 @@ pub unsafe fn get_handoff_for_timer() -> Option<&'static theseus_shared::handoff
 /// Used to test whether function calls work correctly in various contexts.
 /// Can be called safely without side effects.
 #[no_mangle]
-pub extern "C" fn noop_for_test() {}
+pub extern "sysv64" fn noop_for_test() {}

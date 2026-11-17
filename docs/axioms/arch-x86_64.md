@@ -12,12 +12,52 @@ Implements / evidence:
 - `kernel/src/lib.rs`
 - `kernel/src/interrupts/handlers.rs`
 
+### A1.1: Calling conventions — Win64 at the firmware boundary, SysV internal
+
+**REQUIRED**
+
+The kernel is compiled under the UEFI target, where rustc forces `is-like-windows`
+(because `os` is `uefi`). Consequently plain `extern "C"` means the **Microsoft
+x64 ABI** (first argument in RCX, args in RCX/RDX/R8/R9).
+
+That convention is correct *only* where firmware or bare assembly is the other
+side. Internal boundaries — Rust-to-Rust, and assembly that calls into Rust —
+declare `extern "sysv64"` explicitly, so they follow the **System V AMD64 ABI**
+(first argument in RDI), which is what assembly references and external
+documentation assume.
+
+Rules:
+
+- `extern "C"` / `efiapi` is permitted only at boundaries whose other side is
+  firmware or raw assembly: `kernel_entry` (bootloader call, `entry-abi: win64`),
+  the high-half entry symbols reached by a raw jump, and the IRQ stub symbol
+  declarations / stub table (addresses only, never called through Rust).
+- Everything else uses `extern "sysv64"`: e.g. `irq_dispatch_common`,
+  `sycall_dispatch`, `noop_for_test`, and the monitor's `call` trampoline.
+- An `asm!` or `global_asm!` block that calls into Rust must use the register the
+  *callee's declared ABI* specifies. `irq_stub_common` pops the vector into
+  **RDI** because `irq_dispatch_common` is `extern "sysv64"`.
+- Do not "tidy" a retained `extern "C"` into `sysv64` without changing the other
+  side in the same change. The strings are load-bearing, not stylistic.
+- Red zone: SysV defines a 128-byte red zone that an interrupt can clobber. Both
+  target specs keep `disable-redzone: true`; that must stay set.
+
+Implements / evidence:
+- `kernel/src/lib.rs#kernel_entry`
+- `kernel/src/interrupts/handlers.rs#irq_dispatch_common`
+- `kernel/src/interrupts/handlers.rs#irq_stub_common`
+- `kernel/src/monitor/commands/control.rs`
+- `x86_64-unknown-uefi-dwarf.json` (`entry-abi: win64`)
+
 Related plans:
 - `../plans/interrupts-and-platform.md#implemented-invariants`
 
 Affected modules:
 - `kernel/src/lib.rs`
 - `kernel/src/interrupts/*`
+- `kernel/src/environment.rs`
+- `kernel/src/memory.rs`
+- `kernel/src/monitor/commands/*`
 
 ## A2: GDT/TSS setup provides dedicated IST stacks for critical faults
 

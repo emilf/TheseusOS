@@ -18,6 +18,7 @@ Track descriptor-table setup, APIC interrupt routing, timer bring-up, ACPI platf
 - [x] IMPLEMENTED: The serial driver programs IOAPIC routing for interrupt-driven receive handling.
 - [x] IMPLEMENTED: The current CPU setup path detects CPUID features once, applies a limited CR0/CR4 setup during bring-up, and enables SSE/AVX state only when the detected feature set and current setup path allow it.
 - [x] IMPLEMENTED: APIC base/mode reporting now comes from `IA32_APIC_BASE`, so the monitor can distinguish x2APIC capability from the current runtime access mode even though mainline interrupt delivery still uses xAPIC-style MMIO.
+- [x] IMPLEMENTED: Internal Rust functions called by assembly declare `extern "sysv64"`. `irq_dispatch_common` is SysV, so `irq_stub_common` pops the vector into RDI rather than the Microsoft-ABI RCX. See axiom A1.1.
 
 ## IRQ Dispatch Architecture
 
