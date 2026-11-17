@@ -399,7 +399,28 @@ This section captures real failure modes that have happened working on TheseusOS
 
 ### QEMU and debugging
 
-- **QEMU relay sockets live at `/tmp/qemu-*-host`.** Serial: `/tmp/qemu-serial-host`, monitor: `/tmp/qemu-monitor-host`, debugcon: `/tmp/qemu-debugcon-host`, QMP: `/tmp/qemu-qmp-host.sock`. These are PTY relay files — use `cat` or `stdbuf -o0 cat`, not `tail -f`.
+- **The persistent relays already exist — attach before launching QEMU.** `qemu-serial-relay.service`, `qemu_debugcon_relay.service`, `qemu_monitor_relay.service` and `qemu_qmp_relay.service` run continuously and own the PTY pairs. Do **not** spawn your own `socat` capture after boot: output written while nothing is connected is discarded, so a late attach reads a quiet period and looks like a dead port. Start the reader first, then launch QEMU against the relay end.
+
+| Channel | QEMU side (pass this) | Read side (attach to this) |
+|---|---|---|
+| Serial / COM1 | `/tmp/qemu-serial` | `/tmp/qemu-serial-host` |
+| Monitor (HMP) | `/tmp/qemu-monitor` | `/tmp/qemu-monitor-host` |
+| Debugcon (port 0xE9) | `/tmp/qemu-debugcon` | `/tmp/qemu-debugcon-host` |
+| QMP | `/tmp/qemu-qmp.sock` | `/tmp/qemu-qmp-host.sock` |
+
+```bash
+# Serial: attach FIRST, then boot.
+timeout 40 cat /tmp/qemu-serial-host > /tmp/com1.txt &
+sleep 1
+cargo run -q -p theseus-qemu -- --headless --timeout-secs 20 \
+  --serial pseudo-tty-file --serial-path /tmp/qemu-serial
+```
+
+- **Headless defaults wire only the debug port.** With no `--serial` flag QEMU gets `isa-debugcon` (0xE9) → stdio and no COM1 chardev at all, so "no serial output" usually means "no serial device", not a broken driver. Confirm from the resolved argv: `cargo run -q -p theseus-qemu -- print --headless | grep -o 'chardev=[a-z]*'`.
+- **Each output channel must be proved separately.** Debugcon coming from `theseus_shared::qemu_print_bytes!` (`out 0xE9`) is a direct port write that involves no driver, no `SERIAL_STATE` and no locks — a busy debugcon says nothing about COM1. Likewise the kernel monitor writes through `serial::write_bytes_direct`, so its silence points at serial, not at the monitor.
+- **A silent port is a diagnosis, not a verdict.** Check line status before blaming the driver: THRE is bit 5 of the LSR at `base + 5` (0x3FD for COM1). `LSR=0x60` with THRE set means the UART accepted the bytes and the loss is downstream (capture/attach timing).
+- **These are PTY relay files — use `cat` or `stdbuf -o0 cat`, not `tail -f`.** `tail -f` follows the symlink target and misses the data; `cat` on the `-host` end reads the master stream.
+- **Avoid unbounded polling on hardware in a locked path.** `SerialPort::write_buffer` spins on THRE while holding `SERIAL_STATE`; a port that never reports ready would wedge the console permanently and silently. Transmit waits are bounded and report failure instead.
 - **The preferred runner is `theseus-qemu`**, not `startQemu.sh`. The Rust runner handles build-before-run, timeout, relay setup, and success detection. `startQemu.sh` still works but is not the front door.
 - **GDB requires section delta computation.** The kernel is relocated to higher-half. GDB symbols need offset adjustment. Use `gdb-auto.py` / `make debug-auto` rather than raw GDB — the automation handles section deltas from `BOOTX64.SYM`.
 - **`make run` is headless.** `make run-headed` opens a QEMU window. Use headless for CI/automated runs, headed when you need to see framebuffer output.

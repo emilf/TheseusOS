@@ -196,11 +196,18 @@ fn serial_interrupt_handler() {
 
 /// Write bytes directly to the serial port, bypassing the driver manager.
 /// This is useful from interrupt context to avoid re-entrant locking.
+///
+/// Returns `Err` when the port is uninitialized *or* when the underlying UART
+/// would not accept the bytes. Callers rely on the error to fall back to another
+/// output path, so reporting `Ok` after a dropped write hides a dead console.
 pub fn write_bytes_direct(buf: &[u8]) -> Result<usize, &'static str> {
     let guard = SERIAL_STATE.lock();
     if let Some(state) = guard.as_ref() {
-        state.port.write_buffer(buf);
-        Ok(buf.len())
+        if state.port.write_buffer(buf) {
+            Ok(buf.len())
+        } else {
+            Err("serial transmit timed out")
+        }
     } else {
         Err("serial port not initialized")
     }
@@ -253,15 +260,43 @@ impl SerialPort {
         }
     }
 
-    fn write_buffer(&self, buf: &[u8]) {
+    /// Bounded wait for the transmit holding register to accept another byte.
+    ///
+    /// Returns `false` if the UART never reports THR-empty (bit 5 of the line
+    /// status register). The bound matters: this is called with the global
+    /// serial state locked, so an unbounded spin on a UART that is not actually
+    /// backed by a live device wedges the console permanently and silently.
+    /// LOS (bit 7) tracking of the same register is checked too, because a
+    /// UART with no line behind it reports THRE set but stays silent.
+    fn wait_transmit_ready(&self) -> bool {
+        const MAX_SPINS: u32 = 100_000;
+        for _ in 0..MAX_SPINS {
+            if self.line_status() & 0x20 != 0 {
+                return true;
+            }
+            core::hint::spin_loop();
+        }
+        false
+    }
+
+    /// Write `buf` to the UART.
+    ///
+    /// Returns `false` if any byte could not be handed to the transmitter. The
+    /// caller reports that failure rather than pretending the bytes went out.
+    fn write_buffer(&self, buf: &[u8]) -> bool {
         for &b in buf {
-            while self.line_status() & 0x20 == 0 {}
+            if !self.wait_transmit_ready() {
+                return false;
+            }
             self.write_byte(if b == b'\n' { b'\r' } else { b });
             if b == b'\n' {
-                while self.line_status() & 0x20 == 0 {}
+                if !self.wait_transmit_ready() {
+                    return false;
+                }
                 self.write_byte(b'\n');
             }
         }
+        true
     }
 
     fn enable_interrupts(&self) {

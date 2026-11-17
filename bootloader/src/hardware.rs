@@ -265,13 +265,21 @@ fn classify_device_path(path: &DevicePath) -> ClassifiedDevice {
         irq: None,
     };
     let mut parts = Vec::new();
-    let mut found_serial = false;
+    // A device path is a *chain* (e.g. PCI -> UART), so a serial node anywhere in
+    // the chain is evidence the device has a serial interface. The distinction
+    // that matters is whether the terminal node is serial, because that is what
+    // identifies the device itself rather than a transport it sits behind.
+    let mut serial_node_index: Option<usize> = None;
+    let mut terminal_serial = false;
 
-    for node in path.node_iter() {
+    for (index, node) in path.node_iter().enumerate() {
         let info = classify_device_node(&node);
-        if info.device.device_type == DEVICE_TYPE_SERIAL {
-            found_serial = true;
+        let is_serial = info.device.device_type == DEVICE_TYPE_SERIAL;
+        if is_serial && serial_node_index.is_none() {
+            serial_node_index = Some(index);
         }
+        terminal_serial = is_serial;
+
         if device.device_type == DEVICE_TYPE_UNKNOWN
             && info.device.device_type != DEVICE_TYPE_UNKNOWN
         {
@@ -286,11 +294,28 @@ fn classify_device_path(path: &DevicePath) -> ClassifiedDevice {
         parts.push(info.summary);
     }
 
-    if found_serial {
+    if terminal_serial {
+        // Terminal serial node: this handle *is* the serial port.
         device.device_type = DEVICE_TYPE_SERIAL;
         if device.address.is_none() {
+            // TODO(serial-discovery): the UEFI UART node type carries only baud/
+            // framing (baud_rate, data_bits, parity, stop_bits) and no I/O base
+            // port, so the actual physical address cannot be obtained from the
+            // device path alone. 0x3F8 is an ASSUMPTION (the conventional COM1
+            // data port), not a discovery result. If firmware reports several
+            // UART handles, they all collapse onto this one address, which is
+            // wrong for any port that is not COM1. Resolve this properly by
+            // sourcing the base from ACPI (e.g. the SPCR table or a serial
+            // device's _CRS I/O resource) or from EFI_SERIAL_IO_MODE/MMIO
+            // configuration, then delete this fallback.
             device.address = Some(0x3F8);
         }
+    } else if serial_node_index.is_some() {
+        // Serial appears in the chain but is not the terminal node: the device is
+        // reached *through* a serial link rather than being the UART itself.
+        // Record it as serial for visibility but leave the address unset instead
+        // of inventing one.
+        device.device_type = DEVICE_TYPE_SERIAL;
     }
 
     ClassifiedDevice {

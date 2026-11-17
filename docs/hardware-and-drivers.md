@@ -152,11 +152,45 @@ When a device arrives (via firmware inventory or runtime discovery):
 
 - Handles legacy COM1 (I/O port 0x3F8, IRQ 4, or remapped GSI).
 - Reception: Interrupt-driven via circular buffer (`rx_buffer`, `head`, `tail`).
-- Transmission: Polled writes to THR once LSR bit 5 indicates empty.
+- Transmission: Polled writes to THR once LSR bit 5 indicates empty. The ready
+  wait is **bounded** (`SerialPort::wait_transmit_ready`); a port that never
+  reports THRE returns a failure instead of spinning. This matters because the
+  wait runs while `SERIAL_STATE` is locked — an unbounded spin there would wedge
+  the console permanently and silently.
+- `serial::write_bytes_direct()` reports `Err` when the transmitter never
+  accepted the bytes, so callers fall back to another output path instead of
+  believing a dropped write succeeded.
 - Integration points:
   - Registers with driver manager in `serial::register_serial_driver()`.
   - `serial::init_serial()` configures hardware, programs IO-APIC redirection (if available), and seeds the monitor.
   - Logging macros route output through `DriverManager::write_class(DeviceClass::Serial, ...)`, so the serial driver doubles as the kernel console backend.
+
+### Device discovery assumptions (open)
+
+Serial is the one device class bound **once per system**. `DriverManager`
+skips further `DeviceClass::Serial` devices once one is bound, because the
+driver keeps process-wide state in `SERIAL_STATE`; a second bind would overwrite
+the first while leaving it unowned.
+
+Two assumptions are currently baked in and are **not** discovered truth:
+
+1. **The UART I/O base defaults to 0x3F8.** The UEFI UART device-path node
+   carries only baud rate and framing (baud, data bits, parity, stop bits) — no
+   I/O base. When the terminal node of a device path is a UART, the bootloader
+   classifies the handle as serial and falls back to 0x3F8. On QEMU this is
+   correct by coincidence of the QEMU default; on hardware with a non-standard
+   COM port it would program the wrong address.
+2. **One console UART per system.** The inventory commonly reports several
+   handles whose paths contain a serial node (composite paths), so without the
+   single-instance guard the same physical port would be bound repeatedly.
+
+TODO: replace both with real discovery — source the base port from ACPI (SPCR
+or a serial device's `_CRS` I/O resource) or from `EFI_SERIAL_IO_MODE`/
+MMIO configuration, deduplicate devices by physical resource (I/O base, MMIO
+range, PCI BDF) rather than by class, and define the ownership rule for
+multi-port hardware. Tracked as a repo issue; the `TODO(serial-discovery)` and
+`TODO(single-instance-binding)` comments in `bootloader/src/hardware.rs` and
+`kernel/src/drivers/manager.rs` point at the same work.
 
 ## Monitoring & Control
 
@@ -171,7 +205,12 @@ When a device arrives (via firmware inventory or runtime discovery):
 ## Best Practices & Safety Notes
 
 - Keep driver `probe`/`init` deterministic and quick; they run while the driver manager lock is held.
+- **Never poll hardware unbounded while holding a lock.** A driver that spins on
+a device status bit inside a mutex turns one dead device into a dead subsystem,
+with no error surfaced. Bound the wait and return a failure.
 - Always verify handoff-provided resources (MMIO base, IRQ) before using them; firmware bugs happen.
+- Treat handoff-invented addresses as assumptions, not facts. If the source is a
+fallback constant rather than a parsed resource, say so in a TODO and in these docs.
 - When mapping MMIO, use the helpers from [Memory Management](memory-management.md) and select the correct cacheability flags.
 - Return `false` from `irq_handler` if you did not service the interrupt; this helps diagnose IRQ routing issues.
 - If your driver allocates frames or heap memory during `init`, provide a `remove` implementation to clean up when hot-unplug support arrives.
